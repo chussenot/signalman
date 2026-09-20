@@ -60,6 +60,7 @@ src/
   error.rs         TypeSafe-side error enum
   triage/          Alert state, questions, Decision policy
   incidentio/      client, types, webhook verification, sync flow, errors
+  backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
   main.rs          CLI
 tests/             wiremock integration tests and the end-to-end webhook run

@@ -18,6 +18,11 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 - incident.io contract: OpenAPI v3 at https://api.incident.io/v1/openapiV3.json
   and https://docs.incident.io/llms.txt. Never create incidents directly
   (decision `signalman-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).
+- Backstage contract: catalog OpenAPI at
+  https://raw.githubusercontent.com/backstage/backstage/master/plugins/catalog-backend/src/schema/openapi.yaml,
+  docs at https://backstage.io/docs. The catalog is the ownership source of
+  truth (`docs/decisions/0004-catalog-is-the-ownership-source-of-truth.md`);
+  the static `Team` list is only the fallback.
 - Deterministic logic stays in code; the model answers narrow, atomic
   questions. Questions reference state by backticked path. Every Choice has
   a no-match option.

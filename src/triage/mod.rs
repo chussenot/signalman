@@ -3,14 +3,14 @@
 //!
 //! This module is a worked example of the recommended shape:
 //! *code when you can, one judgment per question, decide with thresholds that
-//! scale with risk.* Everything the model is not needed for (dedup candidate
-//! lookup, threshold policy, output formatting) is ordinary Rust.
+//! scale with risk.* Everything the model is not needed for (candidate lookup,
+//! threshold policy, output formatting) is ordinary Rust.
 
 mod policy;
 mod questions;
 
 pub use policy::{Decision, Policy, decide};
-pub use questions::{Impact, NO_DUPLICATE, Team, TriageAnswers, TriageQuestions};
+pub use questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, Team, TriageAnswers, TriageQuestions};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ pub struct Alert {
     /// Labels such as `service`, `namespace`, `severity`.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
-    /// Runbook excerpt, if the alert links one.
+    /// Runbook excerpt, if the alert links one or TechDocs provides one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runbook: Option<String>,
     /// Deploys, config changes or feature flags in the recent window.
@@ -39,6 +39,9 @@ pub struct Alert {
     /// Incidents currently open, as duplicate candidates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_incidents: Vec<OpenIncident>,
+    /// The alerting component as the software catalog knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentContext>,
 }
 
 /// A currently open incident that the alert may belong to.
@@ -48,4 +51,139 @@ pub struct OpenIncident {
     pub id: String,
     /// One-line summary.
     pub summary: String,
+}
+
+/// Catalog facts about the alerting component. Only what a question reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ComponentContext {
+    /// Catalog name.
+    pub name: String,
+    /// Display title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `spec.type` (service, website, library, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_type: Option<String>,
+    /// `spec.lifecycle` (production, experimental, deprecated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<String>,
+    /// System it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    /// Owning group's display name. The catalog's answer to "who owns it".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Owning group's description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_description: Option<String>,
+    /// What it depends on (`kind name`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// What depends on it (`kind name`): the blast radius.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependents: Vec<String>,
+    /// Tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Link titles (dashboards, runbooks).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+}
+
+/// One option for the owner question.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerCandidate {
+    /// Wire key, also used in tags (`ai-team-<key>`).
+    pub key: String,
+    /// Display name.
+    pub label: String,
+    /// Rubric text sent as the option's criteria.
+    pub description: String,
+    /// Catalog reference (`group:default/payments`) when the candidate came
+    /// from Backstage; `None` for the static team list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_ref: Option<String>,
+}
+
+/// The owner question's option set. Always ends with a no-match option.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OwnerCandidates {
+    list: Vec<OwnerCandidate>,
+}
+
+impl OwnerCandidates {
+    /// Build from candidates; the no-match option is appended if absent.
+    pub fn new(mut list: Vec<OwnerCandidate>) -> Self {
+        list.retain(|c| c.key != NONE_OF_THESE);
+        list.push(OwnerCandidate {
+            key: NONE_OF_THESE.to_owned(),
+            label: "None of these".to_owned(),
+            description: "Not clearly attributable to any listed team from the information given"
+                .to_owned(),
+            entity_ref: None,
+        });
+        Self { list }
+    }
+
+    /// The static team list from [`Team`].
+    pub fn from_teams() -> Self {
+        use crate::Options;
+        Self::new(
+            Team::ALL
+                .iter()
+                .filter(|t| **t != Team::Unclear)
+                .map(|t| OwnerCandidate {
+                    key: t.key().to_owned(),
+                    label: t.key().replace('_', " "),
+                    description: t.describe().unwrap_or("").to_owned(),
+                    entity_ref: None,
+                })
+                .collect(),
+        )
+    }
+
+    /// All candidates including the no-match option.
+    pub fn iter(&self) -> impl Iterator<Item = &OwnerCandidate> {
+        self.list.iter()
+    }
+
+    /// Number of candidates including the no-match option.
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    /// True when only the no-match option remains.
+    pub fn is_empty(&self) -> bool {
+        self.list.len() <= 1
+    }
+
+    /// Look up by key.
+    pub fn get(&self, key: &str) -> Option<&OwnerCandidate> {
+        self.list.iter().find(|c| c.key == key)
+    }
+}
+
+/// The owner a decision resolved to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owner {
+    /// Candidate key.
+    pub key: String,
+    /// Display name.
+    pub label: String,
+    /// Catalog reference, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_ref: Option<String>,
+}
+
+impl From<&OwnerCandidate> for Owner {
+    fn from(c: &OwnerCandidate) -> Self {
+        Self {
+            key: c.key.clone(),
+            label: c.label.clone(),
+            entity_ref: c.entity_ref.clone(),
+        }
+    }
 }

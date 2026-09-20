@@ -13,5 +13,6 @@ tags: [decisions, adr]
 | [0001](0001-incidentio-remains-the-alert-hub.md) | incident.io remains the alert hub | accepted |
 | [0002](0002-calibrated-judgments-over-generated-text.md) | Calibrated judgments over generated text | accepted |
 | [0003](0003-typed-handles-between-questions-and-answers.md) | Typed handles between questions and answers | accepted |
+| [0004](0004-catalog-is-the-ownership-source-of-truth.md) | The catalog is the ownership source of truth | accepted |
 
 A record has frontmatter with `title`, `description`, `status`, `date` and optionally `beads`, the id of the matching `bd` decision issue. Records are not edited after acceptance; a change is a new record that supersedes the old one.

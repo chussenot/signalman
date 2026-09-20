@@ -16,6 +16,7 @@ Start with the [README](../README.md) for why the application exists. These page
 | [TypeSafe client](typesafe-client.md) | You are calling the model or adding a question type |
 | [Triage](triage.md) | You are changing a question, a team, a level or a threshold |
 | [incident.io integration](incidentio.md) | You are connecting an account or changing what is written back |
+| [Backstage bridge](backstage.md) | You are wiring the catalog, TechDocs or notifications, or registering signalman |
 | [Configuration](configuration.md) | You need an environment variable |
 | [Operations](operations.md) | You are running it |
 | [Development](development.md) | You are contributing |

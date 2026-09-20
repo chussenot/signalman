@@ -1,0 +1,60 @@
+# Backstage catalog entry for signalman itself. Register this file's URL in
+# the catalog (or via the GitHub discovery provider) and the service, its
+# TechDocs (docs/) and its dependencies show up in the portal.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: signalman
+  title: signalman
+  description: >-
+    Alert triage that turns calibrated TypeSafe judgments into routing
+    decisions inside incident.io, using the software catalog as the
+    ownership source of truth.
+  tags:
+    - rust
+    - alerting
+    - incident-response
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: chussenot/signalman
+  links:
+    - url: https://github.com/chussenot/signalman
+      title: Repository
+      icon: github
+    - url: https://docs.typesafe.ai
+      title: TypeSafe docs
+      icon: docs
+spec:
+  type: service
+  lifecycle: experimental
+  # Replace with the group that operates signalman in your catalog.
+  owner: group:default/platform-engineering
+  dependsOn:
+    - resource:default/incident-io
+    - resource:default/typesafe-api
+  # Registered so alert routes and this service can be traced from one another.
+  consumesApis: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: incident-io
+  description: incident.io SaaS, the alert and incident hub signalman writes tags and attachments to.
+  links:
+    - url: https://api-docs.incident.io
+      title: API reference
+spec:
+  type: saas
+  owner: group:default/platform-engineering
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: typesafe-api
+  description: TypeSafe System One API (Jev), the decision model signalman asks.
+  links:
+    - url: https://docs.typesafe.ai
+      title: Documentation
+spec:
+  type: saas
+  owner: group:default/platform-engineering

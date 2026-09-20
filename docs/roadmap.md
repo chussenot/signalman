@@ -19,6 +19,10 @@ Nothing has run against a live TypeSafe or incident.io account. Wire shapes are 
 - The repeated-key form of `status_category[one_of]` on the incidents list. The most likely drift point.
 - A signed webhook end to end through Svix Play or ngrok.
 
+## Backstage bridge (`signalman-90m`)
+
+Built and tested against mocks only. Open items: candidate filtering by domain or system for large catalogs; `recent_changes` from the deployment plugins (`github`, `argocd`, `flux`); a Backstage frontend card showing signalman's last decision per component.
+
 ## Hardening the receiver (`signalman-m28`)
 
 Background triage concurrency is unbounded and there is no request timeout, body limit, readiness endpoint, telemetry export or container image.
@@ -35,4 +39,4 @@ Incident-created events are parsed but not acted on; the intended first use is a
 
 - `Retry-After` in HTTP-date form falls back to backoff.
 - The in-memory `webhook-id` set does not survive restarts; tag adds are idempotent so the consequence is a repeated model call.
-- The `Team` enum and impact rubric encode one organisation's ownership model.
+- Without Backstage, the `Team` enum encodes one organisation's ownership model. The impact rubric always does.

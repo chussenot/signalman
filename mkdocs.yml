@@ -1,0 +1,28 @@
+# TechDocs build for the signalman Component (backstage.io/techdocs-ref: dir:.).
+# The pages under docs/ carry YAML frontmatter; mkdocs reads it as page meta.
+site_name: signalman
+site_description: Alert triage with calibrated judgments, incident.io and the Backstage catalog.
+repo_url: https://github.com/chussenot/signalman
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Backstage bridge: backstage.md
+  - TypeSafe client: typesafe-client.md
+  - Triage: triage.md
+  - incident.io integration: incidentio.md
+  - Configuration: configuration.md
+  - Operations: operations.md
+  - Development: development.md
+  - Roadmap: roadmap.md
+  - Decisions:
+      - Index: decisions/README.md
+      - 0001 incident.io remains the alert hub: decisions/0001-incidentio-remains-the-alert-hub.md
+      - 0002 Calibrated judgments over generated text: decisions/0002-calibrated-judgments-over-generated-text.md
+      - 0003 Typed handles between questions and answers: decisions/0003-typed-handles-between-questions-and-answers.md
+      - 0004 The catalog is the ownership source of truth: decisions/0004-catalog-is-the-ownership-source-of-truth.md
+
+plugins:
+  - techdocs-core
