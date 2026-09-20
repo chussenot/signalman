@@ -1,0 +1,9 @@
+{
+  "source": "blackbox-exporter",
+  "title": "ProbeFailing",
+  "description": "HTTPS probe to https://api.example.com failing from all 3 regions for 4 minutes: NXDOMAIN for api.example.com. Internal service health checks are green.",
+  "labels": { "target": "api.example.com", "severity": "critical" },
+  "recent_changes": [
+    "2026-09-20T12:01Z Terraform apply in dns-zones repo: consolidate example.com records"
+  ]
+}

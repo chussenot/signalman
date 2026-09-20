@@ -1,0 +1,6 @@
+{
+  "source": "datadog",
+  "title": "DiskUsageHigh",
+  "description": "Disk usage on ci-runner-staging-03 is 81% (threshold 80%). Host is an ephemeral CI runner in the staging pool; it is recycled every 24h.",
+  "labels": { "env": "staging", "role": "ci-runner", "severity": "warning" }
+}
