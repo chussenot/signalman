@@ -1,35 +1,43 @@
 # rustsafe
 
-Typed Rust client for the TypeSafe System One API (`POST /v1/systemone`), an
-alert-triage flow built on it, and an incident.io integration (API client,
-Svix webhook receiver, tag and attachment write-back).
+Typed Rust client for the TypeSafe System One API, an alert-triage flow built
+on it, and an incident.io integration. The README says why; `docs/` says how.
 
-## Working on this repo
+## Start here
 
-- Use the **typesafe** skill (`typesafe@typesafe-ai` plugin, pinned in
-  `.claude/settings.json`) whenever a change touches questions, answers, the
-  client or the triage policy. The skill points at the live docs; they are the
-  source of truth for the API contract, question design and confidence
-  handling. Start from https://docs.typesafe.ai/llms.txt.
-- Keep deterministic logic in code. The model answers narrow, atomic
-  questions; routing, thresholds and formatting live in `src/triage/policy.rs`.
-- Questions reference the state by backticked path (`alert.title`). Every
-  Choice needs a no-match option when nothing may fit.
-- Check before pushing: `cargo fmt --all --check`, `cargo clippy --all-targets`
-  (pedantic, warnings denied in CI), `cargo test`.
-- Tests never call the real API. Client behaviour is covered with `wiremock`
-  in `tests/client.rs`; policy is unit-tested with hand-built answers.
-- `TYPESAFE_API_KEY` is required at runtime only. Never commit one.
-- incident.io contract: the OpenAPI v3 spec at
-  `https://api.incident.io/v1/openapiV3.json` and the guides at
-  `https://docs.incident.io/llms.txt` (webhooks: `api-reference/webhooks.md`).
-  Webhooks are Svix-signed; the verifier in `src/incidentio/webhook.rs` is
-  pinned to Svix's published test vector. Never create incidents directly:
-  write tags and attachments, or feed an HTTP alert source, and let alert
-  routes decide.
-- Wire types in `src/incidentio/types.rs` must ignore unknown fields and
-  default optional ones; incident.io adds properties without notice.
+- `docs/development.md` is the contributor guide: tools, tasks, gates, layout.
+- `mise install` once, then `mise run setup` (git hooks) and `mise run check`
+  (every quality gate, CI order). `mise tasks` lists the rest.
+- Track work in beads (section below). Create or claim an issue before code.
 
+## Rules that are easy to get wrong
+
+- Load the `typesafe:typesafe-ai` skill before touching questions, answers,
+  the TypeSafe client or `src/triage/policy.rs`. The live docs are the
+  contract; start at https://docs.typesafe.ai/llms.txt.
+- incident.io contract: OpenAPI v3 at https://api.incident.io/v1/openapiV3.json
+  and https://docs.incident.io/llms.txt. Never create incidents directly
+  (decision `rustsafe-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).
+- Deterministic logic stays in code; the model answers narrow, atomic
+  questions. Questions reference state by backticked path. Every Choice has
+  a no-match option.
+- Wire types under `src/incidentio/types.rs` ignore unknown fields and
+  default optional ones.
+- Tests never call a real API: wiremock for both clients, hand-built answers
+  for policy. Nothing has been verified against a live account yet; say so
+  in docs where it matters.
+- Markdown under `docs/` and the README carries frontmatter (`title`,
+  `description`, `status`, `last_reviewed`, `tags`).
+- Secrets live in `.env` (gitignored, loaded by mise). Never commit one.
+
+## Harness
+
+- Subagents in `.claude/agents/`: `contract-reviewer` (API boundary vs live
+  docs), `question-designer` (TypeSafe questions and policy), `docs-writer`
+  (README and `docs/`). Delegate to them for those jobs.
+- Hooks in `.claude/hooks/`: Rust files are formatted after every edit; a
+  Bash guard denies pushes to `main`, `bd edit`, committing `.env`, and
+  `cargo publish`. `bd prime` runs at session start.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker

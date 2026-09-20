@@ -1,4 +1,13 @@
 #!/usr/bin/env sh
+# --- BEGIN PREK (managed by scripts/setup-hooks.sh) ---
+# Run the pre-commit hooks from .pre-commit-config.yaml through prek before beads.
+if command -v prek >/dev/null 2>&1; then
+  _prek_here="$(cd "$(dirname "$0")" && pwd)"
+  prek hook-impl --hook-dir "$_prek_here" --script-version 4 --hook-type=pre-push -- "$@" || exit $?
+else
+  echo "prek not found; skipping pre-commit hooks (mise install)" >&2
+fi
+# --- END PREK ---
 # --- BEGIN BEADS INTEGRATION v1.3.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then

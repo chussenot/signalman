@@ -7,3 +7,12 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local secrets (loaded by mise from .env; template lives in .env.example)
+.env
+.env.*
+!.env.example
+
+# mise
+.mise.local.toml
+mise.local.toml
