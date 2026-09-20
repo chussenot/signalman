@@ -49,11 +49,18 @@
 //! * [`client`] talks HTTP with SDK-equivalent defaults, retries and errors.
 //! * [`triage`] is the application: speculative fan-out over an alert, then a
 //!   routing policy with risk-scaled confidence thresholds.
+//! * [`incidentio`] connects the triage to incident.io: an API client, Svix
+//!   webhook verification, and the sync flow that triages an alert incident.io
+//!   received and writes tags and incident attachments back.
+//! * [`serve`] is the webhook receiver.
 
 pub mod answer;
 pub mod client;
 pub mod error;
+pub mod http;
+pub mod incidentio;
 pub mod question;
+pub mod serve;
 pub mod triage;
 
 pub use answer::{
