@@ -120,11 +120,15 @@ impl TriageQuestions {
                 .map(|c| (c.key.clone(), Some(c.description.clone()))),
         )?;
 
-        let impact = q.score(
-            "impact",
-            "What is the current user-facing impact described by `alert`?",
-            Impact::LEVELS,
-        )?;
+        let impact_instructions = if alert.related_alerts.is_empty() {
+            json!("What is the current user-facing impact described by `alert`?")
+        } else {
+            json!({
+                "question": "What is the current user-facing impact described by `alert`?",
+                "context": "`alert.related_alerts` lists other alerts firing in the same window with their age in minutes. Several on the same component, or on components in `alert.component.dependents`, indicate broader impact than `alert` alone shows; unrelated ones do not raise it.",
+            })
+        };
+        let impact = q.score("impact", impact_instructions, Impact::LEVELS)?;
 
         let actionable = q.noul(
             "actionable",
@@ -242,6 +246,7 @@ mod tests {
             recent_changes: vec![],
             open_incidents: vec![],
             component: None,
+            related_alerts: vec![],
         }
     }
 

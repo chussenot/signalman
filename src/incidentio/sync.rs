@@ -1,5 +1,6 @@
-//! The flow: an alert incident.io received → catalog enrichment → TypeSafe
-//! judgments → tags, an incident attachment and an owner notification.
+//! The flow: an alert incident.io received → other alerts firing now →
+//! catalog enrichment → TypeSafe judgments → tags, an incident attachment,
+//! one qualification note and an owner notification.
 //!
 //! Follows the webhook docs' rule for keeping systems in sync: the webhook is
 //! only a trigger; the alert and the candidate incidents are fetched fresh
@@ -7,16 +8,19 @@
 //! a stale decision.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
+use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 
 use super::client::Client as IncidentIo;
+use super::note::{self, Links, NoteInput};
 use super::types::{Alert as IoAlert, Incident};
-use crate::backstage::Enricher;
 use crate::backstage::enrich::{default_hint_keys, hints_from_labels};
+use crate::backstage::{Enricher, EntityRef};
 use crate::triage::{
-    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, TriageAnswers, TriageQuestions,
-    decide,
+    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, TriageAnswers,
+    TriageQuestions, decide,
 };
 
 /// Prefix for every tag this integration writes, so they can be filtered in
@@ -26,6 +30,18 @@ pub const TAG_PREFIX: &str = "ai";
 /// How many live incidents to offer as dedup candidates. Each is one Choice
 /// option (limit 255) and costs input tokens; recent incidents matter most.
 pub const DEFAULT_CANDIDATES: usize = 40;
+
+/// How far back to look for other firing alerts. Half an hour covers a
+/// deploy rollout or a dependency failure without pulling in yesterday.
+pub const DEFAULT_RELATED_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// Most related alerts put in the state. Enough to show a pattern; each one
+/// costs input tokens.
+pub const DEFAULT_RELATED_MAX: usize = 20;
+
+/// Page size asked for when listing firing alerts; the cap is applied after
+/// dropping the alert itself.
+const RELATED_PAGE: usize = 50;
 
 /// Which side effects to apply after deciding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +72,12 @@ pub struct Triager {
     pub write_back: WriteBack,
     /// Alert attribute names that identify the component.
     pub component_keys: Vec<String>,
+    /// Write the qualification note on the alert.
+    pub note: bool,
+    /// Window for other firing alerts; zero disables the lookup.
+    pub related_window: Duration,
+    /// Cap on related alerts put in the state.
+    pub related_max: usize,
 }
 
 /// What happened for one alert.
@@ -81,6 +103,13 @@ pub struct Outcome {
     pub candidates_offered: usize,
     /// Owner candidates offered.
     pub owner_candidates_offered: usize,
+    /// Other firing alerts put in the state.
+    pub related_alerts: usize,
+    /// Note written or rewritten on the alert.
+    pub note_id: Option<String>,
+    /// Seconds from the alert's creation in incident.io to the decision.
+    /// `None` when the alert carries no parsable `created_at`.
+    pub time_to_qualify_seconds: Option<f64>,
     /// Whether side effects were applied.
     pub applied: bool,
 }
@@ -94,6 +123,8 @@ pub struct AttachedIncident {
     pub reference: String,
     /// Dedup confidence.
     pub confidence: f64,
+    /// Link to the incident in the incident.io app.
+    pub permalink: Option<String>,
 }
 
 impl Triager {
@@ -108,6 +139,9 @@ impl Triager {
             max_candidates: DEFAULT_CANDIDATES,
             write_back: WriteBack::Apply,
             component_keys: default_hint_keys(),
+            note: true,
+            related_window: DEFAULT_RELATED_WINDOW,
+            related_max: DEFAULT_RELATED_MAX,
         }
     }
 
@@ -132,9 +166,15 @@ impl Triager {
 
         let mut alert = to_triage_alert(&io_alert, &candidates);
 
+        // Blast radius: what else is firing right now. Context only, so a
+        // failure here degrades to an empty list rather than aborting.
+        let now = Timestamp::now();
+        alert.related_alerts = self.related_alerts(&io_alert, now).await;
+
         // Catalog enrichment: component context, owner candidates, runbook.
         let mut owner_candidates = OwnerCandidates::from_teams();
         let mut component_name = None;
+        let mut links = Links::default();
         if let Some(enricher) = &self.backstage {
             let hints = hints_from_labels(&alert.labels, &self.component_keys);
             let text = format!("{} {}", alert.title, alert.description);
@@ -143,6 +183,8 @@ impl Triager {
             if enrichment.runbook.is_some() {
                 alert.runbook = enrichment.runbook;
             }
+            links.component = enrichment.component_url;
+            links.runbook = enrichment.runbook_url;
             alert.component = enrichment.component;
             owner_candidates = enrichment.candidates;
             tracing::debug!(
@@ -162,6 +204,14 @@ impl Triager {
             .await?;
         let answers = questions.read(&response)?;
         let decision = decide(&answers, &self.policy);
+        let time_to_qualify = time_since(io_alert.created_at.as_deref(), Timestamp::now());
+        if let (Some(enricher), Some(owner)) = (&self.backstage, decision.owner()) {
+            links.owner = owner
+                .entity_ref
+                .as_deref()
+                .and_then(|r| EntityRef::parse(r, "group"))
+                .map(|r| enricher.entity_url(&r));
+        }
 
         let mut tags = tags_for(&answers, &decision);
         let mut attached_to = None;
@@ -176,6 +226,7 @@ impl Triager {
                     id: inc.id.clone(),
                     reference: inc.reference.clone(),
                     confidence: *confidence,
+                    permalink: inc.permalink.clone(),
                 });
             } else {
                 tracing::warn!(
@@ -187,12 +238,33 @@ impl Triager {
 
         let applied = self.write_back == WriteBack::Apply;
         let mut notified = None;
+        let mut note_id = None;
         if applied {
             self.incidentio.add_alert_tags(&io_alert.id, &tags).await?;
             if let Some(a) = &attached_to {
                 self.incidentio
                     .attach_alert_to_incident(&io_alert.id, &a.id)
                     .await?;
+            }
+            if self.note {
+                let content = note::render(&NoteInput {
+                    alert: &io_alert,
+                    answers: &answers,
+                    decision: &decision,
+                    attached: attached_to.as_ref(),
+                    component: alert.component.as_ref(),
+                    links: &links,
+                    related: &alert.related_alerts,
+                    related_window: self.related_window,
+                    tags: &tags,
+                    time_to_qualify,
+                });
+                // The note is a convenience on top of the tags; its failure
+                // must not undo what was already written.
+                match self.write_note(&io_alert.id, &content).await {
+                    Ok(id) => note_id = Some(id),
+                    Err(e) => tracing::warn!(error = %e, "qualification note failed"),
+                }
             }
             if self.notify_owner
                 && let Some(enricher) = &self.backstage
@@ -223,6 +295,9 @@ impl Triager {
             component = ?component_name,
             attached = ?attached_to.as_ref().map(|a| &a.reference),
             notified = ?notified,
+            note = ?note_id,
+            related_alerts = alert.related_alerts.len(),
+            time_to_qualify_seconds = ?time_to_qualify.map(|d| d.as_secs_f64()),
             applied,
             model = %response.model,
             "alert triaged"
@@ -239,9 +314,101 @@ impl Triager {
             model: response.model,
             candidates_offered: candidates.len(),
             owner_candidates_offered: answers.candidates.len(),
+            related_alerts: alert.related_alerts.len(),
+            note_id,
+            time_to_qualify_seconds: time_to_qualify.map(|d| d.as_secs_f64()),
             applied,
         })
     }
+
+    /// Other alerts firing in the window, newest first, without this one.
+    async fn related_alerts(&self, io_alert: &IoAlert, now: Timestamp) -> Vec<RelatedAlert> {
+        if self.related_window.is_zero() || self.related_max == 0 {
+            return Vec::new();
+        }
+        let Ok(window) = SignedDuration::try_from(self.related_window) else {
+            return Vec::new();
+        };
+        let Ok(since) = now.checked_sub(window) else {
+            return Vec::new();
+        };
+        let since = since.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+        match self
+            .incidentio
+            .list_firing_alerts_since(&since, RELATED_PAGE)
+            .await
+        {
+            Ok(alerts) => related_from(
+                &alerts,
+                &io_alert.id,
+                &self.component_keys,
+                now,
+                self.related_max,
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "listing related alerts failed; continuing without");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Create the note, or rewrite the one signalman left on an earlier pass.
+    async fn write_note(&self, alert_id: &str, content: &str) -> super::error::Result<String> {
+        let existing = self.incidentio.list_alert_notes(alert_id).await?;
+        if let Some(mine) = existing
+            .iter()
+            .find(|n| note::is_signalman_note(&n.content))
+        {
+            let updated = self.incidentio.update_alert_note(&mine.id, content).await?;
+            return Ok(updated.id);
+        }
+        let created = self.incidentio.create_alert_note(alert_id, content).await?;
+        Ok(created.id)
+    }
+}
+
+/// Shape firing alerts as state, newest first, excluding `exclude_id`.
+pub fn related_from(
+    alerts: &[IoAlert],
+    exclude_id: &str,
+    component_keys: &[String],
+    now: Timestamp,
+    max: usize,
+) -> Vec<RelatedAlert> {
+    let mut related: Vec<(u64, RelatedAlert)> = alerts
+        .iter()
+        .filter(|a| a.id != exclude_id)
+        .map(|a| {
+            let age_minutes =
+                time_since(a.created_at.as_deref(), now).map_or(u64::MAX, |d| d.as_secs() / 60);
+            let labels = a.labels();
+            let component = hints_from_labels(&labels, component_keys)
+                .into_iter()
+                .next();
+            (
+                age_minutes,
+                RelatedAlert {
+                    title: a.title.clone(),
+                    age_minutes: if age_minutes == u64::MAX {
+                        0
+                    } else {
+                        age_minutes
+                    },
+                    component,
+                },
+            )
+        })
+        .collect();
+    related.sort_by_key(|(age, _)| *age);
+    related.into_iter().map(|(_, r)| r).take(max).collect()
+}
+
+/// Time from an RFC 3339 instant to `now`; `None` when absent, unparsable or
+/// in the future (clock skew is not a negative duration).
+pub fn time_since(created_at: Option<&str>, now: Timestamp) -> Option<Duration> {
+    let created: Timestamp = created_at?.parse().ok()?;
+    let elapsed = now.duration_since(created);
+    Duration::try_from(elapsed).ok()
 }
 
 /// Map an incident.io alert plus live incidents into the triage state.
@@ -271,6 +438,7 @@ pub fn to_triage_alert(io: &IoAlert, candidates: &[Incident]) -> Alert {
             })
             .collect(),
         component: None,
+        related_alerts: vec![],
     }
 }
 
@@ -383,5 +551,50 @@ mod tests {
         assert_eq!(alert.open_incidents[0].id, "INC-7");
         assert!(alert.source.contains("src"));
         assert!(alert.component.is_none());
+        assert!(alert.related_alerts.is_empty());
+    }
+
+    fn firing(id: &str, title: &str, created_at: &str) -> IoAlert {
+        IoAlert {
+            id: id.into(),
+            alert_source_id: "src".into(),
+            title: title.into(),
+            description: None,
+            status: AlertStatus::Firing,
+            deduplication_key: None,
+            source_url: None,
+            attributes: vec![],
+            tags: vec![],
+            created_at: Some(created_at.into()),
+        }
+    }
+
+    #[test]
+    fn related_alerts_exclude_self_sort_by_age_and_cap() {
+        let now: Timestamp = "2026-09-20T12:00:00Z".parse().unwrap();
+        let alerts = [
+            firing("me", "this one", "2026-09-20T11:59:00Z"),
+            firing("b", "older", "2026-09-20T11:40:00Z"),
+            firing("c", "newer", "2026-09-20T11:55:30Z"),
+            firing("d", "unparsable", "not a time"),
+        ];
+        let related = related_from(&alerts, "me", &default_hint_keys(), now, 2);
+        assert_eq!(related.len(), 2);
+        assert_eq!(related[0].title, "newer");
+        assert_eq!(related[0].age_minutes, 4);
+        assert_eq!(related[1].title, "older");
+        assert_eq!(related[1].age_minutes, 20);
+    }
+
+    #[test]
+    fn time_since_handles_missing_bad_and_future_instants() {
+        let now: Timestamp = "2026-09-20T12:00:00Z".parse().unwrap();
+        assert_eq!(
+            time_since(Some("2026-09-20T11:59:18Z"), now),
+            Some(Duration::from_secs(42))
+        );
+        assert_eq!(time_since(None, now), None);
+        assert_eq!(time_since(Some("yesterday"), now), None);
+        assert_eq!(time_since(Some("2026-09-20T12:00:01Z"), now), None);
     }
 }

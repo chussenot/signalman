@@ -26,6 +26,11 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 - Deterministic logic stays in code; the model answers narrow, atomic
   questions. Questions reference state by backticked path. Every Choice has
   a no-match option.
+- The qualification note (`src/incidentio/note.rs`) is a fixed template over
+  typed answers. It starts with the marker line and is replaced in place;
+  never let the model write its prose, never stack a second note.
+- Observability signals enter through incident.io (decision 0005). No Tsuga
+  client until its spec is read with an operation API key.
 - Wire types under `src/incidentio/types.rs` ignore unknown fields and
   default optional ones.
 - Tests never call a real API: wiremock for both clients, hand-built answers

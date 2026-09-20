@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use signalman::backstage::enrich::{default_hint_keys, hints_from_labels};
@@ -51,6 +52,8 @@ enum Command {
         /// human-triage decisions (env: BACKSTAGE_NOTIFY).
         #[arg(long, env = "BACKSTAGE_NOTIFY", default_value_t = false)]
         notify_owners: bool,
+        #[command(flatten)]
+        flow: FlowArgs,
     },
     /// incident.io utilities.
     #[command(subcommand)]
@@ -89,6 +92,25 @@ struct TriageArgs {
     json: bool,
 }
 
+/// Knobs of the incident.io flow shared by `serve` and `incidentio triage-alert`.
+#[derive(Args, Clone)]
+struct FlowArgs {
+    /// Do not write the qualification note on the alert (env: `SIGNALMAN_NO_NOTE`).
+    #[arg(long, env = "SIGNALMAN_NO_NOTE", default_value_t = false)]
+    no_note: bool,
+    /// Minutes back to look for other firing alerts; 0 disables the lookup
+    /// (env: `SIGNALMAN_RELATED_WINDOW_MINUTES`).
+    #[arg(long, env = "SIGNALMAN_RELATED_WINDOW_MINUTES", default_value_t = 30)]
+    related_window_minutes: u64,
+}
+
+impl FlowArgs {
+    fn apply(&self, triager: &mut Triager) {
+        triager.note = !self.no_note;
+        triager.related_window = Duration::from_secs(self.related_window_minutes * 60);
+    }
+}
+
 #[derive(Subcommand)]
 enum IncidentIoCommand {
     /// Show which API key is configured and its roles.
@@ -106,6 +128,8 @@ enum IncidentIoCommand {
         /// Compute but write nothing back.
         #[arg(long)]
         dry_run: bool,
+        #[command(flatten)]
+        flow: FlowArgs,
     },
 }
 
@@ -162,7 +186,8 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             insecure_skip_verify,
             dry_run,
             notify_owners,
-        } => serve(addr, insecure_skip_verify, dry_run, notify_owners).await,
+            flow,
+        } => serve(addr, insecure_skip_verify, dry_run, notify_owners, &flow).await,
         Command::Incidentio(cmd) => incidentio_cmd(cmd).await,
         Command::Backstage(cmd) => backstage_cmd(cmd).await,
     }
@@ -318,6 +343,7 @@ async fn serve(
     insecure_skip_verify: bool,
     dry_run: bool,
     notify_owners: bool,
+    flow: &FlowArgs,
 ) -> Result<(), AnyError> {
     let secret = if insecure_skip_verify {
         None
@@ -335,6 +361,7 @@ async fn serve(
     if dry_run {
         triager.write_back = WriteBack::DryRun;
     }
+    flow.apply(&mut triager);
     let app = router(Arc::new(AppState::new(secret, triager)));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, dry_run, "listening for incident.io webhooks at /webhooks/incidentio");
@@ -386,7 +413,11 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
                 );
             }
         }
-        IncidentIoCommand::TriageAlert { alert_id, dry_run } => {
+        IncidentIoCommand::TriageAlert {
+            alert_id,
+            dry_run,
+            flow,
+        } => {
             let mut triager = Triager::new(Client::from_env()?, io);
             if backstage::Client::is_configured() {
                 triager.backstage = Some(Enricher::new(backstage::Client::from_env()?));
@@ -394,6 +425,7 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
             if dry_run {
                 triager.write_back = WriteBack::DryRun;
             }
+            flow.apply(&mut triager);
             let outcome = triager.triage_alert_by_id(&alert_id).await?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
         }

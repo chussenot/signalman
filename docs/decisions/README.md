@@ -16,6 +16,7 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0002](0002-calibrated-judgments-over-generated-text.md) | Calibrated judgments over generated text | accepted | |
 | [0003](0003-typed-handles-between-questions-and-answers.md) | Typed handles between questions and answers | accepted | |
 | [0004](0004-catalog-is-the-ownership-source-of-truth.md) | The catalog is the ownership source of truth | accepted | |
+| [0005](0005-observability-signals-enter-through-incidentio.md) | Observability signals enter through incident.io | accepted | `signalman-3l7.4` |
 
 ## Writing a record
 

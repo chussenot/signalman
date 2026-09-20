@@ -210,6 +210,7 @@ mod tests {
             recent_changes: vec!["deploy".into()],
             open_incidents: vec![],
             component: None,
+            related_alerts: vec![],
         };
         if open_incident {
             alert.open_incidents.push(OpenIncident {

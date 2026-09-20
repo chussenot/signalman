@@ -71,6 +71,7 @@ sequenceDiagram
     R->>F: spawn triage(alert id)
     F->>IO: GET alert by id
     F->>IO: GET incidents in triage, live, paused
+    F->>IO: GET alerts firing in the window
     opt Backstage configured
         F->>BS: resolve component, neighbours, owner groups
         F->>BS: TechDocs search index
@@ -82,12 +83,13 @@ sequenceDiagram
     opt decision is attach
         F->>IO: attach alert to incident
     end
+    F->>IO: list notes, then create or replace the qualification note
     opt notifications enabled and decision needs a person
         F->>BS: notify owner group
     end
 ```
 
-Fetching the alert and the incidents fresh (steps 5 and 6) is what makes delivery order irrelevant. The webhook carries an id and a snapshot; only the id is used.
+Fetching the alert and the incidents fresh (steps 5 and 6) is what makes delivery order irrelevant. The webhook carries an id and a snapshot; only the id is used. Step 7 is context and degrades to an empty list on failure; the note is a convenience on top of the tags and its failure is logged, not propagated.
 
 ## Boundaries
 

@@ -9,6 +9,7 @@ use signalman::RetryPolicy;
 use signalman::incidentio::types::{AlertEvent, AlertStatus};
 use signalman::incidentio::{Client, Error};
 use wiremock::matchers::{body_json, header, method, path, query_param};
+
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn client(server: &MockServer) -> Client {
@@ -206,4 +207,75 @@ async fn unauthorized_is_not_retried() {
         client(&server).identity().await,
         Err(Error::Unauthorized { .. })
     ));
+}
+
+#[tokio::test]
+async fn firing_alerts_and_alert_notes_use_documented_shapes() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .and(header("authorization", "Bearer inc-key"))
+        .and(query_param("status[one_of]", "firing"))
+        .and(query_param("created_at[gte]", "2026-09-20T11:30:00Z"))
+        .and(query_param("page_size", "50"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alerts": [{ "id": "a2", "alert_source_id": "s", "title": "Other", "status": "firing",
+                         "attributes": [], "tags": [], "created_at": "2026-09-20T11:45:00Z" }],
+            "pagination_meta": { "page_size": 50 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .and(query_param("alert_id", "a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert_notes": [
+                { "id": "n1", "alert_id": "a1", "content": "**Signalman qualification**\n\nold",
+                  "created_at": "2026-09-20T11:00:00Z", "creator": { "api_key": { "id": "k", "name": "signalman" } } },
+                { "id": "n2", "alert_group_id": "g1", "content": "group note" }
+            ],
+            "pagination_meta": { "page_size": 50 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alert_notes"))
+        .and(body_json(json!({ "alert_id": "a1", "content": "# new" })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "alert_note": { "id": "n3", "alert_id": "a1", "content": "# new" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/alert_notes/n1"))
+        .and(body_json(json!({ "content": "# replaced" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert_note": { "id": "n1", "alert_id": "a1", "content": "# replaced" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let c = client(&server);
+    let firing = c
+        .list_firing_alerts_since("2026-09-20T11:30:00Z", 50)
+        .await
+        .unwrap();
+    assert_eq!(firing.len(), 1);
+    assert_eq!(
+        firing[0].created_at.as_deref(),
+        Some("2026-09-20T11:45:00Z")
+    );
+
+    let notes = c.list_alert_notes("a1").await.unwrap();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[1].alert_id, None);
+
+    let created = c.create_alert_note("a1", "# new").await.unwrap();
+    assert_eq!(created.id, "n3");
+    let replaced = c.update_alert_note("n1", "# replaced").await.unwrap();
+    assert_eq!(replaced.content, "# replaced");
 }

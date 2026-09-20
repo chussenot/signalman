@@ -32,6 +32,10 @@ Thresholds are untuned defaults. The plan: an evaluation harness over labelled h
 
 Delivered against mocks. Open: candidate filtering by domain or system for large catalogs; `recent_changes` from the `github`, `argocd` or `flux` plugins; a frontend card showing signalman's last decision per component.
 
+## Mean time to qualify (`signalman-3l7`)
+
+Delivered against mocks: the qualification note, related firing alerts in the state and the note, and the time to qualify in the outcome. Deferred: the on-call person for the owner in the note, through incident.io schedules mapped from a group annotation (`signalman-3l7.5`); a direct Tsuga client, which waits for an operation API key to read the spec at `/v0/open-api` (`signalman-3l7.6`, [decision 0005](decisions/0005-observability-signals-enter-through-incidentio.md)).
+
 ## incident.io coverage (`signalman-5s9`)
 
 Incident-created events are parsed but not acted on; the intended first use is a severity suggestion posted as a timeline note. Resolved events are not forwarded by the CLI. Private alerts are ignored.

@@ -42,6 +42,23 @@ pub struct Alert {
     /// The alerting component as the software catalog knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<ComponentContext>,
+    /// Other alerts firing in the recent window: the blast radius as the
+    /// alert hub sees it right now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_alerts: Vec<RelatedAlert>,
+}
+
+/// Another alert firing in the same window. Kept to what the impact question
+/// and a responder need: what, how long ago, on which component.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelatedAlert {
+    /// Title.
+    pub title: String,
+    /// Minutes since it was created.
+    pub age_minutes: u64,
+    /// Component label, when the alert carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
 }
 
 /// A currently open incident that the alert may belong to.

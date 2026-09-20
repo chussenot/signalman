@@ -46,6 +46,8 @@ signalman triage examples/alerts/dns.json --print-request  # exact TypeSafe requ
 |---|---|---|
 | incident.io API key | 1,200 requests/min | shared by all calls |
 | incident.io list incidents | 60 requests/min | one call per triage; the binding limit at volume |
+| incident.io list alerts | shared key limit | one call per triage for related firing alerts; `--related-window-minutes 0` removes it |
+| incident.io alert notes | shared key limit | two calls per triage: list, then create or replace; `--no-note` removes both |
 | incident.io alert source events | 60 burst, 120/min per source | `--forward-to-incidentio` only |
 | TypeSafe | 1,200 requests/min; 64k tokens per request | one request per triage, roughly 1 to 4k tokens with catalog context |
 | Backstage | instance dependent | up to five catalog calls and one TechDocs call per triage |
