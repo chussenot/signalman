@@ -100,7 +100,7 @@ sequenceDiagram
     else Suppress or AttachToIncident
         F->>F: no notification
     end
-    Note over F,BS: a failed notification is logged; the tags already written stay
+    Note over F,BS: a failed notification is logged and the tags already written stay
 ```
 
 | Decision | Title | Severity |
