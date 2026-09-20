@@ -1,53 +1,117 @@
 ---
 title: Configuration
-description: Every environment variable signalman reads, which commands need it, its default, and where to obtain the value.
+description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
 last_reviewed: 2026-09-20
-tags: [configuration]
+tags: [configuration, kubernetes]
 ---
 
 # Configuration
 
-Configuration is environment variables only. mise loads `.env` when present (`[env] _.file` in `mise.toml`). `.env` is gitignored, a pre-commit hook refuses to commit it, and `.env.example` documents every variable.
+signalman resolves every setting once, at start-up, from four layers. A later layer wins:
 
-## TypeSafe
+| Layer | Purpose | Example |
+|---|---|---|
+| 1. Built-in default | runs with nothing configured | `127.0.0.1:8080` |
+| 2. Configuration file (TOML) | the reviewed shape of a deployment: URLs, thresholds, wording, team list | a `ConfigMap` mounted at `/etc/signalman/config.toml` |
+| 3. Environment variable | how one deployment or one operator deviates from the file without editing it | `SIGNALMAN_RELATED_WINDOW_MINUTES=10` |
+| 4. Command-line flag | a one-off for the person at the keyboard | `--dry-run`, `--related-window-minutes 0` |
 
-| Variable | Required by | Default | Source |
-|---|---|---|---|
-| `TYPESAFE_API_KEY` | everything that calls the model | | console.typesafe.ai/keys |
-| `TYPESAFE_BASE_URL` | | `https://api.typesafe.ai` | tests, proxies |
-| `TYPESAFE_DEFAULT_MODEL` | | `jev-latest` | pin a version once thresholds are tuned |
+The file sits below the environment on purpose: the file is shared and reviewed, the environment is local to a pod or a shell. An empty environment variable counts as unset, because Kubernetes and shells often export a name with no value. A set variable that does not parse is an error naming the variable, its value and the file key it maps to; it never falls back to a default. `src/config.rs` is the only module that reads a non-secret environment variable, so this page describes one function ([decision 0006](decisions/0006-layered-configuration.md)).
 
-## incident.io
+## Secrets
 
-| Variable | Required by | Default | Source |
-|---|---|---|---|
-| `INCIDENTIO_API_KEY` | `serve`, `incidentio *`, `triage --dedup-from-incidentio` | | Settings → API keys; scopes: view alerts, view incidents, manage alert tags, manage incident alerts, manage alert notes |
-| `INCIDENTIO_BASE_URL` | | `https://api.incident.io` | tests, proxies |
-| `INCIDENTIO_WEBHOOK_SECRET` | `serve` unless `--insecure-skip-verify` | | Settings → Webhooks → endpoint → signing secret, `whsec_...` |
-| `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` | `triage --forward-to-incidentio` | | the HTTP alert source's id |
-| `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | | the HTTP alert source's secret token |
+Secrets are environment only. The file schema has no key for them; `api_key = …` in the file is rejected as an unknown key. `signalman config show` never prints them.
 
-The API key is never used for alert-source events; those use the source token.
+| Variable | Required by | Source |
+|---|---|---|
+| `TYPESAFE_API_KEY` | everything that calls the model | console.typesafe.ai/keys |
+| `INCIDENTIO_API_KEY` | `serve`, `incidentio *`, `triage --dedup-from-incidentio` | Settings → API keys; scopes: view alerts, view incidents, manage alert tags, manage incident alerts, manage alert notes |
+| `INCIDENTIO_WEBHOOK_SECRET` | `serve` unless `--insecure-skip-verify` | Settings → Webhooks → endpoint → signing secret, `whsec_...` |
+| `INCIDENTIO_ALERT_SOURCE_CONFIG_ID`, `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's id and token |
+| `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
 
-## Backstage
+Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 
-| Variable | Required by | Default | Source |
-|---|---|---|---|
-| `BACKSTAGE_BASE_URL` | `serve` (enables enrichment when set), `triage --enrich-from-backstage`, `backstage lookup` | | backend URL without `/api` |
-| `BACKSTAGE_TOKEN` | same | | `backend.auth.externalAccess` static token; optional for unauthenticated development backends |
-| `BACKSTAGE_NAMESPACE` | same | `default` | namespace tried first for bare component names |
-| `BACKSTAGE_NOTIFY` | `serve` | `false` | notify the owning group after page, ticket and human-triage decisions; also `--notify-owners` |
-| `BACKSTAGE_APP_URL` | links in the qualification note | `BACKSTAGE_BASE_URL` | the frontend URL when it differs from the backend, for example `https://backstage.example.com` against `https://backstage-backend.example.com` |
-| `SIGNALMAN_COMPONENT_KEYS` | enrichment | `component,service,app,application` | alert attribute or label names that carry the component identity |
+## The file
+
+TOML, every key optional, unknown keys rejected. Location, first match wins: `--config PATH`, then `SIGNALMAN_CONFIG`, then `./signalman.toml`, then `/etc/signalman/config.toml`. A file named explicitly must exist; the implicit paths may be absent. [`examples/config/signalman.toml`](https://github.com/chussenot/rustsafe/blob/main/examples/config/signalman.toml) shows every key with its default and the variable that overrides it.
+
+## Settings
+
+### `[server]`
+
+| File key | Environment | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `server.addr` | `SIGNALMAN_ADDR` | `serve --addr` | `127.0.0.1:8080` | listen address |
+
+### `[typesafe]`
+
+| File key | Environment | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `typesafe.base_url` | `TYPESAFE_BASE_URL` | | `https://api.typesafe.ai` | tests, proxies |
+| `typesafe.model` | `TYPESAFE_DEFAULT_MODEL` | `triage --model` | `jev-latest` | pin a version once thresholds are tuned |
+| `typesafe.timeout_seconds` | `TYPESAFE_TIMEOUT_SECONDS` | | `10` | per-attempt timeout |
+
+### `[incidentio]`
+
+| File key | Environment | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `incidentio.base_url` | `INCIDENTIO_BASE_URL` | | `https://api.incident.io` | tests, proxies |
+| `incidentio.max_candidates` | `SIGNALMAN_MAX_CANDIDATES` | `incidentio open-incidents --max` | `40` | open incidents offered as dedup candidates |
+
+### `[backstage]`
+
+Setting `backstage.base_url` (or its variable) turns catalog enrichment on.
+
+| File key | Environment | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `backstage.base_url` | `BACKSTAGE_BASE_URL` | | unset | backend URL without `/api` |
+| `backstage.app_url` | `BACKSTAGE_APP_URL` | | `base_url` | frontend URL for links in the qualification note |
+| `backstage.namespace` | `BACKSTAGE_NAMESPACE` | | `default` | namespace tried first for bare component names |
+| `backstage.component_keys` | `SIGNALMAN_COMPONENT_KEYS` (comma-separated) | | `component,service,app,application,Service,Component` | alert attribute or label names carrying the component identity |
+| `backstage.notify` | `BACKSTAGE_NOTIFY` | `serve --notify-owners` | `false` | notify the owning group after page, ticket and human-triage decisions |
+
+### `[flow]`
+
+| File key | Environment | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `flow.note` | `SIGNALMAN_NOTE` | `--no-note` | `true` | write the qualification note |
+| `flow.related_window_minutes` | `SIGNALMAN_RELATED_WINDOW_MINUTES` | `--related-window-minutes` | `30` | window for related firing alerts; `0` disables the lookup |
+| `flow.related_max` | `SIGNALMAN_RELATED_MAX` | | `20` | cap on related alerts put in the state |
+
+### `[policy]`, file only
+
+Routing thresholds; absent keys keep their defaults. Every probability is validated to `0..=1`, and `human_below_confidence` may not exceed `auto_route_confidence`. What each one does is in [Triage](triage.md#the-decision).
+
+| File key | Default |
+|---|---|
+| `policy.suppress_below` | `0.25` |
+| `policy.attach_confidence` | `0.75` |
+| `policy.auto_route_confidence` | `0.70` |
+| `policy.human_below_confidence` | `0.40` |
+| `policy.page_at` | `"major"` (`none`, `minor`, `major`, `outage`) |
+| `policy.flag_change_above` | `0.65` |
+
+### `[triage]`, file only
+
+`[triage.text]` overrides the wording of any question: `owner_question`, `owner_guidance`, `owner_catalog_guidance`, `impact_question`, `impact_related_context`, `impact_levels` (exactly four, lowest first), `actionable_question`, `actionable_yes`, `actionable_no`, `duplicate_question`, `duplicate_none`, `change_question`. The set of questions and their types are not configurable; [Triage](triage.md#what-is-configurable) explains why.
+
+`[[triage.teams]]` entries (`key`, `label`, `description`) replace the built-in fallback owner list used when no catalog is configured or nothing in it matched. `none_of_these` is appended automatically and may not be defined.
+
+Thresholds and wording have no environment variables: they are reviewed as a unit in the file, not toggled per pod.
 
 ## Process
 
-| Variable | Required by | Default | Source |
-|---|---|---|---|
-| `SIGNALMAN_ADDR` | `serve` | `127.0.0.1:8080` | |
-| `SIGNALMAN_NO_NOTE` | `serve`, `incidentio triage-alert` | `false` | skip the qualification note; also `--no-note` |
-| `SIGNALMAN_RELATED_WINDOW_MINUTES` | `serve`, `incidentio triage-alert` | `30` | window for related firing alerts; `0` disables the lookup; also `--related-window-minutes` |
-| `RUST_LOG` | | `info` | tracing filter, for example `signalman=debug` |
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIGNALMAN_CONFIG` | | path of the configuration file when `--config` is not given |
+| `RUST_LOG` | `info` | tracing filter, for example `signalman=debug` |
 
-Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client.
+## Validating before rollout
+
+```sh
+signalman config show --config deploy/config.toml
+```
+
+prints the effective configuration as TOML after every layer, headed by the file used and the environment variables that contributed, and exits non-zero on an unknown key, a wrong type, an out-of-range threshold or an unparsable variable. Run it in the pipeline that renders the `ConfigMap`. Locally, mise loads `.env` when present (`[env] _.file` in `mise.toml`); `.env` is gitignored, a pre-commit hook refuses to commit it, and `.env.example` lists the secrets and the most common variables.

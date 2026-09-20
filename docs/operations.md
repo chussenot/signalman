@@ -15,9 +15,10 @@ signalman serve --addr 0.0.0.0:8080                 # production shape
 signalman serve --dry-run                            # decide, write nothing
 signalman serve --notify-owners                      # also notify groups through Backstage
 signalman serve --insecure-skip-verify               # local only; logs a warning on start
+signalman serve --config /etc/signalman/config.toml  # explicit file; see Configuration for the search order
 ```
 
-Startup fails fast when a required variable is missing. The process exits cleanly on SIGTERM or Ctrl-C. Backstage enrichment is on whenever `BACKSTAGE_BASE_URL` is set.
+Startup fails fast on a missing secret, an unknown key in the configuration file or an unparsable environment value. The process exits cleanly on SIGTERM or Ctrl-C. Backstage enrichment is on whenever `backstage.base_url` is set, in the file or through `BACKSTAGE_BASE_URL`.
 
 ## Endpoints
 
@@ -36,9 +37,83 @@ signalman incidentio open-incidents                      # dedup candidates as t
 signalman incidentio triage-alert <alert id> --dry-run   # the webhook flow for one alert, no write-back
 signalman backstage lookup <component> --text "<alert>"  # what the catalog contributes
 signalman triage examples/alerts/dns.json --print-request  # exact TypeSafe request, no call
+signalman config show                                    # effective configuration after every layer
 ```
 
 `incidentio triage-alert` is also the way to retry a triage that failed after the webhook was acknowledged.
+
+## Kubernetes
+
+The shape of a deployment is a `ConfigMap`; the secrets are a `Secret`; a change to either rolls the pods. Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signalman-config
+data:
+  config.toml: |
+    [server]
+    addr = "0.0.0.0:8080"
+    [backstage]
+    base_url = "http://backstage-backend.backstage.svc:7007"
+    app_url = "https://backstage.example.com"
+    notify = true
+    [policy]
+    page_at = "major"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: signalman-secrets
+type: Opaque
+stringData:
+  TYPESAFE_API_KEY: "…"
+  INCIDENTIO_API_KEY: "…"
+  INCIDENTIO_WEBHOOK_SECRET: "whsec_…"
+  BACKSTAGE_TOKEN: "…"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signalman
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: signalman }
+  template:
+    metadata:
+      labels: { app: signalman }
+      annotations:
+        # Rendered by the pipeline (Helm: sha256sum of the ConfigMap); a
+        # changed value rolls the pods, which is how a new config takes effect.
+        checksum/config: "<sha256 of config.toml>"
+    spec:
+      containers:
+        - name: signalman
+          image: ghcr.io/example/signalman:0.4.0
+          args: ["serve"]                       # finds /etc/signalman/config.toml
+          envFrom:
+            - secretRef: { name: signalman-secrets }
+          env:
+            - name: SIGNALMAN_RELATED_WINDOW_MINUTES   # a per-environment override, above the file
+              value: "15"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/signalman
+              readOnly: true
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }   # no upstream check yet (roadmap)
+      volumes:
+        - name: config
+          configMap: { name: signalman-config }
+```
+
+Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold. There is no hot reload by design: a rollout is the unit of change, visible in the deployment history.
 
 ## Limits that bound throughput
 

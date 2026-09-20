@@ -16,11 +16,12 @@ use serde::Serialize;
 use super::client::Client as IncidentIo;
 use super::note::{self, Links, NoteInput};
 use super::types::{Alert as IoAlert, Incident};
-use crate::backstage::enrich::{default_hint_keys, hints_from_labels};
+use crate::backstage::enrich::hints_from_labels;
 use crate::backstage::{Enricher, EntityRef};
+use crate::config::DEFAULT_COMPONENT_KEYS;
 use crate::triage::{
-    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, TriageAnswers,
-    TriageQuestions, decide,
+    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, Texts,
+    TriageAnswers, TriageQuestions, decide,
 };
 
 /// Prefix for every tag this integration writes, so they can be filtered in
@@ -66,6 +67,10 @@ pub struct Triager {
     pub notify_owner: bool,
     /// Routing thresholds.
     pub policy: Policy,
+    /// Question text.
+    pub texts: Texts,
+    /// Owner candidates when no catalog is configured or nothing matched.
+    pub fallback_owners: OwnerCandidates,
     /// Candidate cap for dedup.
     pub max_candidates: usize,
     /// Apply or dry-run.
@@ -136,9 +141,11 @@ impl Triager {
             backstage: None,
             notify_owner: false,
             policy: Policy::default(),
+            texts: Texts::default(),
+            fallback_owners: OwnerCandidates::from_teams(),
             max_candidates: DEFAULT_CANDIDATES,
             write_back: WriteBack::Apply,
-            component_keys: default_hint_keys(),
+            component_keys: DEFAULT_COMPONENT_KEYS.map(String::from).to_vec(),
             note: true,
             related_window: DEFAULT_RELATED_WINDOW,
             related_max: DEFAULT_RELATED_MAX,
@@ -172,7 +179,7 @@ impl Triager {
         alert.related_alerts = self.related_alerts(&io_alert, now).await;
 
         // Catalog enrichment: component context, owner candidates, runbook.
-        let mut owner_candidates = OwnerCandidates::from_teams();
+        let mut owner_candidates = self.fallback_owners.clone();
         let mut component_name = None;
         let mut links = Links::default();
         if let Some(enricher) = &self.backstage {
@@ -196,7 +203,8 @@ impl Triager {
             );
         }
 
-        let questions = TriageQuestions::for_alert_with(&alert, owner_candidates)?;
+        let questions =
+            TriageQuestions::for_alert_with_texts(&alert, owner_candidates, &self.texts)?;
         let state = TriageQuestions::state(&alert);
         let response = self
             .typesafe
@@ -578,7 +586,8 @@ mod tests {
             firing("c", "newer", "2026-09-20T11:55:30Z"),
             firing("d", "unparsable", "not a time"),
         ];
-        let related = related_from(&alerts, "me", &default_hint_keys(), now, 2);
+        let keys = DEFAULT_COMPONENT_KEYS.map(String::from);
+        let related = related_from(&alerts, "me", &keys, now, 2);
         assert_eq!(related.len(), 2);
         assert_eq!(related[0].title, "newer");
         assert_eq!(related[0].age_minutes, 4);

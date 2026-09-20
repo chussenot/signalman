@@ -1,0 +1,66 @@
+# signalman configuration file (TOML).
+#
+# Every key is optional. Precedence, lowest to highest: built-in default,
+# this file, environment variable, command-line flag. Secrets are never read
+# from this file: TYPESAFE_API_KEY, INCIDENTIO_API_KEY, INCIDENTIO_WEBHOOK_SECRET
+# and BACKSTAGE_TOKEN come from the environment (a Kubernetes Secret).
+#
+# `signalman config show --config examples/config/signalman.toml` prints the
+# effective result. Unknown keys are rejected at start-up.
+
+[server]
+addr = "0.0.0.0:8080"                 # SIGNALMAN_ADDR, --addr
+
+[typesafe]
+# base_url = "https://api.typesafe.ai" # TYPESAFE_BASE_URL
+model = "jev-latest"                   # TYPESAFE_DEFAULT_MODEL, --model; pin a version once tuned
+timeout_seconds = 10                   # TYPESAFE_TIMEOUT_SECONDS
+
+[incidentio]
+# base_url = "https://api.incident.io" # INCIDENTIO_BASE_URL
+max_candidates = 40                    # SIGNALMAN_MAX_CANDIDATES; open incidents offered for dedup
+
+[backstage]
+# Setting base_url turns catalog enrichment on.
+base_url = "https://backstage-backend.example.com"   # BACKSTAGE_BASE_URL
+app_url = "https://backstage.example.com"            # BACKSTAGE_APP_URL; links in the note
+namespace = "default"                                # BACKSTAGE_NAMESPACE
+component_keys = ["component", "service", "app", "application", "Service", "Component"]  # SIGNALMAN_COMPONENT_KEYS
+notify = false                                       # BACKSTAGE_NOTIFY, --notify-owners
+
+[flow]
+note = true                            # SIGNALMAN_NOTE, --no-note
+related_window_minutes = 30            # SIGNALMAN_RELATED_WINDOW_MINUTES, --related-window-minutes; 0 disables
+related_max = 20                       # SIGNALMAN_RELATED_MAX
+
+# Routing thresholds. File only. Absent keys keep the built-in defaults.
+[policy]
+suppress_below = 0.25                  # actionable probability below which the alert is suppressed
+attach_confidence = 0.75               # dedup confidence needed to attach to an open incident
+auto_route_confidence = 0.70           # owner confidence at or above which routing is automatic
+human_below_confidence = 0.40          # owner confidence below which a person triages
+page_at = "major"                      # impact at or above which the owner is paged: none, minor, major, outage
+flag_change_above = 0.65               # caused_by_change probability above which the change is flagged
+
+# Question wording. File only. Any subset; the set of questions and their
+# types are code. impact_levels must keep exactly four entries, lowest first.
+[triage.text]
+# actionable_question = "Does `alert` describe a condition that a person must act on now, rather than informational or self-resolving noise?"
+# impact_levels = [
+#   "No user-facing impact: internal, informational, or affects only non-production",
+#   "Degraded experience for a small subset of users or one non-critical feature",
+#   "Degraded or failing for most users, or a critical feature is unavailable",
+#   "Full outage: the product is unavailable or data integrity is at risk for everyone",
+# ]
+
+# Fallback owner candidates when no catalog is configured or nothing matched.
+# Replaces the built-in list entirely. `none_of_these` is appended automatically.
+[[triage.teams]]
+key = "platform"
+label = "Platform"
+description = "Kubernetes, cluster add-ons, CI/CD, internal developer platform, cloud accounts and quotas"
+
+[[triage.teams]]
+key = "application"
+label = "Application"
+description = "A product service's own code or configuration: errors, latency, business logic"

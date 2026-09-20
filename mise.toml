@@ -79,6 +79,10 @@ run = "cargo run -- serve {{arg(name='flags', var=true, default='')}}"
 description = "Triage one alert file, e.g. `mise run triage examples/alerts/dns.json -- --json`"
 run = "cargo run -- triage {{arg(name='alert')}} {{arg(name='flags', var=true, default='')}}"
 
+[tasks."config:show"]
+description = "Print the effective configuration after file, environment and flags"
+run = "cargo run -q -- config show"
+
 [tasks."triage:examples"]
 description = "Print the TypeSafe request for every example alert without calling any API"
 run = """

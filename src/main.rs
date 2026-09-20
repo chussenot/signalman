@@ -1,5 +1,13 @@
 //! CLI: triage alerts with TypeSafe, integrate with incident.io and Backstage,
 //! serve webhooks.
+//!
+//! Every setting is resolved once by [`Config`] in this order, later wins:
+//! built-in default, configuration file, environment variable, command-line
+//! flag. Flags here are therefore all optional; their absence means "use the
+//! next layer". Secrets never come from the file.
+
+// Doc comments on the CLI types are `--help` text, shown verbatim: no backticks.
+#![allow(clippy::doc_markdown)]
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -7,16 +15,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand};
-use signalman::backstage::enrich::{default_hint_keys, hints_from_labels};
+use clap::{ArgAction, Args, Parser, Subcommand};
+use signalman::backstage::enrich::hints_from_labels;
 use signalman::backstage::{self, Enricher};
+use signalman::config::{Config, Overrides};
 use signalman::incidentio::types::{AlertEvent, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
 use signalman::serve::{AppState, router};
-use signalman::triage::{
-    Alert, Decision, OpenIncident, OwnerCandidates, Policy, TriageAnswers, TriageQuestions, decide,
-};
+use signalman::triage::{Alert, Decision, OpenIncident, TriageAnswers, TriageQuestions, decide};
 use signalman::{Client, Request, Response};
 use tracing_subscriber::EnvFilter;
 
@@ -24,9 +31,16 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "signalman",
     version,
-    about = "TypeSafe-powered alert triage with incident.io and Backstage"
+    about = "TypeSafe-powered alert triage with incident.io and Backstage",
+    after_help = "Precedence, lowest to highest: built-in default, configuration file, \
+environment variable, flag. Secrets (TYPESAFE_API_KEY, INCIDENTIO_API_KEY, \
+INCIDENTIO_WEBHOOK_SECRET, BACKSTAGE_TOKEN) are environment only."
 )]
 struct Cli {
+    /// Configuration file (TOML). Otherwise SIGNALMAN_CONFIG, then
+    /// ./signalman.toml, then /etc/signalman/config.toml when present.
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -39,9 +53,9 @@ enum Command {
     Models,
     /// Receive incident.io webhooks and triage new alerts.
     Serve {
-        /// Listen address.
-        #[arg(long, env = "SIGNALMAN_ADDR", default_value = "127.0.0.1:8080")]
-        addr: SocketAddr,
+        /// Listen address [file: server.addr, env: SIGNALMAN_ADDR, default: 127.0.0.1:8080].
+        #[arg(long)]
+        addr: Option<SocketAddr>,
         /// Accept unsigned deliveries. Local development only.
         #[arg(long)]
         insecure_skip_verify: bool,
@@ -49,9 +63,9 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Notify the owning group through Backstage after page, ticket and
-        /// human-triage decisions (env: BACKSTAGE_NOTIFY).
-        #[arg(long, env = "BACKSTAGE_NOTIFY", default_value_t = false)]
-        notify_owners: bool,
+        /// human-triage decisions [file: backstage.notify, env: BACKSTAGE_NOTIFY].
+        #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+        notify_owners: Option<bool>,
         #[command(flatten)]
         flow: FlowArgs,
     },
@@ -61,6 +75,9 @@ enum Command {
     /// Backstage catalog utilities.
     #[command(subcommand)]
     Backstage(BackstageCommand),
+    /// Configuration utilities.
+    #[command(subcommand)]
+    Config(ConfigCommand),
 }
 
 #[derive(Args)]
@@ -68,9 +85,9 @@ enum Command {
 struct TriageArgs {
     /// Path to an alert JSON document.
     alert: PathBuf,
-    /// Model name or alias (env: TYPESAFE_DEFAULT_MODEL).
-    #[arg(long, env = "TYPESAFE_DEFAULT_MODEL", default_value = signalman::client::DEFAULT_MODEL)]
-    model: String,
+    /// Model name or alias [file: typesafe.model, env: TYPESAFE_DEFAULT_MODEL, default: jev-latest].
+    #[arg(long)]
+    model: Option<String>,
     /// Replace `open_incidents` with the live incidents from incident.io.
     #[arg(long)]
     dedup_from_incidentio: bool,
@@ -93,21 +110,24 @@ struct TriageArgs {
 }
 
 /// Knobs of the incident.io flow shared by `serve` and `incidentio triage-alert`.
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Default)]
 struct FlowArgs {
-    /// Do not write the qualification note on the alert (env: `SIGNALMAN_NO_NOTE`).
-    #[arg(long, env = "SIGNALMAN_NO_NOTE", default_value_t = false)]
+    /// Do not write the qualification note [file: flow.note, env: SIGNALMAN_NOTE].
+    #[arg(long, action = ArgAction::SetTrue)]
     no_note: bool,
     /// Minutes back to look for other firing alerts; 0 disables the lookup
-    /// (env: `SIGNALMAN_RELATED_WINDOW_MINUTES`).
-    #[arg(long, env = "SIGNALMAN_RELATED_WINDOW_MINUTES", default_value_t = 30)]
-    related_window_minutes: u64,
+    /// [file: flow.related_window_minutes, env: SIGNALMAN_RELATED_WINDOW_MINUTES, default: 30].
+    #[arg(long, value_name = "MINUTES")]
+    related_window_minutes: Option<u64>,
 }
 
 impl FlowArgs {
-    fn apply(&self, triager: &mut Triager) {
-        triager.note = !self.no_note;
-        triager.related_window = Duration::from_secs(self.related_window_minutes * 60);
+    fn overrides(&self) -> Overrides {
+        Overrides {
+            note: self.no_note.then_some(false),
+            related_window_minutes: self.related_window_minutes,
+            ..Overrides::default()
+        }
     }
 }
 
@@ -117,9 +137,9 @@ enum IncidentIoCommand {
     Whoami,
     /// List the incidents offered as dedup candidates.
     OpenIncidents {
-        /// Maximum to fetch.
-        #[arg(long, default_value_t = 40)]
-        max: usize,
+        /// Maximum to fetch [file: incidentio.max_candidates, env: SIGNALMAN_MAX_CANDIDATES, default: 40].
+        #[arg(long)]
+        max: Option<usize>,
     },
     /// Run the webhook flow for one existing alert by id.
     TriageAlert {
@@ -144,6 +164,15 @@ enum BackstageCommand {
         #[arg(long, default_value = "")]
         text: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print the effective configuration as TOML, after every layer, with the
+    /// file and environment variables that contributed. Exits non-zero when
+    /// the file or an environment value is invalid: run it in CI against the
+    /// ConfigMap before rolling it out.
+    Show,
 }
 
 #[tokio::main]
@@ -171,29 +200,129 @@ async fn main() -> ExitCode {
 
 type AnyError = Box<dyn std::error::Error>;
 
-async fn run(cli: Cli) -> Result<(), AnyError> {
-    match cli.command {
-        Command::Models => {
-            let client = Client::from_env()?;
-            for m in client.list_models().await? {
-                println!("{:<14} {:<12} {}", m.name, m.release_date, m.description);
-            }
-            Ok(())
-        }
-        Command::Triage(args) => triage(args).await,
+/// The flags of each command that override the lower layers.
+fn overrides(command: &Command) -> Overrides {
+    match command {
         Command::Serve {
             addr,
-            insecure_skip_verify,
-            dry_run,
             notify_owners,
             flow,
-        } => serve(addr, insecure_skip_verify, dry_run, notify_owners, &flow).await,
-        Command::Incidentio(cmd) => incidentio_cmd(cmd).await,
-        Command::Backstage(cmd) => backstage_cmd(cmd).await,
+            ..
+        } => Overrides {
+            addr: *addr,
+            notify_owners: *notify_owners,
+            ..flow.overrides()
+        },
+        Command::Triage(args) => Overrides {
+            model: args.model.clone(),
+            ..Overrides::default()
+        },
+        Command::Incidentio(IncidentIoCommand::TriageAlert { flow, .. }) => flow.overrides(),
+        Command::Models | Command::Incidentio(_) | Command::Backstage(_) | Command::Config(_) => {
+            Overrides::default()
+        }
     }
 }
 
-async fn triage(args: TriageArgs) -> Result<(), AnyError> {
+async fn run(cli: Cli) -> Result<(), AnyError> {
+    let (cfg, file) = Config::load(cli.config.as_deref(), &overrides(&cli.command))?;
+    tracing::debug!(file = ?file, "configuration resolved");
+    match cli.command {
+        Command::Triage(args) => triage(&cfg, args).await,
+        Command::Models => {
+            let client = typesafe_client(&cfg)?;
+            for m in client.list_models().await? {
+                println!("{:<16} {:<12} {}", m.name, m.release_date, m.description);
+            }
+            Ok(())
+        }
+        Command::Serve {
+            insecure_skip_verify,
+            dry_run,
+            ..
+        } => serve(&cfg, insecure_skip_verify, dry_run).await,
+        Command::Incidentio(cmd) => incidentio_cmd(&cfg, cmd).await,
+        Command::Backstage(cmd) => backstage_cmd(&cfg, cmd).await,
+        Command::Config(ConfigCommand::Show) => {
+            println!("# signalman effective configuration");
+            match &file {
+                Some(p) => println!("# file: {}", p.display()),
+                None => println!("# file: none (defaults, environment and flags only)"),
+            }
+            let env = Config::env_in_effect();
+            if env.is_empty() {
+                println!("# environment: none of the configuration variables is set");
+            } else {
+                println!("# environment: {}", env.join(", "));
+            }
+            println!("# secrets are read from the environment and never shown here");
+            println!();
+            print!("{}", toml::to_string_pretty(&cfg)?);
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clients from configuration
+// ---------------------------------------------------------------------------
+
+fn typesafe_client(cfg: &Config) -> Result<Client, AnyError> {
+    Ok(Client::builder()
+        .base_url(cfg.typesafe.base_url.clone())
+        .model(cfg.typesafe.model.clone())
+        .timeout(Duration::from_secs(cfg.typesafe.timeout_seconds))
+        .build()?)
+}
+
+fn incidentio_client(cfg: &Config) -> Result<incidentio::Client, AnyError> {
+    Ok(incidentio::Client::builder()
+        .base_url(cfg.incidentio.base_url.clone())
+        .build()?)
+}
+
+/// The catalog enricher, when Backstage is configured.
+fn enricher(cfg: &Config) -> Result<Option<Enricher>, AnyError> {
+    let Some(base_url) = &cfg.backstage.base_url else {
+        return Ok(None);
+    };
+    let client = backstage::Client::builder()
+        .base_url(base_url.clone())
+        .build()?;
+    let mut e = Enricher::new(client).with_namespace(cfg.backstage.namespace.clone());
+    if let Some(app) = &cfg.backstage.app_url {
+        e = e.with_app_url(app.clone());
+    }
+    Ok(Some(e))
+}
+
+/// The incident.io flow, fully configured.
+fn triager(cfg: &Config, io: incidentio::Client, dry_run: bool) -> Result<Triager, AnyError> {
+    let mut t = Triager::new(typesafe_client(cfg)?, io);
+    t.backstage = enricher(cfg)?;
+    if t.backstage.is_none() && cfg.backstage.notify {
+        return Err("backstage.notify needs backstage.base_url (or BACKSTAGE_BASE_URL)".into());
+    }
+    t.notify_owner = cfg.backstage.notify;
+    t.policy = cfg.policy.clone();
+    t.texts = cfg.triage.text.clone();
+    t.fallback_owners = cfg.triage.fallback_candidates();
+    t.max_candidates = cfg.incidentio.max_candidates;
+    t.component_keys.clone_from(&cfg.backstage.component_keys);
+    t.note = cfg.flow.note;
+    t.related_window = cfg.flow.related_window();
+    t.related_max = cfg.flow.related_max;
+    if dry_run {
+        t.write_back = WriteBack::DryRun;
+    }
+    Ok(t)
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
     let raw = if args.alert.as_os_str() == "-" {
         std::io::read_to_string(std::io::stdin())?
     } else {
@@ -202,7 +331,7 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
     let mut alert: Alert = serde_json::from_str(&raw)?;
 
     let io_client = if args.dedup_from_incidentio || args.forward_to_incidentio {
-        Some(incidentio::Client::from_env()?)
+        Some(incidentio_client(cfg)?)
     } else {
         None
     };
@@ -210,7 +339,7 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
     if args.dedup_from_incidentio {
         let client = io_client.as_ref().ok_or("incident.io client missing")?;
         let incidents = client
-            .list_open_incidents(incidentio::sync::DEFAULT_CANDIDATES)
+            .list_open_incidents(cfg.incidentio.max_candidates)
             .await?;
         tracing::info!(
             count = incidents.len(),
@@ -225,10 +354,12 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
             .collect();
     }
 
-    let mut candidates = OwnerCandidates::from_teams();
+    let mut candidates = cfg.triage.fallback_candidates();
     if args.enrich_from_backstage {
-        let enricher = Enricher::new(backstage::Client::from_env()?);
-        let hints = hints_from_labels(&alert.labels, &default_hint_keys());
+        let enricher = enricher(cfg)?.ok_or(
+            "--enrich-from-backstage needs backstage.base_url in the file or BACKSTAGE_BASE_URL",
+        )?;
+        let hints = hints_from_labels(&alert.labels, &cfg.backstage.component_keys);
         let text = format!("{} {}", alert.title, alert.description);
         let enrichment = enricher.enrich(&hints, &text).await?;
         tracing::info!(
@@ -245,11 +376,11 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
         candidates = enrichment.candidates;
     }
 
-    let questions = TriageQuestions::for_alert_with(&alert, candidates)?;
+    let questions = TriageQuestions::for_alert_with_texts(&alert, candidates, &cfg.triage.text)?;
     let state = TriageQuestions::state(&alert);
     let request = Request {
         state: &state,
-        model: &args.model,
+        model: &cfg.typesafe.model,
         questions: &questions.questions,
     };
 
@@ -258,10 +389,10 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
         return Ok(());
     }
 
-    let client = Client::from_env()?;
+    let client = typesafe_client(cfg)?;
     let response = client.evaluate(&request).await?;
     let answers = questions.read(&response)?;
-    let decision = decide(&answers, &Policy::default());
+    let decision = decide(&answers, &cfg.policy);
 
     let mut forwarded = None;
     if args.forward_to_incidentio {
@@ -338,33 +469,23 @@ fn alert_event(
     }
 }
 
-async fn serve(
-    addr: SocketAddr,
-    insecure_skip_verify: bool,
-    dry_run: bool,
-    notify_owners: bool,
-    flow: &FlowArgs,
-) -> Result<(), AnyError> {
+async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Result<(), AnyError> {
     let secret = if insecure_skip_verify {
         None
     } else {
         Some(WebhookSecret::from_env()?)
     };
-    let mut triager = Triager::new(Client::from_env()?, incidentio::Client::from_env()?);
-    if backstage::Client::is_configured() {
-        triager.backstage = Some(Enricher::new(backstage::Client::from_env()?));
-        triager.notify_owner = notify_owners;
-        tracing::info!(notify_owners, "Backstage catalog enrichment enabled");
-    } else if notify_owners {
-        return Err("--notify-owners needs BACKSTAGE_BASE_URL".into());
+    let triager = triager(cfg, incidentio_client(cfg)?, dry_run)?;
+    if triager.backstage.is_some() {
+        tracing::info!(
+            notify_owners = triager.notify_owner,
+            "Backstage catalog enrichment enabled"
+        );
     }
-    if dry_run {
-        triager.write_back = WriteBack::DryRun;
-    }
-    flow.apply(&mut triager);
+    let addr = cfg.server.addr;
     let app = router(Arc::new(AppState::new(secret, triager)));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, dry_run, "listening for incident.io webhooks at /webhooks/incidentio");
+    tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, "listening for incident.io webhooks at /webhooks/incidentio");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -392,8 +513,8 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
-    let io = incidentio::Client::from_env()?;
+async fn incidentio_cmd(cfg: &Config, cmd: IncidentIoCommand) -> Result<(), AnyError> {
+    let io = incidentio_client(cfg)?;
     match cmd {
         IncidentIoCommand::Whoami => {
             let id = io.identity().await?;
@@ -404,7 +525,10 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
             }
         }
         IncidentIoCommand::OpenIncidents { max } => {
-            for inc in io.list_open_incidents(max).await? {
+            for inc in io
+                .list_open_incidents(max.unwrap_or(cfg.incidentio.max_candidates))
+                .await?
+            {
                 println!(
                     "{:<10} {:<10} {}",
                     inc.reference,
@@ -414,18 +538,9 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
             }
         }
         IncidentIoCommand::TriageAlert {
-            alert_id,
-            dry_run,
-            flow,
+            alert_id, dry_run, ..
         } => {
-            let mut triager = Triager::new(Client::from_env()?, io);
-            if backstage::Client::is_configured() {
-                triager.backstage = Some(Enricher::new(backstage::Client::from_env()?));
-            }
-            if dry_run {
-                triager.write_back = WriteBack::DryRun;
-            }
-            flow.apply(&mut triager);
+            let triager = triager(cfg, io, dry_run)?;
             let outcome = triager.triage_alert_by_id(&alert_id).await?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
         }
@@ -433,10 +548,12 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
     Ok(())
 }
 
-async fn backstage_cmd(cmd: BackstageCommand) -> Result<(), AnyError> {
+async fn backstage_cmd(cfg: &Config, cmd: BackstageCommand) -> Result<(), AnyError> {
     match cmd {
         BackstageCommand::Lookup { hint, text } => {
-            let enricher = Enricher::new(backstage::Client::from_env()?);
+            let enricher = enricher(cfg)?.ok_or(
+                "Backstage is not configured: set backstage.base_url in the file or BACKSTAGE_BASE_URL",
+            )?;
             let enrichment = enricher.enrich(std::slice::from_ref(&hint), &text).await?;
             match &enrichment.component {
                 Some(c) => {

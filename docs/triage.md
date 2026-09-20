@@ -1,6 +1,6 @@
 ---
 title: Triage
-description: The state signalman builds for an alert, the questions it asks in one request, the policy that turns the answers into a decision, and how to tune it.
+description: The state signalman builds for an alert, the questions it asks in one request, the policy that turns the answers into a decision, what of it is configuration and what is code, and how to tune it.
 status: current
 last_reviewed: 2026-09-20
 tags: [triage, typesafe, policy]
@@ -45,8 +45,8 @@ flowchart TD
 
 | Id | Primitive | Rubric | Policy reads it for |
 |---|---|---|---|
-| `owner` | Choice | owner candidates: catalog groups, or the static `Team` list | who receives the page or ticket |
-| `impact` | Score | `Impact::LEVELS`, four concrete situations from no user impact to full outage | page versus ticket |
+| `owner` | Choice | owner candidates: catalog groups, or the fallback team list | who receives the page or ticket |
+| `impact` | Score | four concrete situations from no user impact to full outage (`[triage.text] impact_levels`) | page versus ticket |
 | `actionable` | Noul | yes: failing, at risk or violating policy and will not self-resolve; no: informational, test, recovered, blip | suppression |
 | `duplicate_of` | Choice | open incident references plus `none` | attaching to an existing incident |
 | `caused_by_change` | Noul | is one of the listed changes a plausible direct cause | the `ai-suspected-change` tag |
@@ -55,7 +55,7 @@ Every question references the state by backticked path (`alert.title`, `alert.co
 
 ### Owner candidates
 
-Owner candidates are data, not a type. With Backstage configured they are catalog groups assembled by the [enricher](backstage.md#owner-candidates), each described by display name, description and owned components. Without a catalog, `Team` in `src/triage/questions.rs`, defined with the `options!` macro, supplies a static list to adapt to your organisation. `none_of_these` is always the last option so an unattributable alert is never forced onto a team. The chosen key becomes the `ai-team-<key>` tag and, for catalog groups, the notification recipient.
+Owner candidates are data, not a type. With Backstage configured they are catalog groups assembled by the [enricher](backstage.md#owner-candidates), each described by display name, description and owned components. Without a catalog, or when nothing in it matched, the fallback list applies: `[[triage.teams]]` in the configuration file, or the built-in six teams (`triage::default_teams`) when the file defines none. `none_of_these` is always the last option so an unattributable alert is never forced onto a team. The chosen key becomes the `ai-team-<key>` tag and, for catalog groups, the notification recipient.
 
 ## The decision
 
@@ -89,6 +89,18 @@ Order is priority. Suppression wins over everything: a non-actionable alert is d
 
 These are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the evaluation work in the [roadmap](roadmap.md).
 
+## What is configurable
+
+| | Where | Why there |
+|---|---|---|
+| Thresholds | `[policy]` in the configuration file | tuned per deployment on its own alert history; changing one must not need a build |
+| Wording of every question, guidance and criterion, and the four impact level descriptions | `[triage.text]` | vocabulary and alert sources differ per organisation; the words are what a team tunes |
+| Fallback owner list | `[[triage.teams]]` | one organisation's structure, not the tool's |
+| The set of questions and their primitives | code, `src/triage/questions.rs` | the policy reads `owner`, `impact`, `actionable`, `duplicate_of` and `caused_by_change` through typed handles; a question the policy does not read is cost without effect, and a missing one is a policy bug the handles exist to catch ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md)) |
+| The number of impact levels | code, four | `policy.page_at` compares against the `Impact` enum; the level count is validated when the file loads |
+
+Which questions are asked depends only on the state (open incidents present, recent changes present), never on the text. A wording change therefore cannot break the flow; it can only make the model better or worse at the same question, which the [tuning loop](#tuning) measures. Adding a judgment remains a code change with a policy change, by design ([decision 0006](decisions/0006-layered-configuration.md)).
+
 ## Confidence is not probability
 
 A Choice answer carries both the probability of each option and a confidence, which summarises how concentrated the distribution is. The policy thresholds on confidence for routing and dedup because a spread distribution means the model saw several plausible answers, whatever the top one was. A Noul carries only a probability; the actionable threshold reads that directly.
@@ -99,8 +111,8 @@ Raw answers travel with every decision (`--json` on the CLI, `Outcome` in the fl
 
 1. Collect alerts with the expected team, impact and action.
 2. Run them through `triage --json` and record the distributions and the versioned model id.
-3. Pick thresholds per band from the observed confidence distributions, higher for actions that are expensive when wrong.
-4. Pin the model version alongside the thresholds and re-evaluate before moving to a new one.
+3. Pick thresholds per band from the observed confidence distributions, higher for actions that are expensive when wrong, and set them in `[policy]`.
+4. Pin `typesafe.model` to the version tuned against in the same file and re-evaluate before moving to a new one.
 
 ## Testing
 

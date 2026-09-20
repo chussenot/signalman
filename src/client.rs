@@ -17,12 +17,9 @@ use crate::error::{Error, Result};
 use crate::http::{self, Completed, Exhausted};
 use crate::question::Questions;
 
-/// Environment variable holding the API key.
+/// Environment variable holding the API key: the one secret this client
+/// reads itself. Base URL and model come from the configuration layer.
 pub const API_KEY_ENV: &str = "TYPESAFE_API_KEY";
-/// Environment variable overriding the base URL.
-pub const BASE_URL_ENV: &str = "TYPESAFE_BASE_URL";
-/// Environment variable overriding the default model.
-pub const DEFAULT_MODEL_ENV: &str = "TYPESAFE_DEFAULT_MODEL";
 /// Production API base URL.
 pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
 /// Alias for the current stable release.
@@ -175,21 +172,9 @@ impl Client {
         ClientBuilder::default()
     }
 
-    /// Build from environment variables only.
+    /// Production defaults with the API key from `TYPESAFE_API_KEY`.
     pub fn from_env() -> Result<Self> {
-        let mut b = ClientBuilder::default();
-        if let Ok(url) = std::env::var(BASE_URL_ENV) {
-            b = b.base_url(url);
-        }
-        if let Ok(model) = std::env::var(DEFAULT_MODEL_ENV) {
-            b = b.model(model);
-        }
-        b.build()
-    }
-
-    /// The model used by [`Self::system_one`].
-    pub fn default_model(&self) -> &str {
-        &self.model
+        ClientBuilder::default().build()
     }
 
     /// Evaluate `state` against `questions` with the default model.

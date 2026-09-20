@@ -14,8 +14,6 @@ use crate::triage::{ComponentContext, Decision, Impact, OwnerCandidate, OwnerCan
 
 /// Default cap on owner candidates offered to the model.
 pub const DEFAULT_MAX_CANDIDATES: usize = 24;
-/// Environment variable naming the Backstage frontend URL used in links.
-pub const APP_URL_ENV: &str = "BACKSTAGE_APP_URL";
 
 /// Default cap on the runbook excerpt.
 pub const DEFAULT_RUNBOOK_CHARS: usize = 1_800;
@@ -31,8 +29,8 @@ pub struct Enricher {
     pub max_candidates: usize,
     /// Cap on the runbook excerpt length.
     pub runbook_chars: usize,
-    /// Frontend base URL for links in notes: `BACKSTAGE_APP_URL`, or the
-    /// backend URL when the app is served from the same host.
+    /// Frontend base URL for links in notes; the backend URL when the app is
+    /// served from the same host (`backstage.app_url` in the configuration).
     pub app_url: String,
 }
 
@@ -55,19 +53,32 @@ pub struct Enrichment {
 }
 
 impl Enricher {
-    /// Build with defaults.
+    /// Build with defaults: namespace `default`, links on the backend URL.
+    /// The configuration layer sets the rest.
     pub fn new(client: Client) -> Self {
-        let app_url = std::env::var(APP_URL_ENV)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| client.base_url().as_str().to_owned());
+        let app_url = client.base_url().as_str().trim_end_matches('/').to_owned();
         Self {
             client,
-            namespace: std::env::var("BACKSTAGE_NAMESPACE").unwrap_or_else(|_| "default".into()),
+            namespace: "default".into(),
             max_candidates: DEFAULT_MAX_CANDIDATES,
             runbook_chars: DEFAULT_RUNBOOK_CHARS,
-            app_url: app_url.trim_end_matches('/').to_owned(),
+            app_url,
         }
+    }
+
+    /// Frontend URL for links, without a trailing slash.
+    #[must_use]
+    pub fn with_app_url(mut self, app_url: impl Into<String>) -> Self {
+        let app_url: String = app_url.into();
+        app_url.trim_end_matches('/').clone_into(&mut self.app_url);
+        self
+    }
+
+    /// Namespace tried first for bare component names.
+    #[must_use]
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
     }
 
     /// Frontend page of an entity: `{app_url}/catalog/{namespace}/{kind}/{name}`.
@@ -522,33 +533,6 @@ pub fn hints_from_labels(labels: &BTreeMap<String, String>, keys: &[String]) -> 
     out
 }
 
-/// Default label and attribute names that carry the component identity.
-pub fn default_hint_keys() -> Vec<String> {
-    let fallback = || {
-        [
-            "component",
-            "service",
-            "app",
-            "application",
-            "Service",
-            "Component",
-        ]
-        .map(String::from)
-        .to_vec()
-    };
-    match std::env::var("SIGNALMAN_COMPONENT_KEYS") {
-        Ok(raw) => {
-            let keys: Vec<String> = raw
-                .split(',')
-                .map(|x| x.trim().to_owned())
-                .filter(|x| !x.is_empty())
-                .collect();
-            if keys.is_empty() { fallback() } else { keys }
-        }
-        Err(_) => fallback(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -622,7 +606,10 @@ mod tests {
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
         assert_eq!(
-            hints_from_labels(&labels, &default_hint_keys()),
+            hints_from_labels(
+                &labels,
+                &crate::config::DEFAULT_COMPONENT_KEYS.map(String::from)
+            ),
             vec!["checkout-api"]
         );
     }

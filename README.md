@@ -47,9 +47,13 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 mise install            # toolchain, prek, bd
 mise run setup          # git hooks
 mise run check          # all quality gates
-cp .env.example .env    # fill in keys; never committed
+cp .env.example .env    # secrets only; never committed
+cp examples/config/signalman.toml signalman.toml   # the deployment's shape; edit, then
+mise run config:show    # see the effective configuration after file, env and flags
 mise run serve          # webhook receiver on 127.0.0.1:8080
 ```
+
+Configuration is layered, lowest to highest: built-in default, TOML file, environment variable, flag. Secrets are environment only. [Configuration](docs/configuration.md) lists every setting.
 
 ## Documentation
 

@@ -357,11 +357,6 @@ pub(crate) struct PaginationMeta {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct IncidentEnvelope {
-    pub incident: Incident,
-}
-
-#[derive(Deserialize)]
 pub(crate) struct AlertEnvelope {
     pub alert: Alert,
 }

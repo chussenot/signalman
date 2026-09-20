@@ -10,7 +10,7 @@ mod policy;
 mod questions;
 
 pub use policy::{Decision, Policy, decide};
-pub use questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, Team, TriageAnswers, TriageQuestions};
+pub use questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, Texts, TriageAnswers, TriageQuestions};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -145,21 +145,9 @@ impl OwnerCandidates {
         Self { list }
     }
 
-    /// The static team list from [`Team`].
+    /// The built-in fallback list, see [`default_teams`].
     pub fn from_teams() -> Self {
-        use crate::Options;
-        Self::new(
-            Team::ALL
-                .iter()
-                .filter(|t| **t != Team::Unclear)
-                .map(|t| OwnerCandidate {
-                    key: t.key().to_owned(),
-                    label: t.key().replace('_', " "),
-                    description: t.describe().unwrap_or("").to_owned(),
-                    entity_ref: None,
-                })
-                .collect(),
-        )
+        Self::new(default_teams())
     }
 
     /// All candidates including the no-match option.
@@ -181,6 +169,53 @@ impl OwnerCandidates {
     pub fn get(&self, key: &str) -> Option<&OwnerCandidate> {
         self.list.iter().find(|c| c.key == key)
     }
+}
+
+/// The fallback owner candidates used when no software catalog is configured
+/// or nothing in it matched. Data, not a type: `[[triage.teams]]` in the
+/// configuration file replaces this list without a rebuild.
+pub fn default_teams() -> Vec<OwnerCandidate> {
+    const TEAMS: [(&str, &str, &str); 6] = [
+        (
+            "platform",
+            "Platform",
+            "Kubernetes, cluster add-ons, CI/CD, internal developer platform, cloud accounts and quotas",
+        ),
+        (
+            "database",
+            "Database",
+            "PostgreSQL, MySQL, Redis, message queues, backups, storage volumes",
+        ),
+        (
+            "network",
+            "Network",
+            "DNS, load balancers, ingress, CDN, VPN, inter-region connectivity",
+        ),
+        (
+            "application",
+            "Application",
+            "A product service's own code or configuration: errors, latency, business logic",
+        ),
+        (
+            "security",
+            "Security",
+            "Suspicious access, secrets exposure, vulnerability findings, policy violations",
+        ),
+        (
+            "observability",
+            "Observability",
+            "Monitoring, logging or tracing pipeline itself is broken or lagging",
+        ),
+    ];
+    TEAMS
+        .iter()
+        .map(|(key, label, description)| OwnerCandidate {
+            key: (*key).to_owned(),
+            label: (*label).to_owned(),
+            description: (*description).to_owned(),
+            entity_ref: None,
+        })
+        .collect()
 }
 
 /// The owner a decision resolved to.

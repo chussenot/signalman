@@ -55,6 +55,8 @@ flowchart LR
 | Shared HTTP | `src/http.rs` | One retry loop for all three clients |
 | CLI | `src/main.rs` | `triage`, `serve`, `models`, `incidentio`, `backstage` |
 
+Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. No other module reads the environment except the three clients for their own key or token ([Configuration](configuration.md)).
+
 ## The path of one alert
 
 ```mermaid
