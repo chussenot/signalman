@@ -8,7 +8,11 @@ docs_dir: docs
 
 nav:
   - Overview: index.md
-  - Architecture: architecture.md
+  - Architecture:
+      - Overview: architecture.md
+      - C4 context: c4/context.md
+      - C4 containers: c4/container.md
+      - C4 components: c4/component.md
   - Backstage bridge: backstage.md
   - TypeSafe client: typesafe-client.md
   - Triage: triage.md
@@ -23,6 +27,17 @@ nav:
       - 0002 Calibrated judgments over generated text: decisions/0002-calibrated-judgments-over-generated-text.md
       - 0003 Typed handles between questions and answers: decisions/0003-typed-handles-between-questions-and-answers.md
       - 0004 The catalog is the ownership source of truth: decisions/0004-catalog-is-the-ownership-source-of-truth.md
+      - Template: decisions/template.md
 
 plugins:
   - techdocs-core
+
+# Mermaid fences render in GitHub natively. In Backstage they need the
+# TechDocs Mermaid addon (backstage-plugin-techdocs-addon-mermaid) on the
+# frontend; this fence definition keeps the blocks intact for it.
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format

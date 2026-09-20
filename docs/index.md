@@ -1,6 +1,6 @@
 ---
 title: Documentation
-description: Map of the signalman documentation set and the conventions its pages follow.
+description: Map of the signalman documentation, what each page is for, and the conventions the pages follow.
 status: current
 last_reviewed: 2026-09-20
 tags: [index]
@@ -8,23 +8,27 @@ tags: [index]
 
 # Documentation
 
-Start with the [README](../README.md) for why the application exists. These pages cover how it works and how to work on it.
+The [README](../README.md) says why signalman exists. These pages say how it works and how to work on it.
 
-| Page | Read it when |
+## By question
+
+| You want to know | Read |
 |---|---|
-| [Architecture](architecture.md) | You need the components and the data flow in one place |
-| [TypeSafe client](typesafe-client.md) | You are calling the model or adding a question type |
-| [Triage](triage.md) | You are changing a question, a team, a level or a threshold |
-| [incident.io integration](incidentio.md) | You are connecting an account or changing what is written back |
-| [Backstage bridge](backstage.md) | You are wiring the catalog, TechDocs or notifications, or registering signalman |
-| [Configuration](configuration.md) | You need an environment variable |
-| [Operations](operations.md) | You are running it |
-| [Development](development.md) | You are contributing |
-| [Roadmap](roadmap.md) | You want to know what is unverified or missing |
-| [Decisions](decisions/README.md) | You want the reasoning behind a constraint |
+| What signalman talks to and why | [C4 context](c4/context.md) |
+| What runs where | [C4 containers](c4/container.md), [Operations](operations.md) |
+| How the modules fit together | [C4 components](c4/component.md), [Architecture](architecture.md) |
+| What the model is asked and how the answer becomes an action | [Triage](triage.md) |
+| How the catalog changes ownership, context and runbooks | [Backstage bridge](backstage.md) |
+| How webhooks are verified and what is written back | [incident.io integration](incidentio.md) |
+| How the typed client works and its defaults | [TypeSafe client](typesafe-client.md) |
+| Which variable to set | [Configuration](configuration.md) |
+| How to contribute | [Development](development.md) |
+| What is unverified or missing | [Roadmap](roadmap.md) |
+| Why a constraint exists | [Decisions](decisions/README.md) |
 
 ## Conventions
 
-Every page starts with YAML frontmatter. `title` and `description` are required and checked by `scripts/check-frontmatter.sh`. `status` is `current` or `draft`. `last_reviewed` is the date someone last confirmed the page against the code. `tags` help search.
-
-Pages describe the code as it is. Anything not verified against a live system says so on the page where the claim is made.
+- Every page starts with YAML frontmatter. `title` and `description` are required and checked by `scripts/check-frontmatter.sh`; `status` is `current` or `draft`; `last_reviewed` is the date someone last confirmed the page against the code; `tags` help search.
+- Diagrams are Mermaid, kept next to the prose they explain. GitHub renders them natively; TechDocs needs the Mermaid addon ([Development](development.md#techdocs)).
+- Decision records follow [MADR](https://adr.github.io/madr/) ([Decisions](decisions/README.md)).
+- Pages describe the code as it is. A claim that depends on something unverified says so where the claim is made.
