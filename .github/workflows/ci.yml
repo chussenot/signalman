@@ -1,5 +1,10 @@
 name: CI
 
+# Only GitHub-owned actions are used (actions/checkout, actions/cache). The
+# toolchain comes from rust-toolchain.toml via rustup, and prek is installed
+# with pipx, so the workflow runs under a repository policy that forbids
+# third-party actions.
+
 on:
   push:
     branches: [main]
@@ -15,10 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup component add rustfmt clippy
+          cargo --version
+          rustc --version
+
+      - uses: actions/cache@v4
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features
       - run: cargo test --all-features
@@ -32,10 +52,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: j178/prek-action@v3
-        with:
-          extra_args: --all-files --hook-stage pre-commit
+
+      - name: Install prek
+        run: |
+          pipx install prek
+          prek --version
+
+      # The cargo hooks already run in the check job; no-commit-to-branch is
+      # meaningless on a CI checkout of main.
+      - name: Run hooks on all files
+        run: prek run --all-files --hook-stage pre-commit
+        env:
+          SKIP: cargo-fmt,cargo-clippy,no-commit-to-branch
