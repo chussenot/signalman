@@ -1,5 +1,5 @@
-//! The flow: an alert incident.io received → TypeSafe judgments → tags and
-//! an incident attachment written back.
+//! The flow: an alert incident.io received → catalog enrichment → TypeSafe
+//! judgments → tags, an incident attachment and an owner notification.
 //!
 //! Follows the webhook docs' rule for keeping systems in sync: the webhook is
 //! only a trigger; the alert and the candidate incidents are fetched fresh
@@ -12,9 +12,11 @@ use serde::Serialize;
 
 use super::client::Client as IncidentIo;
 use super::types::{Alert as IoAlert, Incident};
-use crate::Options;
+use crate::backstage::Enricher;
+use crate::backstage::enrich::{default_hint_keys, hints_from_labels};
 use crate::triage::{
-    Alert, Decision, OpenIncident, Policy, TriageAnswers, TriageQuestions, decide,
+    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, TriageAnswers, TriageQuestions,
+    decide,
 };
 
 /// Prefix for every tag this integration writes, so they can be filtered in
@@ -28,7 +30,7 @@ pub const DEFAULT_CANDIDATES: usize = 40;
 /// Which side effects to apply after deciding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteBack {
-    /// Add tags and attach duplicates.
+    /// Add tags, attach duplicates, notify owners.
     Apply,
     /// Compute everything, change nothing. For evaluation runs.
     DryRun,
@@ -41,12 +43,19 @@ pub struct Triager {
     pub typesafe: crate::Client,
     /// incident.io client.
     pub incidentio: IncidentIo,
+    /// Backstage enrichment, when configured.
+    pub backstage: Option<Enricher>,
+    /// Notify the owning group through Backstage after `Page`, `Ticket` or
+    /// `HumanTriage` decisions. Requires `backstage`.
+    pub notify_owner: bool,
     /// Routing thresholds.
     pub policy: Policy,
     /// Candidate cap for dedup.
     pub max_candidates: usize,
     /// Apply or dry-run.
     pub write_back: WriteBack,
+    /// Alert attribute names that identify the component.
+    pub component_keys: Vec<String>,
 }
 
 /// What happened for one alert.
@@ -62,10 +71,16 @@ pub struct Outcome {
     pub tags: Vec<String>,
     /// Incident the alert was attached to, when a confident duplicate.
     pub attached_to: Option<AttachedIncident>,
+    /// Catalog component the alert was resolved to.
+    pub component: Option<String>,
+    /// Group notified through Backstage.
+    pub notified: Option<String>,
     /// Versioned model that answered.
     pub model: String,
     /// Dedup candidates offered.
     pub candidates_offered: usize,
+    /// Owner candidates offered.
+    pub owner_candidates_offered: usize,
     /// Whether side effects were applied.
     pub applied: bool,
 }
@@ -82,18 +97,21 @@ pub struct AttachedIncident {
 }
 
 impl Triager {
-    /// Build with default policy and candidate cap.
+    /// Build with default policy and candidate cap, without Backstage.
     pub fn new(typesafe: crate::Client, incidentio: IncidentIo) -> Self {
         Self {
             typesafe,
             incidentio,
+            backstage: None,
+            notify_owner: false,
             policy: Policy::default(),
             max_candidates: DEFAULT_CANDIDATES,
             write_back: WriteBack::Apply,
+            component_keys: default_hint_keys(),
         }
     }
 
-    /// Triage an alert by id: fetch, judge, decide, write back.
+    /// Triage an alert by id: fetch, enrich, judge, decide, write back.
     pub async fn triage_alert_by_id(&self, alert_id: &str) -> Result<Outcome, FlowError> {
         let alert = self.incidentio.get_alert(alert_id).await?;
         self.triage_alert(alert).await
@@ -101,6 +119,7 @@ impl Triager {
 
     /// Triage an already fetched alert. Prefer [`Self::triage_alert_by_id`]
     /// from a webhook so the state is current.
+    #[allow(clippy::too_many_lines)] // one linear flow reads better than fragments
     pub async fn triage_alert(&self, io_alert: IoAlert) -> Result<Outcome, FlowError> {
         let candidates = self
             .incidentio
@@ -111,8 +130,31 @@ impl Triager {
             .map(|i| (i.reference.clone(), i))
             .collect();
 
-        let alert = to_triage_alert(&io_alert, &candidates);
-        let questions = TriageQuestions::for_alert(&alert)?;
+        let mut alert = to_triage_alert(&io_alert, &candidates);
+
+        // Catalog enrichment: component context, owner candidates, runbook.
+        let mut owner_candidates = OwnerCandidates::from_teams();
+        let mut component_name = None;
+        if let Some(enricher) = &self.backstage {
+            let hints = hints_from_labels(&alert.labels, &self.component_keys);
+            let text = format!("{} {}", alert.title, alert.description);
+            let enrichment = enricher.enrich(&hints, &text).await?;
+            component_name = enrichment.component.as_ref().map(|c| c.name.clone());
+            if enrichment.runbook.is_some() {
+                alert.runbook = enrichment.runbook;
+            }
+            alert.component = enrichment.component;
+            owner_candidates = enrichment.candidates;
+            tracing::debug!(
+                alert_id = %io_alert.id,
+                component = ?component_name,
+                matched_by = ?enrichment.matched_by,
+                owner_candidates = owner_candidates.len(),
+                "catalog enrichment"
+            );
+        }
+
+        let questions = TriageQuestions::for_alert_with(&alert, owner_candidates)?;
         let state = TriageQuestions::state(&alert);
         let response = self
             .typesafe
@@ -144,6 +186,7 @@ impl Triager {
         }
 
         let applied = self.write_back == WriteBack::Apply;
+        let mut notified = None;
         if applied {
             self.incidentio.add_alert_tags(&io_alert.id, &tags).await?;
             if let Some(a) = &attached_to {
@@ -151,13 +194,35 @@ impl Triager {
                     .attach_alert_to_incident(&io_alert.id, &a.id)
                     .await?;
             }
+            if self.notify_owner
+                && let Some(enricher) = &self.backstage
+                && let Some(owner) = decision.owner()
+                && let Some(candidate) = answers.candidates.get(&owner.key)
+            {
+                match enricher
+                    .notify_owner(
+                        candidate,
+                        &io_alert.title,
+                        &decision,
+                        io_alert.source_url.clone(),
+                    )
+                    .await
+                {
+                    Ok(true) => notified = candidate.entity_ref.clone(),
+                    Ok(false) => {}
+                    // A failed notification must not undo the tags already written.
+                    Err(e) => tracing::warn!(error = %e, "owner notification failed"),
+                }
+            }
         }
 
         tracing::info!(
             alert_id = %io_alert.id,
             title = %io_alert.title,
             decision = ?decision,
+            component = ?component_name,
             attached = ?attached_to.as_ref().map(|a| &a.reference),
+            notified = ?notified,
             applied,
             model = %response.model,
             "alert triaged"
@@ -169,8 +234,11 @@ impl Triager {
             decision,
             tags,
             attached_to,
+            component: component_name,
+            notified,
             model: response.model,
             candidates_offered: candidates.len(),
+            owner_candidates_offered: answers.candidates.len(),
             applied,
         })
     }
@@ -202,14 +270,15 @@ pub fn to_triage_alert(io: &IoAlert, candidates: &[Incident]) -> Alert {
                 summary: i.candidate_summary(),
             })
             .collect(),
+        component: None,
     }
 }
 
 /// Tags encoding the judgments and the decision.
 pub fn tags_for(answers: &TriageAnswers, decision: &Decision) -> Vec<String> {
-    let impact = crate::triage::Impact::from_level(answers.impact.nearest_level());
+    let impact = Impact::from_level(answers.impact.nearest_level());
     let mut tags = vec![
-        tag("team", answers.owner.chosen.key()),
+        tag("team", &answers.owner.chosen),
         tag("impact", impact_key(impact)),
         tag("action", action_key(decision)),
     ];
@@ -231,8 +300,7 @@ fn tag(kind: &str, value: &str) -> String {
     }
 }
 
-fn impact_key(i: crate::triage::Impact) -> &'static str {
-    use crate::triage::Impact;
+fn impact_key(i: Impact) -> &'static str {
     match i {
         Impact::None => "none",
         Impact::Minor => "minor",
@@ -260,6 +328,9 @@ pub enum FlowError {
     /// TypeSafe API or typed-answer layer.
     #[error(transparent)]
     TypeSafe(#[from] crate::Error),
+    /// Backstage API.
+    #[error(transparent)]
+    Backstage(#[from] crate::backstage::Error),
 }
 
 #[cfg(test)]
@@ -311,5 +382,6 @@ mod tests {
         assert_eq!(alert.open_incidents.len(), 1);
         assert_eq!(alert.open_incidents[0].id, "INC-7");
         assert!(alert.source.contains("src"));
+        assert!(alert.component.is_none());
     }
 }

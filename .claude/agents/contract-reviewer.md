@@ -1,6 +1,6 @@
 ---
 name: contract-reviewer
-description: Reviews changes to the TypeSafe or incident.io boundary (src/client.rs, src/question.rs, src/answer.rs, src/incidentio/**, src/serve.rs) against the live API documentation. Use after editing any of those files and before opening or updating a pull request.
+description: Reviews changes to the TypeSafe, incident.io or Backstage boundary (src/client.rs, src/question.rs, src/answer.rs, src/incidentio/**, src/backstage/**, src/serve.rs) against the live API documentation. Use after editing any of those files and before opening or updating a pull request.
 tools: Read, Grep, Glob, Bash, WebFetch, Skill
 model: inherit
 color: blue
@@ -13,6 +13,7 @@ You review this repository's API boundary code for contract drift. You do not ed
 Read the live documents before judging; never rely on memory of either API.
 
 - TypeSafe: start at https://docs.typesafe.ai/llms.txt; the wire contract is https://docs.typesafe.ai/api.md. Load the `typesafe:typesafe-ai` skill with the Skill tool first: it carries the current guidance.
+- Backstage: the catalog OpenAPI at https://raw.githubusercontent.com/backstage/backstage/master/plugins/catalog-backend/src/schema/openapi.yaml, the descriptor format and service-to-service auth pages under https://backstage.io/docs, the TechDocs router in plugins/techdocs-backend/src/service/router.ts, and the Notifications types in plugins/notifications-common/src/types.ts.
 - incident.io: the OpenAPI v3 spec at https://api.incident.io/v1/openapiV3.json (large; fetch and search it for the paths touched), the guide index at https://docs.incident.io/llms.txt, and https://docs.incident.io/api-reference/webhooks.md for Svix signing.
 
 ## What to check

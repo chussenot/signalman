@@ -12,7 +12,7 @@ tags: [triage, typesafe, policy]
 
 ## State
 
-The `state` is `{ "alert": Alert }` where `Alert` carries source, title, description, labels, an optional runbook excerpt, recent changes, and open incidents as duplicate candidates. Only fields a question reads are included. Every field costs input tokens and dilutes attention.
+The `state` is `{ "alert": Alert }` where `Alert` carries source, title, description, labels, an optional runbook excerpt, recent changes, open incidents as duplicate candidates, and, when Backstage is configured, `component`: the catalog record of the alerting service with its owner, lifecycle, dependencies and dependents ([Backstage bridge](backstage.md)). Only fields a question reads are included. Every field costs input tokens and dilutes attention.
 
 ## Questions
 
@@ -20,7 +20,7 @@ All questions are asked in one request. Each references the state by backticked 
 
 | Id | Primitive | Asked when | Read by the policy for |
 |---|---|---|---|
-| `owner` | Choice over `Team` | always | who receives the page or ticket |
+| `owner` | dynamic Choice over owner candidates plus `none_of_these` | always | who receives the page or ticket |
 | `impact` | Score over four levels | always | page versus ticket |
 | `actionable` | Noul | always | suppression |
 | `duplicate_of` | dynamic Choice over incident references plus `none` | at least one open incident | attaching to an existing incident |
@@ -28,7 +28,7 @@ All questions are asked in one request. Each references the state by backticked 
 
 The last two are speculative: asked up front because a second request would cost a round trip, and only read when their premise holds. They are omitted entirely when there are no candidates, because the model cannot choose an option it was not offered.
 
-`Team` is defined with the `options!` macro in `src/triage/questions.rs`. Its variants and rubric text encode one organisation's ownership model and are the first thing to adapt. `none_of_these` exists so an unattributable alert is not forced onto a team.
+Owner candidates are data (`OwnerCandidates`). With Backstage configured they are catalog groups: the resolved component's owner, the owners of its dependencies and dependents, and the owners of components named in the alert, each described by its display name, description and owned components. Without a catalog, `Team` in `src/triage/questions.rs`, defined with the `options!` macro, supplies a static list to adapt to your organisation. `none_of_these` is always present so an unattributable alert is not forced onto a team. The chosen key becomes the `ai-team-<key>` tag and, for catalog groups, the notification recipient.
 
 `Impact::LEVELS` describes four concrete situations from no user-facing impact to full outage. Level text must stand alone; the model does not see the enum names.
 

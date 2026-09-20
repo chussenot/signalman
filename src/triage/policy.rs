@@ -3,7 +3,8 @@
 
 use serde::Serialize;
 
-use super::questions::{Impact, NO_DUPLICATE, Team, TriageAnswers};
+use super::questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, TriageAnswers};
+use super::{Owner, OwnerCandidate};
 
 /// Thresholds. Start conservative, then tune on your own alert history and
 /// pin the model version you tuned against.
@@ -55,11 +56,11 @@ pub enum Decision {
     /// Wake the owning team now.
     Page {
         /// Owning team.
-        team: Team,
+        owner: Owner,
         /// Impact level.
         impact: Impact,
-        /// Owner confidence; below the auto threshold the page is marked
-        /// for confirmation by the responder.
+        /// Owner confidence was below the auto threshold; the responder
+        /// should confirm ownership.
         confirm_owner: bool,
         /// A listed recent change is a likely cause.
         suspected_change: bool,
@@ -67,7 +68,7 @@ pub enum Decision {
     /// Open a ticket for the owning team; no page.
     Ticket {
         /// Owning team.
-        team: Team,
+        owner: Owner,
         /// Impact level.
         impact: Impact,
         /// Owner confidence was middling; ask the team to confirm ownership.
@@ -78,7 +79,7 @@ pub enum Decision {
     /// The model is unsure who owns it: a person triages.
     HumanTriage {
         /// Best guess, for the triager's convenience.
-        best_guess: Team,
+        best_guess: Owner,
         /// Owner confidence.
         confidence: f64,
         /// Impact level, which still decides urgency of the triage queue.
@@ -86,10 +87,14 @@ pub enum Decision {
     },
 }
 
-impl Serialize for Team {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use crate::Options;
-        s.serialize_str(self.key())
+impl Decision {
+    /// The owner the decision addresses, if any.
+    pub fn owner(&self) -> Option<&Owner> {
+        match self {
+            Self::Page { owner, .. } | Self::Ticket { owner, .. } => Some(owner),
+            Self::HumanTriage { best_guess, .. } => Some(best_guess),
+            Self::Suppress { .. } | Self::AttachToIncident { .. } => None,
+        }
     }
 }
 
@@ -123,32 +128,39 @@ pub fn decide(answers: &TriageAnswers, policy: &Policy) -> Decision {
     }
 
     let impact = Impact::from_level(answers.impact.nearest_level());
-    let owner = &answers.owner;
-    let owner_conf = owner.confidence.value();
+    let owner_conf = answers.owner.confidence.value();
     let suspected_change = answers
         .caused_by_change
         .is_some_and(|n| n.yes.value() > policy.flag_change_above);
 
-    // "None of these" with any confidence is a signal to involve a person.
-    if owner.chosen == Team::Unclear || owner_conf < policy.human_below_confidence {
-        return Decision::HumanTriage {
-            best_guess: best_named_team(owner),
-            confidence: owner_conf,
-            impact,
-        };
-    }
+    let chosen = answers.candidates.get(&answers.owner.chosen);
+
+    // "None of these", an option outside the candidate set, or low confidence
+    // all mean a person decides.
+    let owner = match chosen {
+        Some(c) if c.key != NONE_OF_THESE && owner_conf >= policy.human_below_confidence => {
+            Owner::from(c)
+        }
+        _ => {
+            return Decision::HumanTriage {
+                best_guess: Owner::from(best_named(answers)),
+                confidence: owner_conf,
+                impact,
+            };
+        }
+    };
 
     let confirm_owner = owner_conf < policy.auto_route_confidence;
     if impact >= policy.page_at {
         Decision::Page {
-            team: owner.chosen,
+            owner,
             impact,
             confirm_owner,
             suspected_change,
         }
     } else {
         Decision::Ticket {
-            team: owner.chosen,
+            owner,
             impact,
             confirm_owner,
             suspected_change,
@@ -156,20 +168,25 @@ pub fn decide(answers: &TriageAnswers, policy: &Policy) -> Decision {
     }
 }
 
-/// Highest-probability team other than [`Team::Unclear`].
-fn best_named_team(owner: &crate::Choice<Team>) -> Team {
-    use crate::Options;
-    Team::ALL
+/// Highest-probability candidate other than the no-match option.
+fn best_named(answers: &TriageAnswers) -> &OwnerCandidate {
+    let named: Vec<&OwnerCandidate> = answers
+        .candidates
+        .iter()
+        .filter(|c| c.key != NONE_OF_THESE)
+        .collect();
+    named
         .iter()
         .copied()
-        .filter(|t| *t != Team::Unclear)
         .max_by(|a, b| {
-            owner
-                .probability_of(a)
-                .partial_cmp(&owner.probability_of(b))
+            answers
+                .owner
+                .probability_of(&a.key)
+                .partial_cmp(&answers.owner.probability_of(&b.key))
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .unwrap_or(Team::Platform)
+        .or_else(|| answers.candidates.iter().next())
+        .unwrap_or_else(|| unreachable!("candidate set always has the no-match option"))
 }
 
 #[cfg(test)]
@@ -192,6 +209,7 @@ mod tests {
             runbook: None,
             recent_changes: vec!["deploy".into()],
             open_incidents: vec![],
+            component: None,
         };
         if open_incident {
             alert.open_incidents.push(OpenIncident {
@@ -270,13 +288,9 @@ mod tests {
                                   "probabilities": {"INC-1": 0.55, "none": 0.45}, "confidence": 0.1 }
             }),
         );
-        assert!(matches!(
-            decide(&a, &Policy::default()),
-            Decision::Page {
-                team: Team::Database,
-                ..
-            }
-        ));
+        assert!(
+            matches!(decide(&a, &Policy::default()), Decision::Page { owner: Owner { ref key, .. }, .. } if key == "database")
+        );
     }
 
     #[test]
@@ -288,15 +302,20 @@ mod tests {
                 "caused_by_change": noul(0.8)
             }),
         );
-        assert_eq!(
-            decide(&page, &Policy::default()),
+        match decide(&page, &Policy::default()) {
             Decision::Page {
-                team: Team::Network,
-                impact: Impact::Outage,
-                confirm_owner: false,
-                suspected_change: true
+                owner,
+                impact,
+                confirm_owner,
+                suspected_change,
+            } => {
+                assert_eq!(owner.key, "network");
+                assert_eq!(impact, Impact::Outage);
+                assert!(!confirm_owner);
+                assert!(suspected_change);
             }
-        );
+            other => panic!("{other:?}"),
+        }
 
         let ticket = answers(
             false,
@@ -305,15 +324,20 @@ mod tests {
                 "caused_by_change": noul(0.2)
             }),
         );
-        assert_eq!(
-            decide(&ticket, &Policy::default()),
+        match decide(&ticket, &Policy::default()) {
             Decision::Ticket {
-                team: Team::Application,
-                impact: Impact::Minor,
-                confirm_owner: true,
-                suspected_change: false
+                owner,
+                impact,
+                confirm_owner,
+                suspected_change,
+            } => {
+                assert_eq!(owner.key, "application");
+                assert_eq!(impact, Impact::Minor);
+                assert!(confirm_owner);
+                assert!(!suspected_change);
             }
-        );
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -327,10 +351,7 @@ mod tests {
         );
         assert!(matches!(
             decide(&low, &Policy::default()),
-            Decision::HumanTriage {
-                best_guess: Team::Security,
-                ..
-            }
+            Decision::HumanTriage { best_guess: Owner { ref key, .. }, .. } if key == "security"
         ));
 
         let none = answers(
@@ -349,14 +370,18 @@ mod tests {
     #[test]
     fn decision_serialises_with_a_tag() {
         let d = Decision::Ticket {
-            team: Team::Platform,
+            owner: Owner {
+                key: "platform".into(),
+                label: "platform".into(),
+                entity_ref: None,
+            },
             impact: Impact::Minor,
             confirm_owner: false,
             suspected_change: false,
         };
         let v = serde_json::to_value(&d).unwrap();
         assert_eq!(v["action"], "ticket");
-        assert_eq!(v["team"], "platform");
+        assert_eq!(v["owner"]["key"], "platform");
         assert_eq!(v["impact"], "minor");
     }
 }

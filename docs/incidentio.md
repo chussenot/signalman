@@ -30,7 +30,7 @@ Other event types are acknowledged and ignored. Private-resource events carry on
 | Tag `ai-dup-<reference>` and attachment | `add_tags` and `POST /v2/incident_alerts` | decision is attach |
 | Tag `ai-suspected-change` | `add_tags` | `caused_by_change` above threshold |
 
-Tag names are lowercase with hyphens, prefixed `ai-` so they can be filtered and told apart from human tags. Existing tags are kept.
+Tag names are lowercase with hyphens, prefixed `ai-` so they can be filtered and told apart from human tags. With Backstage configured, `<team>` is the catalog group name. Existing tags are kept.
 
 `--dry-run` on `serve` and `incidentio triage-alert` computes everything and writes nothing.
 

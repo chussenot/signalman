@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use serde_json::json;
-use signalman::triage::{Alert, Decision, OpenIncident, Policy, Team, TriageQuestions, decide};
+use signalman::triage::{Alert, Decision, OpenIncident, Policy, TriageQuestions, decide};
 use signalman::{Client, Error, Questions, RetryPolicy, options};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -216,6 +216,7 @@ async fn triage_end_to_end_attaches_to_duplicate_incident() {
             id: "INC-4821".into(),
             summary: "Checkout 5xx spike".into(),
         }],
+        component: None,
     };
     let questions = TriageQuestions::for_alert(&alert).unwrap();
     let c = client(&server, RetryPolicy::none());
@@ -224,7 +225,7 @@ async fn triage_end_to_end_attaches_to_duplicate_incident() {
         .await
         .unwrap();
     let answers = questions.read(&response).unwrap();
-    assert_eq!(answers.owner.chosen, Team::Application);
+    assert_eq!(answers.owner.chosen, "application");
 
     let decision = decide(&answers, &Policy::default());
     assert_eq!(

@@ -1,4 +1,5 @@
-//! CLI: triage alerts with TypeSafe, integrate with incident.io, serve webhooks.
+//! CLI: triage alerts with TypeSafe, integrate with incident.io and Backstage,
+//! serve webhooks.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -6,21 +7,23 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
+use signalman::backstage::enrich::{default_hint_keys, hints_from_labels};
+use signalman::backstage::{self, Enricher};
 use signalman::incidentio::types::{AlertEvent, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
 use signalman::serve::{AppState, router};
 use signalman::triage::{
-    Alert, Decision, OpenIncident, Policy, TriageAnswers, TriageQuestions, decide,
+    Alert, Decision, OpenIncident, OwnerCandidates, Policy, TriageAnswers, TriageQuestions, decide,
 };
-use signalman::{Client, Options, Request, Response};
+use signalman::{Client, Request, Response};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
     name = "signalman",
     version,
-    about = "TypeSafe-powered alert triage with incident.io"
+    about = "TypeSafe-powered alert triage with incident.io and Backstage"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -41,13 +44,20 @@ enum Command {
         /// Accept unsigned deliveries. Local development only.
         #[arg(long)]
         insecure_skip_verify: bool,
-        /// Compute decisions but write nothing back to incident.io.
+        /// Compute decisions but write nothing back to incident.io or Backstage.
         #[arg(long)]
         dry_run: bool,
+        /// Notify the owning group through Backstage after page, ticket and
+        /// human-triage decisions (env: BACKSTAGE_NOTIFY).
+        #[arg(long, env = "BACKSTAGE_NOTIFY", default_value_t = false)]
+        notify_owners: bool,
     },
     /// incident.io utilities.
     #[command(subcommand)]
     Incidentio(IncidentIoCommand),
+    /// Backstage catalog utilities.
+    #[command(subcommand)]
+    Backstage(BackstageCommand),
 }
 
 #[derive(Args)]
@@ -61,12 +71,17 @@ struct TriageArgs {
     /// Replace `open_incidents` with the live incidents from incident.io.
     #[arg(long)]
     dedup_from_incidentio: bool,
+    /// Resolve the component named by the alert labels in the Backstage
+    /// catalog; use its owner group and neighbours as owner candidates and
+    /// its TechDocs runbook as `runbook`.
+    #[arg(long)]
+    enrich_from_backstage: bool,
     /// After deciding, post the alert with its judgments as metadata to the
     /// incident.io HTTP alert source named by INCIDENTIO_ALERT_SOURCE_CONFIG_ID
     /// (authenticated with INCIDENTIO_ALERT_SOURCE_TOKEN).
     #[arg(long)]
     forward_to_incidentio: bool,
-    /// Print the TypeSafe request body and exit without calling any API.
+    /// Print the TypeSafe request body and exit without calling the model.
     #[arg(long)]
     print_request: bool,
     /// Emit the decision and raw answers as JSON instead of text.
@@ -91,6 +106,19 @@ enum IncidentIoCommand {
         /// Compute but write nothing back.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackstageCommand {
+    /// Resolve a component name or entity ref and show what the catalog
+    /// contributes to a triage: context, owner candidates, runbook excerpt.
+    Lookup {
+        /// Component name, `kind:namespace/name`, or a title.
+        hint: String,
+        /// Alert text used to pick the runbook page and mentioned components.
+        #[arg(long, default_value = "")]
+        text: String,
     },
 }
 
@@ -133,8 +161,10 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             addr,
             insecure_skip_verify,
             dry_run,
-        } => serve(addr, insecure_skip_verify, dry_run).await,
+            notify_owners,
+        } => serve(addr, insecure_skip_verify, dry_run, notify_owners).await,
         Command::Incidentio(cmd) => incidentio_cmd(cmd).await,
+        Command::Backstage(cmd) => backstage_cmd(cmd).await,
     }
 }
 
@@ -170,7 +200,27 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
             .collect();
     }
 
-    let questions = TriageQuestions::for_alert(&alert)?;
+    let mut candidates = OwnerCandidates::from_teams();
+    if args.enrich_from_backstage {
+        let enricher = Enricher::new(backstage::Client::from_env()?);
+        let hints = hints_from_labels(&alert.labels, &default_hint_keys());
+        let text = format!("{} {}", alert.title, alert.description);
+        let enrichment = enricher.enrich(&hints, &text).await?;
+        tracing::info!(
+            component = ?enrichment.component.as_ref().map(|c| &c.name),
+            matched_by = ?enrichment.matched_by,
+            owner_candidates = enrichment.candidates.len(),
+            runbook = enrichment.runbook.is_some(),
+            "catalog enrichment"
+        );
+        if enrichment.runbook.is_some() {
+            alert.runbook = enrichment.runbook;
+        }
+        alert.component = enrichment.component;
+        candidates = enrichment.candidates;
+    }
+
+    let questions = TriageQuestions::for_alert_with(&alert, candidates)?;
     let state = TriageQuestions::state(&alert);
     let request = Request {
         state: &state,
@@ -206,6 +256,7 @@ async fn triage(args: TriageArgs) -> Result<(), AnyError> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "decision": decision,
+                "component": alert.component,
                 "model": response.model,
                 "usage": response.usage,
                 "answers": response.answers,
@@ -247,8 +298,9 @@ fn alert_event(
         metadata: Some(serde_json::json!({
             "source": alert.source,
             "labels": alert.labels,
+            "component": alert.component.as_ref().map(|c| &c.name),
             "ai": {
-                "team": answers.owner.chosen.key(),
+                "team": answers.owner.chosen,
                 "team_confidence": answers.owner.confidence.value(),
                 "impact_level": answers.impact.nearest_level(),
                 "impact_label": answers.impact.nearest_label(),
@@ -265,6 +317,7 @@ async fn serve(
     addr: SocketAddr,
     insecure_skip_verify: bool,
     dry_run: bool,
+    notify_owners: bool,
 ) -> Result<(), AnyError> {
     let secret = if insecure_skip_verify {
         None
@@ -272,6 +325,13 @@ async fn serve(
         Some(WebhookSecret::from_env()?)
     };
     let mut triager = Triager::new(Client::from_env()?, incidentio::Client::from_env()?);
+    if backstage::Client::is_configured() {
+        triager.backstage = Some(Enricher::new(backstage::Client::from_env()?));
+        triager.notify_owner = notify_owners;
+        tracing::info!(notify_owners, "Backstage catalog enrichment enabled");
+    } else if notify_owners {
+        return Err("--notify-owners needs BACKSTAGE_BASE_URL".into());
+    }
     if dry_run {
         triager.write_back = WriteBack::DryRun;
     }
@@ -328,6 +388,9 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
         }
         IncidentIoCommand::TriageAlert { alert_id, dry_run } => {
             let mut triager = Triager::new(Client::from_env()?, io);
+            if backstage::Client::is_configured() {
+                triager.backstage = Some(Enricher::new(backstage::Client::from_env()?));
+            }
             if dry_run {
                 triager.write_back = WriteBack::DryRun;
             }
@@ -338,13 +401,78 @@ async fn incidentio_cmd(cmd: IncidentIoCommand) -> Result<(), AnyError> {
     Ok(())
 }
 
+async fn backstage_cmd(cmd: BackstageCommand) -> Result<(), AnyError> {
+    match cmd {
+        BackstageCommand::Lookup { hint, text } => {
+            let enricher = Enricher::new(backstage::Client::from_env()?);
+            let enrichment = enricher.enrich(std::slice::from_ref(&hint), &text).await?;
+            match &enrichment.component {
+                Some(c) => {
+                    println!(
+                        "component  {} ({})",
+                        c.name,
+                        enrichment.matched_by.as_deref().unwrap_or("-")
+                    );
+                    println!("owner      {}", c.owner.as_deref().unwrap_or("-"));
+                    println!(
+                        "lifecycle  {}  type {}  system {}",
+                        c.lifecycle.as_deref().unwrap_or("-"),
+                        c.component_type.as_deref().unwrap_or("-"),
+                        c.system.as_deref().unwrap_or("-")
+                    );
+                    println!(
+                        "depends on {}",
+                        if c.depends_on.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            c.depends_on.join(", ")
+                        }
+                    );
+                    println!(
+                        "dependents {}",
+                        if c.dependents.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            c.dependents.join(", ")
+                        }
+                    );
+                }
+                None => println!("component  not found for {hint:?}; offering all teams"),
+            }
+            println!("owner candidates ({}):", enrichment.candidates.len());
+            for cand in enrichment.candidates.iter() {
+                println!(
+                    "  {:<24} {}",
+                    cand.key,
+                    cand.description.chars().take(90).collect::<String>()
+                );
+            }
+            match &enrichment.runbook {
+                Some(r) => println!("runbook    {}", r.chars().take(300).collect::<String>()),
+                None => println!("runbook    none (no TechDocs or no matching page)"),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_report(alert: &Alert, answers: &TriageAnswers, decision: &Decision, response: &Response) {
     println!("alert     {}  ({})", alert.title, alert.source);
     println!("model     {}", response.model);
+    if let Some(c) = &alert.component {
+        println!(
+            "component {}  catalog owner: {}",
+            c.name,
+            c.owner.as_deref().unwrap_or("-")
+        );
+    }
+    let owner_label = answers
+        .candidates
+        .get(&answers.owner.chosen)
+        .map_or(answers.owner.chosen.as_str(), |c| c.label.as_str());
     println!(
-        "owner     {:<14} confidence {}",
-        answers.owner.chosen.key(),
-        answers.owner.confidence
+        "owner     {:<24} confidence {}",
+        owner_label, answers.owner.confidence
     );
     println!(
         "impact    {:.2} → {}  (confidence {})",
@@ -354,7 +482,7 @@ fn print_report(alert: &Alert, answers: &TriageAnswers, decision: &Decision, res
     );
     println!("actionable p={}", answers.actionable.yes);
     if let Some(d) = &answers.duplicate_of {
-        println!("duplicate {:<14} confidence {}", d.chosen, d.confidence);
+        println!("duplicate {:<24} confidence {}", d.chosen, d.confidence);
     }
     if let Some(c) = &answers.caused_by_change {
         println!("caused by recent change p={}", c.yes);

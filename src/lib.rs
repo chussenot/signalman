@@ -49,12 +49,16 @@
 //! * [`client`] talks HTTP with SDK-equivalent defaults, retries and errors.
 //! * [`triage`] is the application: speculative fan-out over an alert, then a
 //!   routing policy with risk-scaled confidence thresholds.
+//! * [`backstage`] resolves the alerting component in the software catalog,
+//!   offers its owner group and neighbours as owner candidates, pulls the
+//!   runbook from TechDocs, and notifies the owning group.
 //! * [`incidentio`] connects the triage to incident.io: an API client, Svix
 //!   webhook verification, and the sync flow that triages an alert incident.io
 //!   received and writes tags and incident attachments back.
 //! * [`serve`] is the webhook receiver.
 
 pub mod answer;
+pub mod backstage;
 pub mod client;
 pub mod error;
 pub mod http;

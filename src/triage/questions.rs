@@ -3,13 +3,15 @@
 
 use serde_json::{Value, json};
 
-use super::Alert;
+use super::{Alert, OwnerCandidates};
 use crate::answer::{Choice, Noul, Response, Score};
 use crate::question::{Handle, NoulCriteria, Questions};
 use crate::{Result, options};
 
 options! {
-    /// Which team owns first response.
+    /// The static team list, used when no software catalog is configured.
+    /// Adapt it to your organisation, or configure Backstage and let the
+    /// catalog supply the groups.
     pub enum Team {
         /// Kubernetes, CI/CD, IDP, cluster add-ons.
         Platform = "platform" => "Kubernetes, cluster add-ons, CI/CD, internal developer platform, cloud accounts and quotas",
@@ -27,6 +29,9 @@ options! {
         Unclear = "none_of_these" => "Not clearly attributable to any listed team from the information given",
     }
 }
+
+/// Key of the owner question's no-match option.
+pub const NONE_OF_THESE: &str = "none_of_these";
 
 /// User-facing impact levels, lowest first. Order matters: the Score's
 /// numeric value is a position on this list.
@@ -70,8 +75,10 @@ pub const NO_DUPLICATE: &str = "none";
 pub struct TriageQuestions {
     /// The wire questions.
     pub questions: Questions,
+    /// The owner option set, to map the chosen key back to a candidate.
+    pub candidates: OwnerCandidates,
     /// Who should own first response.
-    pub owner: Handle<Choice<Team>>,
+    pub owner: Handle<Choice<String>>,
     /// User-facing impact.
     pub impact: Handle<Score>,
     /// Does a human need to act now?
@@ -85,17 +92,32 @@ pub struct TriageQuestions {
 }
 
 impl TriageQuestions {
-    /// Build the question set for an alert. Questions reference the state by
-    /// backticked path, as the docs recommend.
+    /// Build the question set with the static team list as owner candidates.
     pub fn for_alert(alert: &Alert) -> Result<Self> {
+        Self::for_alert_with(alert, OwnerCandidates::from_teams())
+    }
+
+    /// Build the question set with explicit owner candidates (for example
+    /// groups from the software catalog). Questions reference the state by
+    /// backticked path, as the docs recommend.
+    pub fn for_alert_with(alert: &Alert, candidates: OwnerCandidates) -> Result<Self> {
         let mut q = Questions::new();
 
-        let owner = q.choice::<Team>(
+        let mut owner_instructions = json!({
+            "question": "Which team should own the first response to `alert`?",
+            "guidance": "Decide from the failing component in `alert.title`, `alert.description` and `alert.labels`, not from who is mentioned. Use `alert.runbook` when present.",
+        });
+        if alert.component.is_some() {
+            owner_instructions["catalog"] = json!(
+                "`alert.component` is the software catalog's record of the alerting component. `alert.component.owner` is its registered owner; prefer that team unless the alert clearly concerns one of `alert.component.depends_on` or another component instead. `alert.component.dependents` shows what breaks downstream."
+            );
+        }
+        let owner = q.dynamic_choice(
             "owner",
-            json!({
-                "question": "Which team should own the first response to `alert`?",
-                "guidance": "Decide from the failing component in `alert.title`, `alert.description` and `alert.labels`, not from who is mentioned. Use `alert.runbook` when present.",
-            }),
+            owner_instructions,
+            candidates
+                .iter()
+                .map(|c| (c.key.clone(), Some(c.description.clone()))),
         )?;
 
         let impact = q.score(
@@ -146,6 +168,7 @@ impl TriageQuestions {
 
         Ok(Self {
             questions: q,
+            candidates,
             owner,
             impact,
             actionable,
@@ -163,6 +186,7 @@ impl TriageQuestions {
     pub fn read(&self, response: &Response) -> Result<TriageAnswers> {
         Ok(TriageAnswers {
             owner: response.get(&self.owner)?,
+            candidates: self.candidates.clone(),
             impact: response.get(&self.impact)?,
             actionable: response.get(&self.actionable)?,
             duplicate_of: self
@@ -183,8 +207,10 @@ impl TriageQuestions {
 /// Typed answers for one alert.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriageAnswers {
-    /// Owning team with distribution and confidence.
-    pub owner: Choice<Team>,
+    /// Owning team key with distribution and confidence.
+    pub owner: Choice<String>,
+    /// The option set the owner was chosen from.
+    pub candidates: OwnerCandidates,
     /// Impact on the [`Impact::LEVELS`] scale.
     pub impact: Score,
     /// Probability a human must act.
@@ -203,7 +229,8 @@ mod tests {
 
     use super::*;
     use crate::Options;
-    use crate::triage::OpenIncident;
+    use crate::triage::{OpenIncident, OwnerCandidate};
+    use std::collections::BTreeMap;
 
     fn alert() -> Alert {
         Alert {
@@ -214,9 +241,9 @@ mod tests {
             runbook: None,
             recent_changes: vec![],
             open_incidents: vec![],
+            component: None,
         }
     }
-    use std::collections::BTreeMap;
 
     #[test]
     fn speculative_questions_are_only_asked_when_answerable() {
@@ -243,11 +270,45 @@ mod tests {
     }
 
     #[test]
-    fn team_keys_round_trip() {
+    fn static_owner_candidates_mirror_the_team_enum() {
+        let q = TriageQuestions::for_alert(&alert()).unwrap();
+        let json = serde_json::to_value(&q.questions).unwrap();
+        let criteria = json["owner"]["criteria"].as_object().unwrap();
         for t in Team::ALL {
-            assert_eq!(Team::from_key(t.key()), Some(*t));
+            assert!(criteria.contains_key(t.key()), "{}", t.key());
         }
-        assert_eq!(Team::from_key("none_of_these"), Some(Team::Unclear));
+        assert_eq!(criteria.len(), Team::ALL.len());
+        assert!(json["owner"]["instructions"].get("catalog").is_none());
+    }
+
+    #[test]
+    fn catalog_candidates_replace_the_static_list_and_add_guidance() {
+        let mut a = alert();
+        a.component = Some(crate::triage::ComponentContext {
+            name: "checkout-api".into(),
+            owner: Some("Payments".into()),
+            ..Default::default()
+        });
+        let cands = OwnerCandidates::new(vec![OwnerCandidate {
+            key: "payments".into(),
+            label: "Payments".into(),
+            description: "Owns checkout".into(),
+            entity_ref: Some("group:default/payments".into()),
+        }]);
+        let q = TriageQuestions::for_alert_with(&a, cands).unwrap();
+        let json = serde_json::to_value(&q.questions).unwrap();
+        let criteria = json["owner"]["criteria"].as_object().unwrap();
+        assert_eq!(criteria.len(), 2);
+        assert_eq!(criteria["payments"], "Owns checkout");
+        assert!(criteria.contains_key(NONE_OF_THESE));
+        assert!(
+            json["owner"]["instructions"]["catalog"]
+                .as_str()
+                .unwrap()
+                .contains("alert.component.owner")
+        );
+        let state = TriageQuestions::state(&a);
+        assert_eq!(state["alert"]["component"]["owner"], "Payments");
     }
 
     #[test]
