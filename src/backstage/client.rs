@@ -138,6 +138,11 @@ impl Client {
         std::env::var(BASE_URL_ENV).is_ok_and(|v| !v.trim().is_empty())
     }
 
+    /// The backend base URL this client talks to.
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
     /// `GET /catalog/entities/by-name/{kind}/{namespace}/{name}`; `None` on 404.
     pub async fn get_by_name(&self, entity_ref: &EntityRef) -> Result<Option<Entity>> {
         let path = format!(

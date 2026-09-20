@@ -1,6 +1,6 @@
 [package]
 name = "signalman"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Typed Rust client for the TypeSafe System One API, with an alert-triage example"
@@ -17,6 +17,7 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 fastrand = "2"
 hmac = "0.12"
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "charset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

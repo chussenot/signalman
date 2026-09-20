@@ -21,6 +21,9 @@ The `state` is `{ "alert": Alert }`. Every field either answers a question or is
 | `open_incidents` | live incidents from incident.io, capped at 40 | `duplicate_of` |
 | `recent_changes` | the alert file today; deploy sources are on the roadmap | `caused_by_change` |
 | `component` | the Backstage catalog: owner, lifecycle, system, dependencies, dependents, tags, links | owner, impact |
+| `related_alerts` | alerts firing in incident.io in the recent window (default 30 minutes, at most 20): title, age in minutes, component label | impact |
+
+`related_alerts` is the blast radius as the hub sees it at that moment. When it is non-empty the impact question is told that several alerts on the same component, or on the component's dependents, indicate broader impact than the alert alone shows, and that unrelated ones do not raise it. The list is also written into the [qualification note](incidentio.md#the-qualification-note), so the responder sees the same context the model did.
 
 ## Which questions are asked
 

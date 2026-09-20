@@ -436,3 +436,32 @@ mod tests {
         assert_eq!(alert.tag_names(), vec!["noisy"]);
     }
 }
+
+/// A note on an alert (`/v1/alert_notes`): a markdown body a responder reads
+/// in the alert view. signalman keeps exactly one per alert and rewrites it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertNote {
+    /// ULID.
+    pub id: String,
+    /// The alert it is attached to; `None` for alert-group notes.
+    #[serde(default)]
+    pub alert_id: Option<String>,
+    /// Markdown body.
+    pub content: String,
+    /// Creation time (RFC 3339).
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Last update time (RFC 3339).
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AlertNoteEnvelope {
+    pub alert_note: AlertNote,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AlertNotesPage {
+    pub alert_notes: Vec<AlertNote>,
+}

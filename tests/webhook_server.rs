@@ -17,7 +17,10 @@ use signalman::serve::{AppState, router};
 use signalman::triage::Decision;
 use signalman::{Client, RetryPolicy};
 use tower::ServiceExt;
-use wiremock::matchers::{body_json, body_partial_json, body_string_contains, method, path};
+use wiremock::matchers::{
+    body_json, body_partial_json, body_string_contains, method, path, query_param,
+    query_param_contains,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const SECRET: &str = "whsec_plJ3nmyCDGBKInavdOK15jsl";
@@ -77,7 +80,7 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
             "alert": {
                 "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
                 "description": "5xx ratio 12% for 10m on checkout-api", "status": "firing",
-                "deduplication_key": "dd:123",
+                "deduplication_key": "dd:123", "created_at": "2026-09-20T11:58:00Z",
                 "attributes": [{
                     "attribute": { "id": "x", "name": "Service", "array": false, "required": false, "type": "String" },
                     "value": { "literal": "checkout-api", "label": "checkout-api" }
@@ -93,6 +96,7 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
             "incidents": [{
                 "id": "01INC4821", "reference": "INC-4821", "name": "Checkout 5xx spike",
                 "summary": "payments-gateway returning errors",
+                "permalink": "https://app.incident.io/org/incidents/4821",
                 "incident_status": { "id": "s", "name": "Active", "category": "live" },
                 "severity": { "id": "sev", "name": "Major", "rank": 2 }, "mode": "standard"
             }],
@@ -101,11 +105,60 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
         .mount(&incidentio_srv)
         .await;
 
-    // TypeSafe must have been offered INC-4821 and `none` as dedup options.
+    // Blast radius: firing alerts in the window. The alert itself is dropped.
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .and(query_param("status[one_of]", "firing"))
+        .and(query_param_contains("created_at[gte]", "T"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alerts": [
+                { "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api", "status": "firing",
+                  "attributes": [], "tags": [], "created_at": "2026-09-20T11:58:00Z" },
+                { "id": "al-9", "alert_source_id": "src-dd", "title": "HighLatency payments-gateway", "status": "firing",
+                  "attributes": [{
+                      "attribute": { "id": "x", "name": "Service", "array": false, "required": false, "type": "String" },
+                      "value": { "literal": "payments-gateway", "label": "payments-gateway" }
+                  }],
+                  "tags": [], "created_at": "2026-09-20T11:55:00Z" }
+            ],
+            "pagination_meta": { "page_size": 50 }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+
+    // Qualification note: none yet, so one is created and it names the incident.
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .and(query_param("alert_id", "al-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alert_notes": [] })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alert_notes"))
+        .and(body_partial_json(json!({ "alert_id": "al-1" })))
+        .and(body_string_contains("**Signalman qualification**"))
+        .and(body_string_contains(
+            "Attach to [INC-4821](https://app.incident.io/org/incidents/4821)",
+        ))
+        .and(body_string_contains("HighLatency payments-gateway ("))
+        .and(body_string_contains("Time to qualify:"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "alert_note": { "id": "note-1", "alert_id": "al-1", "content": "…" }
+        })))
+        .expect(u64::from(expect_triage && write_back == WriteBack::Apply))
+        .mount(&incidentio_srv)
+        .await;
+
+    // TypeSafe must have been offered INC-4821 and `none` as dedup options,
+    // and see the other firing alert as blast-radius context.
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
         .and(body_partial_json(json!({
-            "state": { "alert": { "labels": { "Service": "checkout-api" }, "open_incidents": [{ "id": "INC-4821" }] } },
+            "state": { "alert": {
+                "labels": { "Service": "checkout-api" },
+                "open_incidents": [{ "id": "INC-4821" }],
+                "related_alerts": [{ "title": "HighLatency payments-gateway", "component": "payments-gateway" }]
+            } },
             "questions": { "duplicate_of": { "criteria": { "INC-4821": "Checkout 5xx spike [Major]: payments-gateway returning errors" } } }
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -194,6 +247,9 @@ async fn signed_alert_created_webhook_triages_tags_and_attaches() {
     );
     assert_eq!(outcome.attached_to.as_ref().unwrap().id, "01INC4821");
     assert_eq!(outcome.candidates_offered, 1);
+    assert_eq!(outcome.related_alerts, 1);
+    assert_eq!(outcome.note_id.as_deref(), Some("note-1"));
+    assert!(outcome.time_to_qualify_seconds.is_some_and(|s| s > 0.0));
     assert!(outcome.applied);
     h.incidentio.verify().await;
 }
@@ -349,6 +405,56 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
         )
         .mount(&incidentio_srv)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alerts": [] })))
+        .mount(&incidentio_srv)
+        .await;
+    // A note from an earlier pass is rewritten in place; a human note is left alone.
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .and(query_param("alert_id", "al-2"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "alert_notes": [
+            { "id": "n-human", "alert_id": "al-2", "content": "Customer reports checkout 500s" },
+            { "id": "n-old", "alert_id": "al-2", "content": "**Signalman qualification**\n\nold" }
+        ] })),
+        )
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alert_notes"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({ "alert_note": { "id": "never", "content": "" } })),
+        )
+        .expect(0)
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/alert_notes/n-old"))
+        .and(body_string_contains("Page **Payments** (Major impact)"))
+        .and(body_string_contains(format!(
+            "[Payments]({}/catalog/default/group/payments)",
+            backstage_srv.uri()
+        )))
+        .and(body_string_contains(format!(
+            "[checkout-api]({}/catalog/default/component/checkout-api)",
+            backstage_srv.uri()
+        )))
+        .and(body_string_contains(format!(
+            "[TechDocs page]({}/docs/default/component/checkout-api/runbooks/high-error-rate/)",
+            backstage_srv.uri()
+        )))
+        .and(body_string_contains(
+            "Related firing alerts (last 30 min): none",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert_note": { "id": "n-old", "alert_id": "al-2", "content": "…" }
+        })))
+        .expect(1)
+        .mount(&incidentio_srv)
+        .await;
     Mock::given(method("POST"))
         .and(path("/v2/alerts/al-2/actions/add_tags"))
         .and(body_json(json!({ "tags": ["ai-team-payments", "ai-impact-major", "ai-action-page"] })))
@@ -491,6 +597,8 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
     assert_eq!(outcome.component.as_deref(), Some("checkout-api"));
     assert_eq!(outcome.notified.as_deref(), Some("group:default/payments"));
     assert_eq!(outcome.owner_candidates_offered, 3);
+    assert_eq!(outcome.note_id.as_deref(), Some("n-old"));
+    assert_eq!(outcome.related_alerts, 0);
     match outcome.decision {
         Decision::Page { owner, .. } => {
             assert_eq!(owner.key, "payments");

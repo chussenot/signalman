@@ -7,11 +7,16 @@ use serde::Serialize;
 
 use super::client::Client;
 use super::error::Result;
-use super::types::{Entity, EntityRef, NotificationPayload, NotificationSeverity, SearchIndex};
+use super::types::{
+    Entity, EntityRef, NotificationPayload, NotificationSeverity, SearchDoc, SearchIndex,
+};
 use crate::triage::{ComponentContext, Decision, Impact, OwnerCandidate, OwnerCandidates};
 
 /// Default cap on owner candidates offered to the model.
 pub const DEFAULT_MAX_CANDIDATES: usize = 24;
+/// Environment variable naming the Backstage frontend URL used in links.
+pub const APP_URL_ENV: &str = "BACKSTAGE_APP_URL";
+
 /// Default cap on the runbook excerpt.
 pub const DEFAULT_RUNBOOK_CHARS: usize = 1_800;
 
@@ -26,6 +31,9 @@ pub struct Enricher {
     pub max_candidates: usize,
     /// Cap on the runbook excerpt length.
     pub runbook_chars: usize,
+    /// Frontend base URL for links in notes: `BACKSTAGE_APP_URL`, or the
+    /// backend URL when the app is served from the same host.
+    pub app_url: String,
 }
 
 /// What the catalog contributed for one alert.
@@ -38,6 +46,10 @@ pub struct Enrichment {
     pub candidates: OwnerCandidates,
     /// Runbook excerpt from TechDocs.
     pub runbook: Option<String>,
+    /// TechDocs page the excerpt came from.
+    pub runbook_url: Option<String>,
+    /// Backstage page of the resolved component.
+    pub component_url: Option<String>,
     /// How the component was found, for logs.
     pub matched_by: Option<String>,
 }
@@ -45,12 +57,40 @@ pub struct Enrichment {
 impl Enricher {
     /// Build with defaults.
     pub fn new(client: Client) -> Self {
+        let app_url = std::env::var(APP_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| client.base_url().as_str().to_owned());
         Self {
             client,
             namespace: std::env::var("BACKSTAGE_NAMESPACE").unwrap_or_else(|_| "default".into()),
             max_candidates: DEFAULT_MAX_CANDIDATES,
             runbook_chars: DEFAULT_RUNBOOK_CHARS,
+            app_url: app_url.trim_end_matches('/').to_owned(),
         }
+    }
+
+    /// Frontend page of an entity: `{app_url}/catalog/{namespace}/{kind}/{name}`.
+    pub fn entity_url(&self, r: &EntityRef) -> String {
+        format!(
+            "{}/catalog/{}/{}/{}",
+            self.app_url,
+            r.namespace,
+            r.kind.to_ascii_lowercase(),
+            r.name
+        )
+    }
+
+    /// TechDocs page: `{app_url}/docs/{namespace}/{kind}/{name}/{location}`.
+    pub fn techdocs_url(&self, r: &EntityRef, location: &str) -> String {
+        format!(
+            "{}/docs/{}/{}/{}/{}",
+            self.app_url,
+            r.namespace,
+            r.kind.to_ascii_lowercase(),
+            r.name,
+            location.trim_start_matches('/')
+        )
     }
 
     /// Resolve `hints` (service names, component names or entity refs) to a
@@ -69,6 +109,8 @@ impl Enricher {
                 component: None,
                 candidates,
                 runbook: None,
+                runbook_url: None,
+                component_url: None,
                 matched_by: None,
             });
         };
@@ -126,7 +168,11 @@ impl Enricher {
             candidates = self.all_team_candidates().await?;
         }
 
-        let runbook = self.runbook_for(&component, alert_text).await?;
+        let (runbook, runbook_url) = self
+            .runbook_for(&component, alert_text)
+            .await?
+            .map_or((None, None), |(text, url)| (Some(text), Some(url)));
+        let component_url = Some(self.entity_url(&component.entity_ref()));
 
         let owner_group = groups
             .iter()
@@ -177,6 +223,8 @@ impl Enricher {
             component: Some(context),
             candidates,
             runbook,
+            runbook_url,
+            component_url,
             matched_by,
         })
     }
@@ -294,14 +342,24 @@ impl Enricher {
         OwnerCandidates::new(list)
     }
 
-    async fn runbook_for(&self, component: &Entity, alert_text: &str) -> Result<Option<String>> {
+    /// Runbook excerpt and the TechDocs page it came from.
+    async fn runbook_for(
+        &self,
+        component: &Entity,
+        alert_text: &str,
+    ) -> Result<Option<(String, String)>> {
         let Some(docs_ref) = component.techdocs_entity() else {
             return Ok(None);
         };
         let Some(index) = self.client.techdocs_search_index(&docs_ref).await? else {
             return Ok(None);
         };
-        Ok(select_runbook(&index, alert_text, self.runbook_chars))
+        Ok(select_runbook_doc(&index, alert_text).map(|d| {
+            (
+                excerpt(d, self.runbook_chars),
+                self.techdocs_url(&docs_ref, &d.location),
+            )
+        }))
     }
 
     /// Tell the owning group what was decided. Only for decisions that need
@@ -355,12 +413,18 @@ impl Enricher {
 /// Pick the search-index entry that best matches the alert and return its
 /// text, bounded. Prefers pages under a `runbook` path, then title overlap.
 pub fn select_runbook(index: &SearchIndex, alert_text: &str, max_chars: usize) -> Option<String> {
+    select_runbook_doc(index, alert_text).map(|d| excerpt(d, max_chars))
+}
+
+/// The search-index entry that best matches the alert, if any scores above
+/// the noise floor.
+pub fn select_runbook_doc<'a>(index: &'a SearchIndex, alert_text: &str) -> Option<&'a SearchDoc> {
     let words: BTreeSet<String> = alert_text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 3)
         .map(str::to_ascii_lowercase)
         .collect();
-    let scored = index
+    index
         .docs
         .iter()
         .filter(|d| !d.text.trim().is_empty())
@@ -386,21 +450,24 @@ pub fn select_runbook(index: &SearchIndex, alert_text: &str, max_chars: usize) -
             (score, d)
         })
         .filter(|(s, _)| *s > 1)
-        .max_by_key(|(s, d)| (*s, std::cmp::Reverse(d.location.len())));
-    scored.map(|(_, d)| {
-        let mut text = format!(
-            "{} ({}): {}",
-            d.title.trim(),
-            d.location.trim_end_matches('/'),
-            d.text.trim()
-        );
-        if text.len() > max_chars {
-            let cut = text.floor_char_boundary(max_chars);
-            text.truncate(cut);
-            text.push('…');
-        }
-        text
-    })
+        .max_by_key(|(s, d)| (*s, std::cmp::Reverse(d.location.len())))
+        .map(|(_, d)| d)
+}
+
+/// `Title (location): text`, cut at `max_chars` on a character boundary.
+fn excerpt(d: &SearchDoc, max_chars: usize) -> String {
+    let mut text = format!(
+        "{} ({}): {}",
+        d.title.trim(),
+        d.location.trim_end_matches('/'),
+        d.text.trim()
+    );
+    if text.len() > max_chars {
+        let cut = text.floor_char_boundary(max_chars);
+        text.truncate(cut);
+        text.push('…');
+    }
+    text
 }
 
 fn describe(decision: &Decision) -> String {

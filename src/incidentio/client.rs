@@ -15,9 +15,9 @@ use serde::de::DeserializeOwned;
 
 use super::error::{Error, Result};
 use super::types::{
-    Alert, AlertEnvelope, AlertEvent, AlertEventAck, AlertsPage, Identity, IdentityEnvelope,
-    Incident, IncidentAlert, IncidentAlertEnvelope, IncidentEnvelope, IncidentsPage,
-    StatusCategory,
+    Alert, AlertEnvelope, AlertEvent, AlertEventAck, AlertNote, AlertNoteEnvelope, AlertNotesPage,
+    AlertsPage, Identity, IdentityEnvelope, Incident, IncidentAlert, IncidentAlertEnvelope,
+    IncidentEnvelope, IncidentsPage, StatusCategory,
 };
 use crate::http::{self, Completed, Exhausted, RetryPolicy};
 
@@ -325,6 +325,76 @@ impl Client {
                 .body(body.clone())
         })
         .await
+    }
+
+    /// Firing alerts created at or after `since` (RFC 3339), in the API's
+    /// order. One page, capped at [`MAX_PAGE_SIZE`]: this is blast-radius
+    /// context, where a bounded sample is enough and a second call is not.
+    pub async fn list_firing_alerts_since(&self, since: &str, max: usize) -> Result<Vec<Alert>> {
+        let mut url = self.url("v2/alerts")?;
+        url.query_pairs_mut()
+            .append_pair("status[one_of]", "firing")
+            .append_pair("created_at[gte]", since)
+            .append_pair("page_size", &max.clamp(1, MAX_PAGE_SIZE).to_string());
+        let page: AlertsPage = self
+            .call(|| {
+                self.http
+                    .get(url.clone())
+                    .header(AUTHORIZATION, self.auth.clone())
+            })
+            .await?;
+        Ok(page.alerts)
+    }
+
+    /// `GET /v1/alert_notes?alert_id=…`: the notes on one alert.
+    pub async fn list_alert_notes(&self, alert_id: &str) -> Result<Vec<AlertNote>> {
+        let mut url = self.url("v1/alert_notes")?;
+        url.query_pairs_mut()
+            .append_pair("alert_id", alert_id)
+            .append_pair("page_size", "50");
+        let page: AlertNotesPage = self
+            .call(|| {
+                self.http
+                    .get(url.clone())
+                    .header(AUTHORIZATION, self.auth.clone())
+            })
+            .await?;
+        Ok(page.alert_notes)
+    }
+
+    /// `POST /v1/alert_notes`: add a markdown note to an alert.
+    pub async fn create_alert_note(&self, alert_id: &str, content: &str) -> Result<AlertNote> {
+        let url = self.url("v1/alert_notes")?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "alert_id": alert_id,
+            "content": content,
+        }))?;
+        let env: AlertNoteEnvelope = self
+            .call(|| {
+                self.http
+                    .post(url.clone())
+                    .header(AUTHORIZATION, self.auth.clone())
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+            })
+            .await?;
+        Ok(env.alert_note)
+    }
+
+    /// `PUT /v1/alert_notes/{id}`: replace a note's content.
+    pub async fn update_alert_note(&self, note_id: &str, content: &str) -> Result<AlertNote> {
+        let url = self.url(&format!("v1/alert_notes/{note_id}"))?;
+        let body = serde_json::to_vec(&serde_json::json!({ "content": content }))?;
+        let env: AlertNoteEnvelope = self
+            .call(|| {
+                self.http
+                    .put(url.clone())
+                    .header(AUTHORIZATION, self.auth.clone())
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+            })
+            .await?;
+        Ok(env.alert_note)
     }
 
     fn url(&self, path: &str) -> Result<Url> {

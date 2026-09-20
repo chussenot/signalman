@@ -217,6 +217,7 @@ async fn triage_end_to_end_attaches_to_duplicate_incident() {
             summary: "Checkout 5xx spike".into(),
         }],
         component: None,
+        related_alerts: vec![],
     };
     let questions = TriageQuestions::for_alert(&alert).unwrap();
     let c = client(&server, RetryPolicy::none());
