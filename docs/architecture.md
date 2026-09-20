@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Components of rustsafe, the flow of an alert through them, and the boundaries between model judgment, code policy and incident.io.
+description: Components of signalman, the flow of an alert through them, and the boundaries between model judgment, code policy and incident.io.
 status: current
 last_reviewed: 2026-09-20
 tags: [architecture]
@@ -22,7 +22,7 @@ tags: [architecture]
  └──────────────────────┘                          │ one request
             ▲                                      │
             │  enriched alert event        ┌───────┴────────┐
-            └──────────────────────────────│    rustsafe    │
+            └──────────────────────────────│    signalman    │
                (CLI, optional)             │ serve · triage │
                                            └────────────────┘
 ```
@@ -53,7 +53,7 @@ The CLI path is the same flow with the alert read from a file, candidates option
 
 **Model versus code.** The model answers questions whose answer depends on reading and understanding text. Code decides which questions exist, which candidates are offered, how answers combine, and what happens next. A threshold change never requires re-running the model.
 
-**rustsafe versus incident.io.** rustsafe writes tags and attachments. incident.io owns incident creation, escalation, notification and the human workflow. This is recorded in [decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
+**signalman versus incident.io.** signalman writes tags and attachments. incident.io owns incident creation, escalation, notification and the human workflow. This is recorded in [decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
 
 **Typed versus dynamic.** Question ids are only wire keys. The typed handle returned when a question is added carries the answer type, so a Choice over `Team` deserialises into `Team` and a mismatch is an error. Where options are only known at runtime, such as incident references, a dynamic Choice returns strings and the code maps them back.
 

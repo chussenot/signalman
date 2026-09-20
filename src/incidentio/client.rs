@@ -91,7 +91,7 @@ impl ClientBuilder {
         let base_url = Url::parse(&self.base_url).map_err(|e| Error::Url(e.to_string()))?;
         let http = reqwest::Client::builder()
             .timeout(self.timeout)
-            .user_agent(concat!("rustsafe/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("signalman/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Transport {
                 attempts: 0,

@@ -23,7 +23,7 @@ There is no official Rust SDK. The client mirrors the Python SDK's defaults so b
 Adding a question returns a `Handle<A>` whose type parameter is the answer type. Reading through the handle checks the primitive and converts.
 
 ```rust
-use rustsafe::{Client, Questions, options};
+use signalman::{Client, Questions, options};
 
 options! {
     enum Department {
@@ -75,4 +75,4 @@ The response's `model` field is the versioned id that answered, for example `jev
 
 ## Errors
 
-`rustsafe::Error` distinguishes `MissingApiKey`, `Unauthorized` (401), `InvalidRequest` (422 with the body), `RateLimited` and `Overloaded` (429 and 529 after retries, with attempt counts), `Http`, `Transport`, and `Decode`, plus the typed-layer errors above. The API key is marked sensitive and redacted from `Debug` output.
+`signalman::Error` distinguishes `MissingApiKey`, `Unauthorized` (401), `InvalidRequest` (422 with the body), `RateLimited` and `Overloaded` (429 and 529 after retries, with attempt counts), `Http`, `Transport`, and `Decode`, plus the typed-layer errors above. The API key is marked sensitive and redacted from `Debug` output.

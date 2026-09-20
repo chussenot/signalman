@@ -1,5 +1,5 @@
 [package]
-name = "rustsafe"
+name = "signalman"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [[bin]]
-name = "rustsafe"
+name = "signalman"
 path = "src/main.rs"
 
 [dependencies]

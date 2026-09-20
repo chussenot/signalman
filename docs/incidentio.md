@@ -1,6 +1,6 @@
 ---
 title: incident.io integration
-description: How rustsafe receives incident.io webhooks, what it reads and writes through the API, and how to configure alert routes to act on the result.
+description: How signalman receives incident.io webhooks, what it reads and writes through the API, and how to configure alert routes to act on the result.
 status: current
 last_reviewed: 2026-09-20
 tags: [incidentio, webhooks]
@@ -8,7 +8,7 @@ tags: [incidentio, webhooks]
 
 # incident.io integration
 
-incident.io is used as the alert hub. Alerts from every source land there first; rustsafe reacts to them and writes judgments back. It never creates incidents ([decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md)).
+incident.io is used as the alert hub. Alerts from every source land there first; signalman reacts to them and writes judgments back. It never creates incidents ([decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md)).
 
 Contract sources: the [OpenAPI v3 specification](https://api.incident.io/v1/openapiV3.json), the [documentation index](https://docs.incident.io/llms.txt) and the [webhook guide](https://docs.incident.io/api-reference/webhooks.md).
 
@@ -36,7 +36,7 @@ Tag names are lowercase with hyphens, prefixed `ai-` so they can be filtered and
 
 ## Setup
 
-1. Create an API key with view alerts, view incidents, manage alert tags and manage incident alerts. `rustsafe incidentio whoami` prints the roles the key has.
+1. Create an API key with view alerts, view incidents, manage alert tags and manage incident alerts. `signalman incidentio whoami` prints the roles the key has.
 2. Run the receiver where incident.io can reach it. For local work, Svix Play or ngrok.
 3. Settings → Webhooks → add endpoint, subscribe to **Alert created (public)**, copy the signing secret into `INCIDENTIO_WEBHOOK_SECRET`.
 4. Send a test event from the webhook settings page. A signature failure is a 401 with the reason in the body.

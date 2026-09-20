@@ -6,19 +6,19 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
-use rustsafe::incidentio::types::{AlertEvent, AlertStatus};
-use rustsafe::incidentio::webhook::WebhookSecret;
-use rustsafe::incidentio::{self, Triager, WriteBack};
-use rustsafe::serve::{AppState, router};
-use rustsafe::triage::{
+use signalman::incidentio::types::{AlertEvent, AlertStatus};
+use signalman::incidentio::webhook::WebhookSecret;
+use signalman::incidentio::{self, Triager, WriteBack};
+use signalman::serve::{AppState, router};
+use signalman::triage::{
     Alert, Decision, OpenIncident, Policy, TriageAnswers, TriageQuestions, decide,
 };
-use rustsafe::{Client, Options, Request, Response};
+use signalman::{Client, Options, Request, Response};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    name = "rustsafe",
+    name = "signalman",
     version,
     about = "TypeSafe-powered alert triage with incident.io"
 )]
@@ -36,7 +36,7 @@ enum Command {
     /// Receive incident.io webhooks and triage new alerts.
     Serve {
         /// Listen address.
-        #[arg(long, env = "RUSTSAFE_ADDR", default_value = "127.0.0.1:8080")]
+        #[arg(long, env = "SIGNALMAN_ADDR", default_value = "127.0.0.1:8080")]
         addr: SocketAddr,
         /// Accept unsigned deliveries. Local development only.
         #[arg(long)]
@@ -56,7 +56,7 @@ struct TriageArgs {
     /// Path to an alert JSON document.
     alert: PathBuf,
     /// Model name or alias (env: TYPESAFE_DEFAULT_MODEL).
-    #[arg(long, env = "TYPESAFE_DEFAULT_MODEL", default_value = rustsafe::client::DEFAULT_MODEL)]
+    #[arg(long, env = "TYPESAFE_DEFAULT_MODEL", default_value = signalman::client::DEFAULT_MODEL)]
     model: String,
     /// Replace `open_incidents` with the live incidents from incident.io.
     #[arg(long)]

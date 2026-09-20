@@ -1,6 +1,6 @@
 ---
 title: Documentation
-description: Map of the rustsafe documentation set and the conventions its pages follow.
+description: Map of the signalman documentation set and the conventions its pages follow.
 status: current
 last_reviewed: 2026-09-20
 tags: [index]
