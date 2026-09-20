@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Components of signalman, the flow of an alert through them, and the boundaries between model judgment, code policy and incident.io.
+description: The components of signalman, how an alert moves through them, where the boundaries between catalog, model and code lie, and how failures are contained.
 status: current
 last_reviewed: 2026-09-20
 tags: [architecture]
@@ -8,61 +8,116 @@ tags: [architecture]
 
 # Architecture
 
+signalman is a single Rust process with two entry points, an HTTP receiver and a CLI, that share one library. The library talks to three external systems and owns no state beyond an in-memory set of seen webhook ids. This page describes the moving parts and the path an alert takes. The [C4 model](c4/context.md) gives the same picture at three zoom levels.
+
 ## Components
 
-```
- Datadog / Alertmanager / ...          ┌──────────────────────────┐
-            │  alerts                   │        TypeSafe          │
-            ▼                           │  POST /v1/systemone      │
- ┌──────────────────────┐   webhook     │  owner? impact? action-  │
- │      incident.io     │ ────────────▶ │  able? duplicate of?     │
- │  alerts · incidents  │  alert_created│  caused by change?       │
- │  alert routes        │ ◀──────────── └──────────────────────────┘
- │  escalations         │  tags + attach          ▲
- └──────────────────────┘                          │ one request
-            ▲                                      │
-            │  enriched alert event        ┌───────┴────────┐
-            └──────────────────────────────│    signalman    │
-               (CLI, optional)             │ serve · triage │
-                                           └────────────────┘
+```mermaid
+flowchart LR
+    subgraph ext[External systems]
+        MON[Monitoring<br/>Datadog, Alertmanager, ...]
+        IO[incident.io<br/>alerts, incidents, alert routes]
+        TS[TypeSafe System One API]
+        BS[Backstage<br/>catalog, TechDocs, notifications]
+    end
+    subgraph sm[signalman]
+        SERVE[serve<br/>webhook receiver]
+        CLI[CLI<br/>triage, lookup, utilities]
+        SYNC[sync flow]
+        ENRICH[backstage::Enricher]
+        Q[triage::questions]
+        P[triage::policy]
+        TSC[TypeSafe client]
+        IOC[incident.io client]
+        BSC[Backstage client]
+    end
+    MON -->|alerts| IO
+    IO -->|alert_created webhook| SERVE
+    SERVE --> SYNC
+    CLI --> SYNC
+    SYNC --> IOC
+    SYNC --> ENRICH --> BSC --> BS
+    SYNC --> Q --> TSC --> TS
+    SYNC --> P
+    IOC --> IO
 ```
 
 | Component | Module | Responsibility |
 |---|---|---|
-| TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs` | Wire contract, retries, typed questions and answers |
-| Triage | `src/triage/` | The alert state, the fan-out questions, the routing policy |
+| Receiver | `src/serve.rs` | Verify the Svix signature, deduplicate deliveries, acknowledge, run the flow in the background |
+| Sync flow | `src/incidentio/sync.rs` | Fetch fresh state, enrich, ask, decide, write back |
+| Enricher | `src/backstage/enrich.rs` | Resolve the component, assemble owner candidates, pick the runbook, notify the owner |
+| Questions | `src/triage/questions.rs` | Build the fan-out request with typed handles |
+| Policy | `src/triage/policy.rs` | Turn typed answers into one decision with risk-scaled thresholds |
+| TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs` | Wire contract, typed handles, validated probabilities |
 | incident.io client | `src/incidentio/client.rs`, `types.rs` | Incidents, alerts, tags, attachments, alert-source events |
-| Webhook verification | `src/incidentio/webhook.rs` | Svix signature check, event envelope parsing |
-| Backstage bridge | `src/backstage/` | Catalog client, component resolution, owner candidates, TechDocs runbook, owner notification |
-| Sync flow | `src/incidentio/sync.rs` | Fetch, enrich, judge, decide, write back |
-| Receiver | `src/serve.rs` | HTTP endpoint, idempotency, background execution |
-| Shared HTTP | `src/http.rs` | Retry policy and loop used by both clients |
-| CLI | `src/main.rs` | `triage`, `models`, `serve`, `incidentio` |
+| Backstage client | `src/backstage/client.rs`, `types.rs` | Catalog queries, TechDocs search index, notifications |
+| Shared HTTP | `src/http.rs` | One retry loop for all three clients |
+| CLI | `src/main.rs` | `triage`, `serve`, `models`, `incidentio`, `backstage` |
 
-## Flow of one alert
+## The path of one alert
 
-1. incident.io receives an alert from any source and emits `public_alert.alert_created_v1` to the webhook endpoint.
-2. The receiver verifies the signature, drops duplicate deliveries by `webhook-id`, replies 202, and spawns the flow.
-3. The flow fetches the alert by id and the incidents in `triage`, `live` and `paused` categories. Fetching fresh state is what makes delivery order irrelevant.
-4. When Backstage is configured, the alert's service attribute is resolved to a catalog component; its record, its neighbours and its TechDocs runbook join the state, and the owner groups of that neighbourhood become the owner options ([Backstage bridge](backstage.md)). Otherwise the compiled-in team list is offered.
-5. The alert and up to 40 candidate incidents become the `state`. One request asks every question the policy may need.
-6. Answers are read through typed handles and passed to the policy, which returns one decision.
-7. Tags are added to the alert. If the decision is to attach, the alert is connected to the chosen incident. If notifications are enabled, the owning group is told through Backstage.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant IO as incident.io
+    participant R as Receiver
+    participant F as Sync flow
+    participant BS as Backstage
+    participant TS as TypeSafe
+    IO->>R: POST /webhooks/incidentio (Svix-signed)
+    R->>R: verify signature, drop duplicate webhook-id
+    R-->>IO: 202 Accepted
+    R->>F: spawn triage(alert id)
+    F->>IO: GET alert by id
+    F->>IO: GET incidents in triage, live, paused
+    opt Backstage configured
+        F->>BS: resolve component, neighbours, owner groups
+        F->>BS: TechDocs search index
+    end
+    F->>TS: POST /v1/systemone (state + all questions)
+    TS-->>F: typed answers with probabilities
+    F->>F: decide(answers, policy)
+    F->>IO: add tags
+    opt decision is attach
+        F->>IO: attach alert to incident
+    end
+    opt notifications enabled and decision needs a person
+        F->>BS: notify owner group
+    end
+```
 
-The CLI path is the same flow with the alert read from a file, candidates optionally pulled from the API, and the write-back replaced by printing or by forwarding to an HTTP alert source.
+Fetching the alert and the incidents fresh (steps 5 and 6) is what makes delivery order irrelevant. The webhook carries an id and a snapshot; only the id is used.
 
 ## Boundaries
 
-**Model versus code.** The model answers questions whose answer depends on reading and understanding text. Code decides which questions exist, which candidates are offered, how answers combine, and what happens next. A threshold change never requires re-running the model.
+Three boundaries organise the design. Each is a decision record.
 
-**signalman versus incident.io.** signalman writes tags and attachments. incident.io owns incident creation, escalation, notification and the human workflow. This is recorded in [decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
+**Catalog versus model.** The catalog states facts: who owns what, what depends on what, what the runbook says. The model judges what those facts imply for this alert: which owner takes first response, how severe the impact is, whether it duplicates an open incident. The catalog never decides; the model never invents ownership. [ADR 0004](decisions/0004-catalog-is-the-ownership-source-of-truth.md).
 
-**Catalog versus model.** The catalog states who owns what and what depends on what. The model judges which of those parties should take first response for this alert. Neither substitutes for the other; see [decision 0004](decisions/0004-catalog-is-the-ownership-source-of-truth.md).
+**Model versus code.** The model answers narrow questions and returns probabilities. Code chooses the questions, the candidates, the thresholds and the actions. A threshold change never re-runs inference. [ADR 0002](decisions/0002-calibrated-judgments-over-generated-text.md).
 
-**Typed versus dynamic.** Question ids are only wire keys. The typed handle returned when a question is added carries the answer type, so a Score cannot be read as a Noul and a mismatch is an error. Options that are only known at runtime, such as incident references and catalog groups, use a dynamic Choice that returns keys, and the code maps them back to typed candidates.
+**signalman versus incident.io.** signalman writes tags and attachments. incident.io owns incident creation, escalation and the human workflow. [ADR 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
 
-## Failure posture
+A fourth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
 
-- A TypeSafe or incident.io error inside the flow is logged with the alert id; the webhook was already acknowledged, so incident.io does not retry. The alert simply carries no tags. Nothing is paged or suppressed on error.
-- A signature failure is a 401 and incident.io retries for 24 hours, which is the intended behaviour for a misconfigured secret.
-- Retries apply to transient statuses only, with jittered backoff and `Retry-After`.
+## Failure containment
+
+| Failure | Where it stops | Visible effect |
+|---|---|---|
+| Bad or missing signature | Receiver returns 401 | incident.io retries for 24 hours; fix the secret |
+| Unparseable body | Receiver returns 400 | incident.io retries; check the event subscription |
+| Duplicate delivery | Receiver returns 200 | none |
+| Backstage unreachable or entity missing | Enricher | Missing entities degrade to the static team list; transport errors fail the triage |
+| TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
+| Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
+| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
+
+The receiver acknowledges before the flow runs, so an upstream failure never causes incident.io to redeliver. That is deliberate: a redelivery would re-run the model on the same alert. The cost is that a failed triage needs the `incidentio triage-alert` command to retry by hand.
+
+## Further reading
+
+- [C4 model](c4/context.md): context, containers, components
+- [Triage](triage.md): the questions and the policy
+- [Backstage bridge](backstage.md): resolution, candidates, runbooks
+- [incident.io integration](incidentio.md): webhook verification and write-back

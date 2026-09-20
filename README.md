@@ -53,7 +53,8 @@ mise run serve          # webhook receiver on 127.0.0.1:8080
 
 | Page | Contents |
 |---|---|
-| [Architecture](docs/architecture.md) | Components, data flow, boundaries |
+| [Architecture](docs/architecture.md) | Components, the path of one alert, boundaries, failure containment |
+| [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams |
 | [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
 | [Triage](docs/triage.md) | The questions, the policy, how to tune it |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
@@ -62,7 +63,7 @@ mise run serve          # webhook receiver on 127.0.0.1:8080
 | [Operations](docs/operations.md) | Running, health, limits, failure modes |
 | [Development](docs/development.md) | Tools, tasks, gates, layout, planning, agent harness |
 | [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |
-| [Decisions](docs/decisions/README.md) | Architecture decision records |
+| [Decisions](docs/decisions/README.md) | Architecture decision records in MADR form |
 
 ## License
 

@@ -1,6 +1,6 @@
 ---
 title: Development
-description: Tools, tasks, quality gates, repository layout, planning with beads, and the Claude Code harness for contributors.
+description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, TechDocs rendering, and the Claude Code harness for contributors.
 status: current
 last_reviewed: 2026-09-20
 tags: [development, tooling]
@@ -10,11 +10,11 @@ tags: [development, tooling]
 
 ## Tools
 
-[mise](https://mise.jdx.dev) pins every tool in `mise.toml`: the Rust toolchain (version from `rust-toolchain.toml`), Node for the beads CLI, [prek](https://prek.j178.dev) for git hooks, and `bd`.
+[mise](https://mise.jdx.dev) pins every tool in `mise.toml`: the Rust toolchain (version from `rust-toolchain.toml`) and [prek](https://prek.j178.dev) for git hooks. The beads CLI `bd` is a one-time global install (`brew install beads` or `npm install -g @beads/bd`); it is not pinned because its npm package downloads a platform binary in a postinstall step that fails behind some proxies.
 
 ```sh
 mise install        # tools
-mise run setup      # git hooks: prek (pre-commit, pre-push) and beads
+mise run setup      # git hooks: prek (pre-commit, pre-push) chained before beads
 mise tasks          # everything below
 ```
 
@@ -35,19 +35,28 @@ mise tasks          # everything below
 | `triage:examples` | print the TypeSafe request for every example alert |
 | `bd:ready` / `bd:export` | ready issues / refresh the JSONL snapshot |
 
-## Git hooks
-
-`.pre-commit-config.yaml` is run by [prek](https://prek.j178.dev). On commit: whitespace and line-ending fixes, YAML/TOML/JSON syntax, merge markers, large files, private keys, no commits on `main`, `cargo fmt --check`, `cargo clippy`, Markdown frontmatter, and a refusal to commit `.env`. On push: `cargo test`. Beads-managed files and `Cargo.lock` are excluded from the fixers.
-
-Git's `core.hooksPath` is `.beads/hooks`, set by `bd init`. Those hook files are tracked and contain a beads-managed section between markers; beads preserves anything outside the markers when it upgrades them. `scripts/setup-hooks.sh` (run by `mise run setup`) adds a marked block before the beads section that calls prek, so every commit and push runs prek's hooks first and beads' hooks second. Do not run `prek install`: it would replace the beads files with prek's own shim.
-
-To run the hooks without committing: `mise run precommit`, or `prek run --all-files`.
-
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for both APIs, and policy tests round-trip fake responses through the real handles. Doc tests include a `compile_fail` case and are part of `cargo test`.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests include a `compile_fail` case. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
-CI (`.github/workflows/ci.yml`) runs the same gates and `prek run --all-files`.
+## Git hooks
+
+Git's `core.hooksPath` is `.beads/hooks`, set by `bd init`. Those files are tracked and hold a beads-managed section between markers; beads preserves anything outside the markers when it upgrades them. `scripts/setup-hooks.sh` inserts a marked block before the beads section that runs prek, so the order on every commit and push is prek first, beads second. Never run `prek install`: it would replace the beads files with prek's own shim.
+
+```mermaid
+flowchart TD
+    C[git commit] --> H[.beads/hooks/pre-commit]
+    H --> P{prek block<br/>prek hook-impl}
+    P -->|hook fails| X[commit aborted]
+    P -->|all hooks pass| B[beads section<br/>bd hooks run pre-commit]
+    B --> D[commit created]
+    D --> PU[git push] --> H2[.beads/hooks/pre-push]
+    H2 --> T{prek: cargo test}
+    T -->|fail| Y[push aborted]
+    T -->|pass| B2[beads pre-push] --> Z[pushed]
+```
+
+`.pre-commit-config.yaml` on commit: whitespace and line-ending fixes, YAML (multi-document allowed), TOML and JSON syntax, merge markers, large files, private keys, no commits on `main`, `cargo fmt --check`, `cargo clippy`, Markdown frontmatter, a refusal to commit `.env`. On push: `cargo test`. Beads-managed files and `Cargo.lock` are excluded from the fixers. Run everything without committing with `mise run precommit`.
 
 ## Layout
 
@@ -58,43 +67,46 @@ src/
   question.rs      Questions builder, Options trait, options! macro, Handle<A>
   answer.rs        Answer wire shape, Probability/Confidence, typed views
   error.rs         TypeSafe-side error enum
-  triage/          Alert state, questions, Decision policy
+  triage/          Alert state, owner candidates, questions, Decision policy
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
   main.rs          CLI
-tests/             wiremock integration tests and the end-to-end webhook run
+tests/             wiremock integration tests and end-to-end webhook runs
 examples/          sample alerts and a sample webhook delivery
-docs/              this documentation
-scripts/           check-frontmatter.sh
-.beads/            issue tracker data and hooks
+docs/              this documentation (TechDocs source)
+scripts/           check-frontmatter.sh, setup-hooks.sh
+.beads/            issue tracker data and git hooks
 .claude/           agents, hooks, settings for Claude Code
+catalog-info.yaml  Backstage registration; mkdocs.yml builds docs/ as TechDocs
 ```
 
 ## Planning with beads
 
 Issues live in a local Dolt database under `.beads/`, managed with `bd`. `bd ready` lists unblocked work; claim with `bd update <id> --claim`, finish with `bd close <id>`. `bd remember` stores durable project knowledge; `bd memories` searches it.
 
-Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the git remote. The environment that seeded the backlog could not push that ref, so `.beads/issues.jsonl` holds a one-time export. Import it once with `bd import .beads/issues.jsonl`, push with `bd dolt push`, then treat Dolt as the source of truth and drop the file.
+Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the git remote. The environment that seeded the backlog could not push that ref, so `.beads/issues.jsonl` holds a snapshot. Import it once with `bd import .beads/issues.jsonl`, push with `bd dolt push`, then treat Dolt as the source of truth and drop the file.
+
+## TechDocs
+
+`mkdocs.yml` builds `docs/` as TechDocs for the `signalman` component declared in `catalog-info.yaml`. Page frontmatter is read as mkdocs page meta. Mermaid blocks are declared as a superfences custom fence so they survive the build; rendering them in Backstage requires the `backstage-plugin-techdocs-addon-mermaid` frontend addon. GitHub renders the same blocks without any setup.
 
 ## Claude Code harness
 
-`.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used in this repository, denies reading `.env`, and wires three hooks:
+`.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires three hooks:
 
 | Hook | Script | Effect |
 |---|---|---|
 | `SessionStart` | `bd prime --hook-json` | injects the beads workflow |
-| `PreToolUse` on Bash | `.claude/hooks/guard-bash.sh` | denies pushes to `main`, the interactive `bd edit`, committing `.env`, `cargo publish` |
+| `PreToolUse` on Bash | `.claude/hooks/guard-bash.sh` | denies pushes to `main`, the interactive `bd edit`, committing `.env`, `cargo publish`; matches command positions only and ignores here-doc bodies |
 | `PostToolUse` on Edit/Write | `.claude/hooks/rustfmt-on-edit.sh` | formats a Rust file right after it is written |
-
-The guard matches command positions only and ignores here-doc bodies, so documentation that mentions a forbidden command is not blocked. Its cases are listed in the script header.
 
 Subagents in `.claude/agents/`:
 
 | Agent | Use it for |
 |---|---|
-| `contract-reviewer` | checking boundary code against the live TypeSafe and incident.io documentation |
+| `contract-reviewer` | checking boundary code against the live TypeSafe, incident.io and Backstage documentation |
 | `question-designer` | writing or reviewing questions, criteria and policy thresholds |
-| `docs-writer` | keeping the README and `docs/` accurate and dry |
+| `docs-writer` | keeping the README and `docs/` accurate |
 
-`CLAUDE.md` holds the short list of rules that are easy to get wrong; it points here for everything else.
+`CLAUDE.md` holds the short list of rules that are easy to get wrong and points here for everything else.
