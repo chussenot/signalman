@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
-use rustsafe::triage::{Alert, Decision, OpenIncident, Policy, Team, TriageQuestions, decide};
-use rustsafe::{Client, Error, Questions, RetryPolicy, options};
 use serde_json::json;
+use signalman::triage::{Alert, Decision, OpenIncident, Policy, Team, TriageQuestions, decide};
+use signalman::{Client, Error, Questions, RetryPolicy, options};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

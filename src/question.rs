@@ -95,7 +95,7 @@ pub trait Options: Copy + Eq + Hash + std::fmt::Debug + Send + Sync + 'static {
 /// Define an enum implementing [`Options`] with its wire keys and rubric.
 ///
 /// ```
-/// rustsafe::options! {
+/// signalman::options! {
 ///     /// Which team owns first response.
 ///     pub enum Team {
 ///         Platform = "platform" => "Kubernetes, CI/CD, internal developer platform",
@@ -103,7 +103,7 @@ pub trait Options: Copy + Eq + Hash + std::fmt::Debug + Send + Sync + 'static {
 ///         None = "none_of_these" => "Not clearly any listed team",
 ///     }
 /// }
-/// # use rustsafe::Options;
+/// # use signalman::Options;
 /// assert_eq!(Team::from_key("database"), Some(Team::Database));
 /// assert_eq!(Team::ALL.len(), 3);
 /// ```

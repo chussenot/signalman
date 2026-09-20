@@ -1,6 +1,6 @@
 ---
 title: Triage
-description: The questions rustsafe asks about an alert, the policy that turns answers into a decision, and how to tune both.
+description: The questions signalman asks about an alert, the policy that turns answers into a decision, and how to tune both.
 status: current
 last_reviewed: 2026-09-20
 tags: [triage, typesafe, policy]

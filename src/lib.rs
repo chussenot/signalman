@@ -1,4 +1,4 @@
-//! # rustsafe
+//! # signalman
 //!
 //! A typed Rust client for the [TypeSafe](https://docs.typesafe.ai) System One
 //! API, plus a worked alert-triage application built on it.
@@ -16,7 +16,7 @@
 //! that boundary typed end to end:
 //!
 //! ```no_run
-//! use rustsafe::{Client, Questions, options};
+//! use signalman::{Client, Questions, options};
 //!
 //! options! {
 //!     enum Department {
@@ -26,7 +26,7 @@
 //!     }
 //! }
 //!
-//! # async fn run() -> rustsafe::Result<()> {
+//! # async fn run() -> signalman::Result<()> {
 //! let mut questions = Questions::new();
 //! let dept = questions.choice::<Department>("department", "Which team should handle `message`?")?;
 //! let urgent = questions.noul("is_urgent", "Does `message` convey urgency?", None)?;

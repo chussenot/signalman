@@ -1,6 +1,6 @@
 ---
 title: Decisions
-description: Architecture decision records for rustsafe, one file per decision, mirrored as beads decision issues where one exists.
+description: Architecture decision records for signalman, one file per decision, mirrored as beads decision issues where one exists.
 status: current
 last_reviewed: 2026-09-20
 tags: [decisions, adr]

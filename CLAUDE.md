@@ -1,4 +1,4 @@
-# rustsafe
+# signalman
 
 Typed Rust client for the TypeSafe System One API, an alert-triage flow built
 on it, and an incident.io integration. The README says why; `docs/` says how.
@@ -17,7 +17,7 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   contract; start at https://docs.typesafe.ai/llms.txt.
 - incident.io contract: OpenAPI v3 at https://api.incident.io/v1/openapiV3.json
   and https://docs.incident.io/llms.txt. Never create incidents directly
-  (decision `rustsafe-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).
+  (decision `signalman-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).
 - Deterministic logic stays in code; the model answers narrow, atomic
   questions. Questions reference state by backticked path. Every Choice has
   a no-match option.

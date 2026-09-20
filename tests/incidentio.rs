@@ -4,10 +4,10 @@
 
 use std::time::Duration;
 
-use rustsafe::RetryPolicy;
-use rustsafe::incidentio::types::{AlertEvent, AlertStatus};
-use rustsafe::incidentio::{Client, Error};
 use serde_json::json;
+use signalman::RetryPolicy;
+use signalman::incidentio::types::{AlertEvent, AlertStatus};
+use signalman::incidentio::{Client, Error};
 use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

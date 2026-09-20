@@ -11,9 +11,9 @@ tags: [operations]
 ## Running
 
 ```sh
-rustsafe serve --addr 0.0.0.0:8080          # production shape
-rustsafe serve --dry-run                     # decide, write nothing
-rustsafe serve --insecure-skip-verify        # local only; logs a warning on start
+signalman serve --addr 0.0.0.0:8080          # production shape
+signalman serve --dry-run                     # decide, write nothing
+signalman serve --insecure-skip-verify        # local only; logs a warning on start
 ```
 
 The process exits cleanly on SIGTERM or Ctrl-C. Startup fails fast when a required variable is missing.
@@ -30,10 +30,10 @@ There is no readiness endpoint yet; upstream reachability is only known when a f
 ## Manual runs
 
 ```sh
-rustsafe incidentio whoami                          # key and roles
-rustsafe incidentio open-incidents                  # dedup candidates as the flow would see them
-rustsafe incidentio triage-alert <alert id> --dry-run
-rustsafe triage examples/alerts/dns.json --print-request   # exact TypeSafe request, no call
+signalman incidentio whoami                          # key and roles
+signalman incidentio open-incidents                  # dedup candidates as the flow would see them
+signalman incidentio triage-alert <alert id> --dry-run
+signalman triage examples/alerts/dns.json --print-request   # exact TypeSafe request, no call
 ```
 
 ## Limits to keep in mind
