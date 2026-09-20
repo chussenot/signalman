@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "typesafe-ai": {
+      "source": { "source": "github", "repo": "typesafe-ai/skills" }
+    }
+  },
+  "enabledPlugins": {
+    "typesafe@typesafe-ai": true
+  }
+}

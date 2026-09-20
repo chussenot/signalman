@@ -1,18 +1,64 @@
 //! # rustsafe
 //!
-//! A small HTTP API that pushes correctness into the type system:
+//! A typed Rust client for the [TypeSafe](https://docs.typesafe.ai) System One
+//! API, plus a worked alert-triage application built on it.
 //!
-//! * [`domain`] — *parse, don't validate*: newtypes whose only constructors
-//!   validate, and a **typestate** order lifecycle where illegal transitions
-//!   do not compile.
-//! * [`api`] — axum handlers whose request bodies *are* the domain types, one
-//!   error enum mapped to RFC 9457 problem details, and an `OpenAPI` document
-//!   generated from the same types so the contract cannot drift.
-//! * [`store`] — in-memory storage keyed by the strongly typed identifiers.
+//! TypeSafe's model, Jev, does not generate text. It evaluates a `state` (any
+//! JSON) against typed questions and returns calibrated judgments:
+//!
+//! | Primitive | Question | Answer |
+//! |---|---|---|
+//! | [`Noul`] | yes/no | probability of yes |
+//! | [`Choice`] | one of a defined set | chosen option, full distribution, confidence |
+//! | [`Score`] | degree on ordered levels | weighted position, per-level distribution, confidence |
+//!
+//! Code owns the workflow; the model supplies the judgment. This crate keeps
+//! that boundary typed end to end:
+//!
+//! ```no_run
+//! use rustsafe::{Client, Questions, options};
+//!
+//! options! {
+//!     enum Department {
+//!         Billing = "billing" => "Payments, invoicing, refunds",
+//!         Technical = "technical" => "Bugs, outages, integrations",
+//!         Sales = "sales" => "Pricing, upgrades, new accounts",
+//!     }
+//! }
+//!
+//! # async fn run() -> rustsafe::Result<()> {
+//! let mut questions = Questions::new();
+//! let dept = questions.choice::<Department>("department", "Which team should handle `message`?")?;
+//! let urgent = questions.noul("is_urgent", "Does `message` convey urgency?", None)?;
+//!
+//! let client = Client::from_env()?;
+//! let state = serde_json::json!({ "message": "Help! My payouts have been failing for 3 days." });
+//! let response = client.system_one(&state, &questions).await?;
+//!
+//! let dept = response.get(&dept)?;          // Choice<Department>
+//! let urgent = response.get(&urgent)?;      // Noul
+//! if dept.chosen == Department::Billing && dept.confidence.at_least(0.7) && urgent.is_yes(0.6) {
+//!     // page billing on-call
+//! }
+//! # Ok(()) }
+//! ```
+//!
+//! * [`question`] builds requests; each question returns a typed [`Handle`].
+//! * [`answer`] validates probabilities and converts wire answers into typed
+//!   views through those handles.
+//! * [`client`] talks HTTP with SDK-equivalent defaults, retries and errors.
+//! * [`triage`] is the application: speculative fan-out over an alert, then a
+//!   routing policy with risk-scaled confidence thresholds.
 
-pub mod api;
-pub mod domain;
-pub mod store;
+pub mod answer;
+pub mod client;
+pub mod error;
+pub mod question;
+pub mod triage;
 
-pub use api::router;
-pub use store::Store;
+pub use answer::{
+    Answer, Choice, Confidence, FromAnswer, Noul, Probability, Response, Score, Usage,
+};
+pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
+pub use error::{Error, Result};
+pub use question::{Handle, NoulCriteria, Options, Question, Questions};

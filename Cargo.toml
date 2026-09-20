@@ -1,28 +1,29 @@
 [package]
 name = "rustsafe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
-description = "Type-safe HTTP API in Rust: parse-don't-validate newtypes, typestate lifecycles, and an OpenAPI contract derived from the types"
+rust-version = "1.91"
+description = "Typed Rust client for the TypeSafe System One API, with an alert-triage example"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[[bin]]
+name = "rustsafe"
+path = "src/main.rs"
+
 [dependencies]
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+fastrand = "2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "charset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde", "clock"], default-features = false }
-utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
-utoipa-axum = "0.2"
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+wiremock = "0.6"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -34,6 +35,5 @@ pedantic = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
 module_name_repetitions = "allow"
-# Handler errors are documented per status code in the `#[utoipa::path]` responses.
-missing_errors_doc = "allow"
 must_use_candidate = "allow"
+missing_errors_doc = "allow"
