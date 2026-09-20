@@ -1,224 +1,65 @@
+---
+title: rustsafe
+description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, written in Rust with a typed client for the TypeSafe System One API.
+status: current
+last_reviewed: 2026-09-20
+tags: [overview]
+---
+
 # rustsafe
 
-A typed Rust client for the [TypeSafe](https://typesafe.ai) System One API,
-an alert-triage flow built on it, and an [incident.io](https://incident.io)
-integration that puts the judgments where responders already work.
+rustsafe triages alerts. It asks a decision model a fixed set of narrow questions about an alert, combines the answers in code, and writes the result back into incident.io as tags and incident attachments. It is a Rust service and CLI, built on a typed client for the [TypeSafe](https://typesafe.ai) System One API.
 
-TypeSafe's model, **Jev**, does not generate text. It evaluates a `state` (any
-JSON) against typed questions and returns calibrated judgments your code can
-branch on:
+## Why it exists
 
-| Primitive | Question | Answer |
-|---|---|---|
-| Noul | yes / no | probability of yes |
-| Choice | one of a defined set | chosen option, full distribution, confidence |
-| Score | degree on ordered levels | weighted position, per-level distribution, confidence |
+Alert routing in most platforms is a pile of label matchers and regular expressions. They encode who owned what at the time they were written, they cannot read a description, and they cannot tell that a new alert is the same outage that already has an incident channel. The gaps are filled by the person on call, at the worst possible moment.
 
-There is no official Rust SDK (Python and JavaScript only). This crate covers
-the HTTP contract with the same defaults and retry policy as the official SDKs,
-and adds a typed layer so the Rust side and the API contract cannot drift.
+Large language models can read the description, but the usual approach, prompt and parse free text, gives an answer with no probability attached, drifts between runs, and hides the decision inside a paragraph. That is not a basis for paging someone at 03:00.
 
-## How it fits together
+TypeSafe's model returns typed judgments with calibrated probabilities instead of text: one of a defined set, yes or no, a position on a scale. rustsafe uses that property to keep the two halves of the problem apart:
 
-```
- Datadog / Alertmanager / ...          ┌──────────────────────────┐
-            │  alerts                   │        TypeSafe          │
-            ▼                           │  POST /v1/systemone      │
- ┌──────────────────────┐   webhook     │  owner? impact? action-  │
- │      incident.io     │ ────────────▶ │  able? duplicate of?     │
- │  alerts · incidents  │  alert_created│  caused by change?       │
- │  alert routes        │ ◀──────────── └──────────────────────────┘
- │  escalations         │  tags + attach          ▲
- └──────────────────────┘                          │ one request
-            ▲                                      │
-            │  enriched alert event        ┌───────┴────────┐
-            └──────────────────────────────│    rustsafe    │
-               (CLI, optional)             │ serve · triage │
-                                           └────────────────┘
-```
+- The model answers semantic questions that code cannot: which team's component is failing, how many users are affected, whether a human must act, whether this alert is the same problem as an open incident.
+- Code owns everything else: which questions to ask, the candidate incidents to offer, the thresholds at which a judgment becomes an action, and the actions themselves. Thresholds scale with the cost of being wrong. Paging needs a confident owner and a high impact; low confidence always goes to a person.
 
-incident.io stays the alert hub. Alerts land there first from every source.
-When one is created, incident.io sends a webhook; `rustsafe serve` verifies it,
-fetches the alert and the live incidents fresh from the API (the webhook docs'
-rule for staying in sync), asks TypeSafe one fan-out request, decides in code,
-and writes back:
+incident.io remains the alert hub. rustsafe never creates incidents. It enriches alerts so that incident.io's own alert routes and escalation paths can act on them, and it attaches confident duplicates to the incident they belong to.
 
-- **tags** on the alert: `ai-team-<team>`, `ai-impact-<level>`,
-  `ai-action-<decision>`, `ai-dup-<incident ref>`, `ai-suspected-change`.
-  Alert routes can filter and escalate on them.
-- **an attachment** to the existing incident when the model is confident the
-  alert is a duplicate (`POST /v2/incident_alerts`).
+## What it does
 
-Incidents are never created directly: incident.io's alert routes own that
-decision, and its 10 incidents/hour API limit stays untouched.
+- Receives incident.io `alert_created` webhooks, verifies the Svix signature, fetches the alert and the live incidents fresh from the API, judges, and writes back `ai-team-*`, `ai-impact-*`, `ai-action-*`, `ai-dup-*` and `ai-suspected-change` tags, plus an attachment for a confident duplicate.
+- Triages an alert file from the CLI, optionally pulling live incidents as duplicate candidates and forwarding the enriched alert to an incident.io HTTP alert source.
+- Exposes the TypeSafe client as a library: a question returns a typed handle, and reading the answer through that handle yields a Rust enum, a probability, or a score. A response of the wrong shape is an error, not a misread number.
 
-## What "typed" buys you
+## What it does not do
 
-- **A question returns a typed handle.** `questions.choice::<Team>(..)` yields
-  `Handle<Choice<Team>>`; `response.get(&handle)` returns a `Choice<Team>` whose
-  `chosen` field is the enum, not a string. A response of the wrong primitive
-  or an unknown option is an error, never a silently misread number.
-- **Criteria come from the type.** The `options!` macro defines an enum with its
-  wire keys and rubric descriptions in one place; the request's `criteria` map
-  is generated from it and the answer is parsed back through it.
-- **Probabilities are validated.** `Probability` and `Confidence` are distinct
-  newtypes in `[0, 1]`, checked on deserialisation.
-- **Errors are structured.** Both clients map status codes to variants that
-  carry attempt counts, `Retry-After`, and for incident.io the `request_id` and
-  field-level validation messages from the documented error body.
+- It does not create, edit or resolve incidents.
+- It does not page anyone. It tags; incident.io routes.
+- It does not generate text. No summaries, no explanations; only judgments a policy can threshold.
+- It has not yet run against a live TypeSafe or incident.io account. Every wire shape is asserted against the published documentation and OpenAPI specification, not observed traffic. See [the roadmap](docs/roadmap.md).
 
-```rust
-use rustsafe::{Client, Questions, options};
-
-options! {
-    enum Department {
-        Billing = "billing" => "Payments, invoicing, refunds",
-        Technical = "technical" => "Bugs, outages, integrations",
-        Sales = "sales" => "Pricing, upgrades, new accounts",
-    }
-}
-
-let mut questions = Questions::new();
-let dept = questions.choice::<Department>("department", "Which team should handle `message`?")?;
-let urgent = questions.noul("is_urgent", "Does `message` convey urgency?", None)?;
-
-let client = Client::from_env()?;                    // TYPESAFE_API_KEY
-let state = serde_json::json!({ "message": "Help! My payouts have been failing for 3 days." });
-let response = client.system_one(&state, &questions).await?;
-
-let dept = response.get(&dept)?;                     // Choice<Department>
-let urgent = response.get(&urgent)?;                 // Noul
-if dept.chosen == Department::Billing && dept.confidence.at_least(0.7) && urgent.is_yes(0.6) {
-    page_billing_oncall();
-}
-```
-
-## The triage flow
-
-`src/triage/` applies the docs' recommended shape:
-
-1. **Speculative fan-out.** One request asks everything the policy might need:
-   owning team (Choice), user impact (Score), whether a human must act (Noul),
-   which open incident it duplicates (a dynamic Choice over incident references
-   plus `none`), and whether a listed recent change is the likely cause (Noul).
-   Questions whose candidates are empty are not asked: the model cannot pick
-   an option it was not offered.
-2. **Decide in code.** `policy.rs` turns typed answers into a `Decision`:
-   suppress, attach to an existing incident, page, ticket, or hand to a human.
-   Thresholds scale with risk: paging needs both a confident owner and a high
-   impact; low owner confidence or "none of these" always involves a person.
-3. **Tune without re-running inference.** Raw answers are kept; changing a
-   threshold in `Policy` changes behaviour with no new API call.
-
-## Setup
+## Quick start
 
 ```sh
-cp .env.example .env   # fill in keys; never commit it
+mise install            # toolchain, prek, bd
+mise run setup          # git hooks
+mise run check          # all quality gates
+cp .env.example .env    # fill in keys; never committed
+mise run serve          # webhook receiver on 127.0.0.1:8080
 ```
 
-| Variable | Used by | Where to get it |
-|---|---|---|
-| `TYPESAFE_API_KEY` | everything | console.typesafe.ai/keys |
-| `INCIDENTIO_API_KEY` | `serve`, `incidentio *`, `--dedup-from-incidentio` | Settings → API keys. Scopes: view alerts and incidents, manage alert tags, manage incident alerts |
-| `INCIDENTIO_WEBHOOK_SECRET` | `serve` | Settings → Webhooks → your endpoint → Signing secret (`whsec_...`) |
-| `INCIDENTIO_ALERT_SOURCE_CONFIG_ID`, `INCIDENTIO_ALERT_SOURCE_TOKEN` | `--forward-to-incidentio` | an HTTP alert source's id and secret token |
+## Documentation
 
-### Webhook receiver
+| Page | Contents |
+|---|---|
+| [Architecture](docs/architecture.md) | Components, data flow, boundaries |
+| [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
+| [Triage](docs/triage.md) | The questions, the policy, how to tune it |
+| [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
+| [Configuration](docs/configuration.md) | Environment variables and their scopes |
+| [Operations](docs/operations.md) | Running, health, limits, failure modes |
+| [Development](docs/development.md) | Tools, tasks, gates, layout, planning, agent harness |
+| [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |
+| [Decisions](docs/decisions/README.md) | Architecture decision records |
 
-```sh
-cargo run -- serve --addr 0.0.0.0:8080            # POST /webhooks/incidentio, GET /healthz
-cargo run -- serve --dry-run                       # decide, write nothing back
-```
+## License
 
-In incident.io, Settings → Webhooks → add endpoint → subscribe to
-**Alert created (public)** (`public_alert.alert_created_v1`) → copy the
-signing secret. Deliveries from other event types are acknowledged and ignored.
-Non-2xx responses are retried by incident.io for 24 hours, so the endpoint only
-rejects what it cannot accept: bad signature (401) or an unparseable body (400).
-Duplicate deliveries (same `webhook-id`) are acknowledged without work.
-
-To exercise the flow without a webhook:
-
-```sh
-cargo run -- incidentio whoami
-cargo run -- incidentio open-incidents
-cargo run -- incidentio triage-alert 01GW2G3V0S59R238FAHPDS1R66 --dry-run
-```
-
-### CLI triage
-
-```sh
-cargo run -- triage examples/alerts/crashloop.json
-cargo run -- triage examples/alerts/dns.json --dedup-from-incidentio --json
-cargo run -- triage examples/alerts/disk-noise.json --print-request      # no API call
-cargo run -- triage examples/alerts/dns.json --forward-to-incidentio     # → HTTP alert source
-```
-
-`--forward-to-incidentio` posts the alert with the judgments under
-`metadata.ai` to an HTTP alert source. Map `metadata.ai.team`,
-`metadata.ai.impact_label`, `metadata.ai.decision.action` to alert attributes
-in the source's template, then route on them.
-
-## Client defaults
-
-Both clients share one retry loop. TypeSafe defaults mirror the official SDKs:
-
-| Setting | Default | Override |
-|---|---|---|
-| Timeout | 10 s (TypeSafe), 15 s (incident.io) | `.timeout(..)` |
-| Retries | 2, backoff 0.5 s doubling to 5 s, ±25 % jitter | `.retry(RetryPolicy { .. })` |
-| Retry on | 408, 429, 5xx (incl. 529), transport errors | |
-| `Retry-After` | honoured up to 30 s | `retry_after_max` |
-
-The TypeSafe response's `model` field is the versioned id that answered. Log
-it; thresholds tuned against one version should be pinned to that version.
-The incident.io list-incidents endpoint has its own 60/min limit; dedup
-candidates are capped at 40 per triage (`Triager::max_candidates`).
-
-## Develop
-
-```sh
-cargo fmt --all --check
-cargo clippy --all-targets            # pedantic; CI denies warnings
-cargo test                            # unit + wiremock integration + doctests, no network
-cargo doc --no-deps --open
-```
-
-Tests never call a real API. `tests/client.rs` and `tests/incidentio.rs`
-exercise each client against `wiremock`; `tests/webhook_server.rs` runs the
-whole flow: a Svix-signed webhook through the router, mock incident.io and
-mock TypeSafe, asserting the tags and the attachment. The signature verifier
-is pinned to Svix's published test vector.
-
-## Layout
-
-```
-src/
-  client.rs        TypeSafe HTTP client
-  http.rs          shared retry loop, backoff, Retry-After
-  question.rs      Question/Questions builder, Options trait, options! macro, Handle<A>
-  answer.rs        Answer wire shape, Probability/Confidence, typed views, Response::get
-  triage/          Alert state, fan-out questions, Decision policy
-  incidentio/
-    client.rs      incidents, alerts, tags, incident_alerts, alert events, identity
-    types.rs       wire types (lenient: unknown fields ignored)
-    webhook.rs     Svix signature verification, event envelope parsing
-    sync.rs        Triager: fetch → judge → decide → write back
-  serve.rs         axum webhook receiver
-  main.rs          CLI: triage, models, serve, incidentio {whoami, open-incidents, triage-alert}
-examples/alerts/   sample states     examples/webhooks/  sample delivery
-.claude/           pins the typesafe skill plugin
-```
-
-## Not yet done
-
-- No call against the real TypeSafe or incident.io APIs from this environment
-  (no keys). Wire shapes are asserted against the documented examples and the
-  OpenAPI spec; drift shows up as a `Decode` error naming the field.
-- Multiple values for one incident.io list filter are sent as a repeated
-  `status_category[one_of]` key. The docs show single values only; verify
-  against a real account and fall back to three requests if needed.
-- `public_incident.incident_created_v2` is parsed but not acted on. A natural
-  next step: judge severity from the incident summary and post it as a timeline
-  note for the lead to confirm.
-- Alert `resolved` events are not forwarded by the CLI.
+MIT or Apache-2.0, at your option.

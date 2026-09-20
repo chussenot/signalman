@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    name: fmt, clippy, test, doc
+    name: fmt, clippy, test, doc, docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,3 +25,17 @@ jobs:
       - run: cargo doc --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
+      - run: scripts/check-frontmatter.sh README.md docs
+
+  hooks:
+    name: pre-commit hooks (prek)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: j178/prek-action@v3
+        with:
+          extra_args: --all-files --hook-stage pre-commit

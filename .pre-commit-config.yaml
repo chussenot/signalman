@@ -1,0 +1,67 @@
+# Git hooks, run by prek (https://prek.j178.dev); the file is pre-commit compatible.
+# Install once with `mise run setup`. Run everything with `mise run precommit`.
+#
+# Fast, file-level checks run on every commit. The test suite runs on push.
+# Beads adds its own chained hooks via `bd hooks install`; they coexist.
+
+minimum_pre_commit_version: "3.2.0"
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+# Beads-managed files (issue DB config, its git hooks) and the Cargo lockfile are not ours to lint.
+exclude: ^(\.beads/|Cargo\.lock$)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy (pedantic, -D warnings)
+        entry: env RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: markdown-frontmatter
+        name: markdown frontmatter (title, description)
+        entry: scripts/check-frontmatter.sh
+        language: script
+        files: ^(README\.md|docs/.*\.md)$
+
+      - id: no-dotenv
+        name: never commit .env files
+        entry: 'refusing to commit a .env file; keep secrets local (see .env.example)'
+        language: fail
+        files: ^\.env(\..*)?$
+        exclude: ^\.env\.example$
+
+      - id: cargo-test
+        name: cargo test (pre-push)
+        entry: cargo test --all-features
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

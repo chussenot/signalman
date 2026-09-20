@@ -1,0 +1,100 @@
+# mise-en-place: tools and tasks for this repository.
+# https://mise.jdx.dev — run `mise install` once, then `mise run <task>` (or `mise tasks`).
+
+[tools]
+# Toolchain version comes from rust-toolchain.toml (mise reads it as an idiomatic version file).
+rust = { version = "1.94.1", components = "rustfmt,clippy" }
+prek = "latest"
+# bd (beads) is installed once, system-wide: `brew install beads` or `npm install -g @beads/bd`.
+# It is not pinned here because its npm package downloads a platform binary in a postinstall
+# step, which fails behind some proxies and would break `mise install` for everyone.
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+
+[env]
+RUST_BACKTRACE = "1"
+# Load local secrets when present; never committed (.env is gitignored).
+_.file = ".env"
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
+[tasks.setup]
+description = "One-time developer setup: git hooks (prek + beads) and a warm cargo cache"
+run = "scripts/setup-hooks.sh && cargo fetch"
+
+# ---------------------------------------------------------------------------
+# Quality gates (what CI runs)
+# ---------------------------------------------------------------------------
+
+[tasks.fmt]
+description = "Format all Rust sources"
+run = "cargo fmt --all"
+
+[tasks."fmt:check"]
+description = "Fail if any source is unformatted"
+run = "cargo fmt --all --check"
+
+[tasks.lint]
+description = "Clippy on all targets; pedantic set, warnings are errors"
+env = { RUSTFLAGS = "-D warnings" }
+run = "cargo clippy --all-targets --all-features"
+
+[tasks.test]
+description = "Unit, integration (wiremock) and doc tests; no network"
+run = "cargo test --all-features"
+
+[tasks.doc]
+description = "Build API docs; broken links are errors"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --no-deps --document-private-items"
+
+[tasks."docs:check"]
+description = "Every Markdown page under docs/ and the README has valid frontmatter"
+run = "scripts/check-frontmatter.sh README.md docs"
+
+[tasks.check]
+description = "All quality gates, in CI order"
+depends = ["fmt:check", "lint", "test", "doc", "docs:check"]
+
+[tasks.precommit]
+description = "Run every pre-commit hook against the whole tree"
+run = "prek run --all-files"
+
+# ---------------------------------------------------------------------------
+# Build and run
+# ---------------------------------------------------------------------------
+
+[tasks.build]
+description = "Release build"
+run = "cargo build --release"
+
+[tasks.serve]
+description = "Run the incident.io webhook receiver (needs TYPESAFE_API_KEY, INCIDENTIO_API_KEY, INCIDENTIO_WEBHOOK_SECRET)"
+run = "cargo run -- serve {{arg(name='flags', var=true, default='')}}"
+
+[tasks.triage]
+description = "Triage one alert file, e.g. `mise run triage examples/alerts/dns.json -- --json`"
+run = "cargo run -- triage {{arg(name='alert')}} {{arg(name='flags', var=true, default='')}}"
+
+[tasks."triage:examples"]
+description = "Print the TypeSafe request for every example alert without calling any API"
+run = """
+for f in examples/alerts/*.json; do
+  echo "== $f"; cargo run -q -- triage "$f" --print-request | head -c 600; echo; echo
+done
+"""
+
+# ---------------------------------------------------------------------------
+# Planning (beads)
+# ---------------------------------------------------------------------------
+
+[tasks."bd:ready"]
+description = "Issues ready to work on"
+run = "bd ready"
+
+[tasks."bd:export"]
+description = "Refresh the committed JSONL snapshot of the backlog (only while refs/dolt sync is unavailable)"
+run = "bd export --all -o .beads/issues.jsonl"
