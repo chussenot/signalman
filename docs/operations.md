@@ -26,6 +26,7 @@ Startup fails fast on a missing secret, an unknown key in the configuration file
 |---|---|
 | `POST /webhooks/incidentio` | delivery endpoint |
 | `GET /healthz` | liveness; returns `ok` |
+| `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
 
 There is no readiness endpoint yet; upstream reachability is only known when a flow runs.
 
@@ -127,6 +128,7 @@ Validate the rendered file in the pipeline before applying: `signalman config sh
 | incident.io alert source events | 60 burst, 120/min per source | `--forward-to-incidentio` only |
 | TypeSafe | 1,200 requests/min; 64k tokens per request | one request per triage, roughly 1 to 4k tokens with catalog context |
 | Backstage | instance dependent | up to five catalog calls and one TechDocs call per triage |
+| Change feed | 1,000 newest changes per replica, in memory | older changes evicted; a restart forgets the window |
 | Background triage concurrency | unbounded today | see roadmap |
 
 ## Logs

@@ -33,7 +33,8 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   client until its spec is read with an operation API key.
 - Configuration (decision 0006): default < TOML file < env var < flag.
   `src/config.rs` is the only module that reads a non-secret env var; the
-  three clients read their own key or token and nothing else. A new setting
+  three clients and the change feed read their own key or token and nothing
+  else. A new setting
   needs the `Settings` schema, `Config::resolve`, and a row in
   `docs/configuration.md` (a test checks the env-var table against the doc).
   Secrets are never accepted from the file.

@@ -11,6 +11,7 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::json;
 use signalman::backstage::{self, Enricher};
+use signalman::changes::{ChangeLog, FeedToken};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
 use signalman::serve::{AppState, router};
@@ -609,4 +610,237 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
     incidentio_srv.verify().await;
     backstage_srv.verify().await;
     typesafe_srv.verify().await;
+}
+
+#[tokio::test]
+async fn change_feed_fills_recent_changes_and_asks_caused_by_change() {
+    let incidentio_srv = MockServer::start().await;
+    let typesafe_srv = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts/al-3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": {
+                "id": "al-3", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
+                "description": "5xx ratio 12% for 10m", "status": "firing",
+                "attributes": [{
+                    "attribute": { "id": "x", "name": "Service", "array": false, "required": false, "type": "String" },
+                    "value": { "literal": "checkout-api", "label": "checkout-api" }
+                }],
+                "tags": [], "created_at": "2026-09-21T12:00:00Z"
+            }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/incidents"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "incidents": [], "pagination_meta": { "page_size": 40 } })),
+        )
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alerts": [] })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alert_notes": [] })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v2/alerts/al-3/actions/add_tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": { "id": "al-3", "alert_source_id": "src-dd", "title": "t", "status": "firing", "attributes": [], "tags": [] }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    // The note lists the changes under the cause line.
+    Mock::given(method("POST"))
+        .and(path("/v1/alert_notes"))
+        .and(body_string_contains("Recent change as cause: 0.80"))
+        .and(body_string_contains(
+            "deploy checkout-api v2.31.0 (checkout-api)",
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(
+            json!({ "alert_note": { "id": "n-3", "alert_id": "al-3", "content": "…" } }),
+        ))
+        .expect(1)
+        .mount(&incidentio_srv)
+        .await;
+
+    // The model must be offered the component's deploy and the platform-wide
+    // change, not the other service's, and must be asked caused_by_change.
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(json!({
+            "state": { "alert": { "recent_changes": [
+                "2026-09-21T11:50:00Z deploy checkout-api v2.31.0 (checkout-api) https://argocd.example.com/applications/checkout-api",
+                "2026-09-21T11:30:00Z infra cluster autoscaler upgraded to 1.31"
+            ] } },
+            "questions": { "caused_by_change": { "type": "noul" } }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "owner": { "type": "choice", "choice": "application",
+                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.7 },
+                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
+                "actionable": { "type": "noul", "noul": 0.95 },
+                "caused_by_change": { "type": "noul", "noul": 0.8 }
+            },
+            "usage": { "input_tokens": 800, "output_tokens": 40 }
+        })))
+        .expect(1)
+        .mount(&typesafe_srv)
+        .await;
+
+    let typesafe = Client::builder()
+        .api_key("ts")
+        .base_url(typesafe_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let io = incidentio::Client::builder()
+        .api_key("io")
+        .base_url(incidentio_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let mut triager = Triager::new(typesafe, io);
+    triager.changes = Some(ChangeLog::default());
+    // The posted changes carry fixed dates; a very wide window keeps the
+    // test valid on any day. The window itself is covered by unit tests.
+    triager.change_window = Duration::from_secs(20 * 365 * 24 * 3600);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = AppState::new(Some(WebhookSecret::parse(SECRET).unwrap()), triager);
+    state.on_outcome = Some(tx);
+    state.changes_token = FeedToken::new("feed-secret");
+    let app = router(Arc::new(state));
+
+    let changes = json!([
+        { "at": "2026-09-21T11:50:00Z", "kind": "deploy", "component": "checkout-api", "summary": "checkout-api v2.31.0",
+          "source": "argocd", "url": "https://argocd.example.com/applications/checkout-api" },
+        { "at": "2026-09-21T11:30:00Z", "kind": "infra", "summary": "cluster autoscaler upgraded to 1.31" },
+        { "at": "2026-09-21T11:45:00Z", "kind": "deploy", "component": "payments-gateway", "summary": "payments-gateway v9" }
+    ]);
+
+    // Wrong token: 401 and nothing stored.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes")
+                .header("authorization", "Bearer nope")
+                .header("content-type", "application/json")
+                .body(Body::from(changes.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes")
+                .header("authorization", "Bearer feed-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(changes.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["recorded"],
+        3
+    );
+
+    // An empty kind is rejected.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes")
+                .header("authorization", "Bearer feed-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "kind": " ", "summary": "x" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // GET lists what is held.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get("/changes")
+                .header("authorization", "Bearer feed-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<Vec<serde_json::Value>>(&body)
+            .unwrap()
+            .len(),
+        3
+    );
+
+    // Now the alert.
+    let body = json!({
+        "event_type": "public_alert.alert_created_v1",
+        "public_alert.alert_created_v1": { "id": "al-3", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api", "status": "firing", "attributes": [], "tags": [] }
+    }).to_string();
+    let resp = app
+        .clone()
+        .oneshot(signed(&body, "msg-changes", SECRET))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let outcome = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome.recent_changes, 2);
+    assert!(matches!(
+        outcome.decision,
+        Decision::Page {
+            suspected_change: true,
+            ..
+        }
+    ));
+    incidentio_srv.verify().await;
+    typesafe_srv.verify().await;
+}
+
+#[tokio::test]
+async fn change_feed_is_unrouted_without_a_token() {
+    let h = harness(WriteBack::DryRun, false).await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/changes")
+                .header("authorization", "Bearer anything")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "kind": "deploy", "summary": "x" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

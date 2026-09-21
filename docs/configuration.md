@@ -30,6 +30,7 @@ Secrets are environment only. The file schema has no key for them; `api_key = �
 | `INCIDENTIO_WEBHOOK_SECRET` | `serve` unless `--insecure-skip-verify` | Settings → Webhooks → endpoint → signing secret, `whsec_...` |
 | `INCIDENTIO_ALERT_SOURCE_CONFIG_ID`, `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's id and token |
 | `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
+| `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 
 Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 
@@ -79,6 +80,8 @@ Setting `backstage.base_url` (or its variable) turns catalog enrichment on.
 | `flow.note` | `SIGNALMAN_NOTE` | `--no-note` | `true` | write the qualification note |
 | `flow.related_window_minutes` | `SIGNALMAN_RELATED_WINDOW_MINUTES` | `--related-window-minutes` | `30` | window for related firing alerts; `0` disables the lookup |
 | `flow.related_max` | `SIGNALMAN_RELATED_MAX` | | `20` | cap on related alerts put in the state |
+| `flow.change_window_minutes` | `SIGNALMAN_CHANGE_WINDOW_MINUTES` | | `120` | how far back a posted change may lie to be offered as a cause; `0` disables |
+| `flow.change_max` | `SIGNALMAN_CHANGE_MAX` | | `10` | cap on changes put in the state |
 
 ### `[policy]`, file only
 

@@ -53,6 +53,8 @@ pub struct NoteInput<'a> {
     pub related: &'a [RelatedAlert],
     /// The window the related alerts were taken from.
     pub related_window: Duration,
+    /// Recent changes offered to the model (state lines).
+    pub changes: &'a [String],
     /// Tags written on the alert.
     pub tags: &'a [String],
     /// From the alert's creation to the decision.
@@ -161,6 +163,16 @@ pub fn render(input: &NoteInput<'_>) -> String {
     // Change.
     if let Some(c) = a.caused_by_change {
         let _ = writeln!(out, "- Recent change as cause: {:.2}", c.yes.value());
+        for line in input.changes.iter().take(MAX_RELATED_LISTED) {
+            let _ = writeln!(out, "  - {line}");
+        }
+        if input.changes.len() > MAX_RELATED_LISTED {
+            let _ = writeln!(
+                out,
+                "  - and {} more",
+                input.changes.len() - MAX_RELATED_LISTED
+            );
+        }
     }
 
     // Catalog.

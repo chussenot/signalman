@@ -1,6 +1,7 @@
 //! The flow: an alert incident.io received → other alerts firing now →
-//! catalog enrichment → TypeSafe judgments → tags, an incident attachment,
-//! one qualification note and an owner notification.
+//! catalog enrichment → recent changes from the feed → TypeSafe judgments →
+//! tags, an incident attachment, one qualification note and an owner
+//! notification.
 //!
 //! Follows the webhook docs' rule for keeping systems in sync: the webhook is
 //! only a trigger; the alert and the candidate incidents are fetched fresh
@@ -18,6 +19,7 @@ use super::note::{self, Links, NoteInput};
 use super::types::{Alert as IoAlert, Incident};
 use crate::backstage::enrich::hints_from_labels;
 use crate::backstage::{Enricher, EntityRef};
+use crate::changes::{Change, ChangeLog};
 use crate::config::DEFAULT_COMPONENT_KEYS;
 use crate::triage::{
     Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, Texts,
@@ -83,6 +85,12 @@ pub struct Triager {
     pub related_window: Duration,
     /// Cap on related alerts put in the state.
     pub related_max: usize,
+    /// The change feed, when `POST /changes` is enabled.
+    pub changes: Option<ChangeLog>,
+    /// How far back a change may lie to be offered as a cause.
+    pub change_window: Duration,
+    /// Cap on changes put in the state.
+    pub change_max: usize,
 }
 
 /// What happened for one alert.
@@ -110,6 +118,8 @@ pub struct Outcome {
     pub owner_candidates_offered: usize,
     /// Other firing alerts put in the state.
     pub related_alerts: usize,
+    /// Recent changes put in the state.
+    pub recent_changes: usize,
     /// Note written or rewritten on the alert.
     pub note_id: Option<String>,
     /// Seconds from the alert's creation in incident.io to the decision.
@@ -149,6 +159,9 @@ impl Triager {
             note: true,
             related_window: DEFAULT_RELATED_WINDOW,
             related_max: DEFAULT_RELATED_MAX,
+            changes: None,
+            change_window: crate::changes::DEFAULT_WINDOW,
+            change_max: crate::changes::DEFAULT_MAX,
         }
     }
 
@@ -201,6 +214,25 @@ impl Triager {
                 owner_candidates = owner_candidates.len(),
                 "catalog enrichment"
             );
+        }
+
+        // Recent changes: what the feed knows about this component and the
+        // platform. Only when the alert itself carried none, so a source that
+        // lists its own changes keeps them.
+        if alert.recent_changes.is_empty()
+            && let Some(log) = &self.changes
+        {
+            let mut hints = hints_from_labels(&alert.labels, &self.component_keys);
+            if let Some(c) = &alert.component
+                && !hints.iter().any(|h| h.eq_ignore_ascii_case(&c.name))
+            {
+                hints.push(c.name.clone());
+            }
+            alert.recent_changes = log
+                .recent(&hints, self.change_window, now, self.change_max)
+                .iter()
+                .map(Change::to_state_line)
+                .collect();
         }
 
         let questions =
@@ -264,6 +296,7 @@ impl Triager {
                     links: &links,
                     related: &alert.related_alerts,
                     related_window: self.related_window,
+                    changes: &alert.recent_changes,
                     tags: &tags,
                     time_to_qualify,
                 });
@@ -305,6 +338,7 @@ impl Triager {
             notified = ?notified,
             note = ?note_id,
             related_alerts = alert.related_alerts.len(),
+            recent_changes = alert.recent_changes.len(),
             time_to_qualify_seconds = ?time_to_qualify.map(|d| d.as_secs_f64()),
             applied,
             model = %response.model,
@@ -323,6 +357,7 @@ impl Triager {
             candidates_offered: candidates.len(),
             owner_candidates_offered: answers.candidates.len(),
             related_alerts: alert.related_alerts.len(),
+            recent_changes: alert.recent_changes.len(),
             note_id,
             time_to_qualify_seconds: time_to_qualify.map(|d| d.as_secs_f64()),
             applied,

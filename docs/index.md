@@ -21,6 +21,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | How well it decides, and how to tune it with numbers | [Evaluation harness](evaluation.md) |
 | How the catalog changes ownership, context and runbooks | [Backstage bridge](backstage.md) |
 | How webhooks are verified and what is written back | [incident.io integration](incidentio.md) |
+| How deploys and configuration changes reach the triage | [Change feed](changes.md) |
 | How the typed client works and its defaults | [TypeSafe client](typesafe-client.md) |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | Which variable to set | [Configuration](configuration.md) |

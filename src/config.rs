@@ -60,6 +60,11 @@ pub const ENV_VARS: &[(&str, &str)] = &[
         "flow.related_window_minutes",
     ),
     ("SIGNALMAN_RELATED_MAX", "flow.related_max"),
+    (
+        "SIGNALMAN_CHANGE_WINDOW_MINUTES",
+        "flow.change_window_minutes",
+    ),
+    ("SIGNALMAN_CHANGE_MAX", "flow.change_max"),
 ];
 
 /// Configuration failure. Every variant names what to fix.
@@ -184,6 +189,11 @@ pub struct FlowFile {
     pub related_window_minutes: Option<u64>,
     /// Cap on related alerts put in the state.
     pub related_max: Option<usize>,
+    /// How far back a posted change may lie to be offered as a cause; `0`
+    /// disables the lookup.
+    pub change_window_minutes: Option<u64>,
+    /// Cap on changes put in the state.
+    pub change_max: Option<usize>,
 }
 
 /// `[triage]`
@@ -386,12 +396,21 @@ pub struct Flow {
     pub related_window_minutes: u64,
     /// Cap on related alerts.
     pub related_max: usize,
+    /// Change window in minutes; `0` disables.
+    pub change_window_minutes: u64,
+    /// Cap on changes.
+    pub change_max: usize,
 }
 
 impl Flow {
-    /// The window as a duration.
+    /// The related-alert window as a duration.
     pub fn related_window(&self) -> Duration {
         Duration::from_secs(self.related_window_minutes * 60)
+    }
+
+    /// The change window as a duration.
+    pub fn change_window(&self) -> Duration {
+        Duration::from_secs(self.change_window_minutes * 60)
     }
 }
 
@@ -415,6 +434,7 @@ impl Triage {
 impl Config {
     /// Resolve every layer. `file` is the parsed configuration file (or
     /// `Settings::default()`), `cli` the flags that were given.
+    #[allow(clippy::too_many_lines)] // one setting per statement, in file order; splitting hides the precedence
     pub fn resolve(file: &Settings, cli: &Overrides) -> Result<Self> {
         let server = Server {
             addr: cli
@@ -484,6 +504,15 @@ impl Config {
             related_max: env_parsed("SIGNALMAN_RELATED_MAX", "flow.related_max")?
                 .or(file.flow.related_max)
                 .unwrap_or(crate::incidentio::sync::DEFAULT_RELATED_MAX),
+            change_window_minutes: env_parsed(
+                "SIGNALMAN_CHANGE_WINDOW_MINUTES",
+                "flow.change_window_minutes",
+            )?
+            .or(file.flow.change_window_minutes)
+            .unwrap_or(crate::changes::DEFAULT_WINDOW.as_secs() / 60),
+            change_max: env_parsed("SIGNALMAN_CHANGE_MAX", "flow.change_max")?
+                .or(file.flow.change_max)
+                .unwrap_or(crate::changes::DEFAULT_MAX),
         };
         let policy = file.policy.clone().unwrap_or_default();
         policy.validate().map_err(Error::Invalid)?;
@@ -600,6 +629,8 @@ mod tests {
         assert_eq!(c.typesafe.model, crate::client::DEFAULT_MODEL);
         assert!(c.flow.note);
         assert_eq!(c.flow.related_window_minutes, 30);
+        assert_eq!(c.flow.change_window_minutes, 120);
+        assert_eq!(c.flow.change_max, 10);
         assert!(!c.backstage.enabled());
         assert_eq!(c.policy, Policy::default());
         assert_eq!(c.triage.teams, crate::triage::default_teams());
