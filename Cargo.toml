@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Typed Rust client for the TypeSafe System One API, with an alert-triage example"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 publish = false
 
 [[bin]]

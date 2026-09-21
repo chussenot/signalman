@@ -73,4 +73,4 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 
 ## License
 
-MIT or Apache-2.0, at your option.
+[MIT](LICENSE).
