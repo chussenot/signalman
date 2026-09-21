@@ -1,0 +1,30 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": { "id": 7, "name": "Alice Martin", "username": "alice" },
+  "project": {
+    "id": 30,
+    "name": "checkout-api",
+    "web_url": "https://gitlab.example.com/shop/checkout-api",
+    "path_with_namespace": "shop/checkout-api",
+    "default_branch": "main"
+  },
+  "object_attributes": {
+    "id": 9901,
+    "iid": 412,
+    "target_branch": "main",
+    "source_branch": "alice/memory-limit",
+    "title": "Raise memory limit to 768Mi",
+    "created_at": "2026-09-21 10:02:11 UTC",
+    "updated_at": "2026-09-21 11:41:03 UTC",
+    "state": "merged",
+    "merge_status": "can_be_merged",
+    "merge_commit_sha": "9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d",
+    "merged_at": "2026-09-21 11:41:03 UTC",
+    "url": "https://gitlab.example.com/shop/checkout-api/-/merge_requests/412",
+    "action": "merge",
+    "last_commit": { "id": "c2ba45f0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6", "title": "Raise memory limit to 768Mi" }
+  },
+  "labels": [],
+  "changes": {}
+}

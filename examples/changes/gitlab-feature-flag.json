@@ -1,0 +1,13 @@
+{
+  "object_kind": "feature_flag",
+  "project": {
+    "id": 30,
+    "name": "checkout-api",
+    "web_url": "https://gitlab.example.com/shop/checkout-api",
+    "path_with_namespace": "shop/checkout-api",
+    "default_branch": "main"
+  },
+  "user": { "id": 7, "name": "Alice Martin", "username": "alice" },
+  "user_url": "https://gitlab.example.com/alice",
+  "object_attributes": { "id": 6, "name": "new-checkout", "description": "New checkout flow", "active": true }
+}

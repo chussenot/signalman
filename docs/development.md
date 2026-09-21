@@ -71,6 +71,7 @@ src/
   error.rs         TypeSafe-side error enum
   triage/          Alert state, owner candidates, questions, Decision policy
   eval/            evaluation harness: cases, grading, metrics, record and replay
+  changes/         change feed: window and matching, Argo CD and GitLab adapters
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver

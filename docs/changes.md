@@ -1,6 +1,6 @@
 ---
 title: Change feed
-description: How recent deploys, configuration changes and flag flips reach the triage as alert.recent_changes through a push endpoint any delivery tool can call, how the window and matching work, how to wire Argo CD, Flux and GitHub Actions to it, and its limits.
+description: How recent deploys, configuration changes and flag flips reach the triage as alert.recent_changes through a push endpoint any delivery tool can call, the native Argo CD and GitLab adapters, how the window and matching work, and the limits.
 status: current
 last_reviewed: 2026-09-21
 tags: [changes, triage, argocd, flux, github-actions, mttq]
@@ -14,7 +14,9 @@ signalman does not poll delivery tools. It accepts change events on `POST /chang
 
 ```mermaid
 flowchart LR
-    CD[Argo CD notification<br/>Flux alert<br/>GitHub Actions step<br/>any script] -- POST /changes<br/>bearer token --> LOG[(ChangeLog<br/>per replica, 1000 newest)]
+    AR[Argo CD notification<br/>Application object] -- POST /changes/argocd<br/>bearer token --> LOG[(ChangeLog<br/>per replica, 1000 newest)]
+    GL[GitLab webhook<br/>deployment, flag, release, merge] -- POST /changes/gitlab<br/>X-Gitlab-Token --> LOG
+    CD[GitHub Actions step<br/>any script] -- POST /changes<br/>bearer token --> LOG
     IO[incident.io alert] --> F[triage flow]
     F -- component hints<br/>+ window --> LOG
     LOG -- state lines --> S[alert.recent_changes]
@@ -52,17 +54,21 @@ At triage time the hints are the alert's component labels ([`backstage.component
 
 The window is two hours by default, wider than the related-alert window, because a deploy causes an incident hours later more often than minutes later: caches expire, a batch job runs, traffic peaks.
 
-## Wiring the sources
+## Native adapters: Argo CD and GitLab
 
-**Argo CD notifications**, a webhook service and a template on `on-deployed`:
+The generic endpoint takes signalman's own shape and asks every pipeline to write a template. Two adapters take the tools' own payloads instead, authenticated with the same token, and translate them into changes. Both refuse deliveries that are not a change that happened (a failed sync, a running deployment, an updated but unmerged merge request) with a `200` and `{"recorded": 0, "ignored": "…"}`, so the sender does not retry.
+
+### Argo CD, `POST /changes/argocd`
+
+Argo CD Notifications sends the `Application` object; one line of template. The change carries the application name as component, the synced revision, the destination namespace, the images, and who initiated the sync from the last `status.history` entry. Posting `{"app": …, "context": …}` adds a link to the application in the Argo CD UI.
 
 ```yaml
 # argocd-notifications-cm
 service.webhook.signalman: |
-  url: https://signalman.example.com/changes
+  url: https://signalman.example.com/changes/argocd
   headers:
     - name: Authorization
-      value: Bearer $signalman-changes-token      # from argocd-notifications-secret
+      value: Bearer $signalman-changes-token      # key in argocd-notifications-secret
     - name: Content-Type
       value: application/json
 template.signalman-deployed: |
@@ -70,18 +76,31 @@ template.signalman-deployed: |
     signalman:
       method: POST
       body: |
-        {"kind": "deploy", "source": "argocd",
-         "component": "{{.app.metadata.name}}",
-         "summary": "{{.app.metadata.name}} {{.app.status.sync.revision | trunc 7}} to {{.app.spec.destination.namespace}}",
-         "url": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}"}
+        {"app": {{ toJson .app }}, "context": {{ toJson .context }}}
 trigger.on-deployed: |
   - when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+    oncePer: app.status.operationState.syncResult.revision
     send: [signalman-deployed]
 ```
 
-**Flux** notification-controller: a `Provider` of type `generic` with the token in a `Secret`, an `Alert` on `Kustomization` and `HelmRelease` reconciliations; the generic payload differs from the schema above, so put a small transform (a CDEvents or a webhook relay) in between or use the Argo CD shape as the reference.
+Subscribe applications with the annotation `notifications.argoproj.io/subscribe.on-deployed.signalman: ""`, or the default subscription in the ConfigMap. Only the fields signalman reads are modelled (`metadata.name`, `spec.destination.namespace`, `spec.project`, `status.history`, `status.operationState`, `status.sync.revision`, `status.summary.images`); the rest of the Application is ignored, so Argo CD upgrades do not break the contract. A body whose `operationState.phase` is not `Succeeded` is ignored. [`examples/changes/argocd-application.json`](https://github.com/chussenot/rustsafe/blob/main/examples/changes/argocd-application.json) is the fixture the tests use.
 
-**GitHub Actions**, after the deploy step:
+### GitLab, `POST /changes/gitlab`
+
+A project or group webhook. GitLab authenticates with `X-Gitlab-Token`, set to the same value as `SIGNALMAN_CHANGES_TOKEN`, and names the event in `X-Gitlab-Event`. Settings → Webhooks → Add new webhook: URL `https://signalman.example.com/changes/gitlab`, secret token, and these triggers:
+
+| Trigger | `X-Gitlab-Event` | Becomes | When |
+|---|---|---|---|
+| Deployment events | `Deployment Hook` | `deploy` | `status` is `success`; summary has the short SHA, environment, commit title and user; link to the job |
+| Feature flag events | `Feature Flag Hook` | `flag` | always; `enabled` or `disabled` by user |
+| Releases events | `Release Hook` | `release` | `action` is `create`; the tag |
+| Merge request events | `Merge Request Hook` | `merge` | `action` is `merge`; `!iid`, title, target branch, merge commit |
+
+Any other event (push, pipeline, job, comment) answers `200` ignored: enable only the four triggers to spare the traffic. The component is the project name, lowercased. GitLab's timestamps (`2026-09-21 11:50:00 +0200`, `… UTC`) are normalised to RFC 3339. Payloads are lenient: only the fields read are modelled, from the [webhook events documentation](https://docs.gitlab.com/user/project/integrations/webhook_events/). Fixtures for all four events live under `examples/changes/`.
+
+### Other sources
+
+Anything else posts the generic shape. **Flux** notification-controller: a `Provider` of type `generic` posts its own event schema, so a small relay is needed; **GitHub Actions**, after the deploy step:
 
 ```yaml
 - name: Tell signalman
@@ -94,7 +113,7 @@ trigger.on-deployed: |
                  '{kind: "deploy", source: "github-actions", component: "checkout-api", summary: $s, url: $u}')"
 ```
 
-Name `component` the way the alert labels will: the value of the `service` attribute in incident.io, or the catalog component name. Anything else and the change is not matched, which the `recent_changes` count in the outcome and the log line make visible.
+Name `component` the way the alert labels will: the value of the `service` attribute in incident.io, or the catalog component name. For the adapters that is the Argo CD application name and the GitLab project name; when those differ from what the alerts carry, the change is not matched, which the `recent_changes` count in the outcome and the log line make visible.
 
 ## What the responder sees
 
@@ -105,4 +124,4 @@ When changes were offered, the [qualification note](incidentio.md#the-qualificat
 - In memory, per replica. A restart forgets the window; with several replicas each holds what was posted to it. Point the delivery tools at one replica, or accept that a change may be missing from some triages: the consequence is a question not asked, which is where the flow stood before the feed existed.
 - Newest 1,000 changes are kept; older ones are evicted regardless of window.
 - No deduplication: two identical posts are two lines. Post once per deploy, from the tool that knows it finished.
-- Nothing has been wired to a real Argo CD or GitHub Actions yet; the templates above follow the tools' documentation and the payload contract in `src/changes.rs`.
+- Nothing has been wired to a real Argo CD or GitLab yet; the adapters follow the tools' documented payloads (fixtures under `examples/changes/`) and the Application CRD, not observed traffic.

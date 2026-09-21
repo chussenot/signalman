@@ -1,0 +1,20 @@
+{
+  "id": 12,
+  "created_at": "2026-09-21 11:40:12 UTC",
+  "description": "Memory limit raised; retry budget tuned.",
+  "name": "v2.31.0",
+  "released_at": "2026-09-21 11:40:12 UTC",
+  "tag": "v2.31.0",
+  "object_kind": "release",
+  "project": {
+    "id": 30,
+    "name": "checkout-api",
+    "web_url": "https://gitlab.example.com/shop/checkout-api",
+    "path_with_namespace": "shop/checkout-api",
+    "default_branch": "main"
+  },
+  "url": "https://gitlab.example.com/shop/checkout-api/-/releases/v2.31.0",
+  "action": "create",
+  "assets": { "count": 0, "links": [], "sources": [] },
+  "commit": { "id": "9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d", "title": "Raise memory limit to 768Mi" }
+}

@@ -844,3 +844,142 @@ async fn change_feed_is_unrouted_without_a_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn argocd_and_gitlab_adapters_record_native_payloads() {
+    let incidentio_srv = MockServer::start().await;
+    let typesafe_srv = MockServer::start().await;
+    let typesafe = Client::builder()
+        .api_key("ts")
+        .base_url(typesafe_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let io = incidentio::Client::builder()
+        .api_key("io")
+        .base_url(incidentio_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let mut triager = Triager::new(typesafe, io);
+    triager.changes = Some(ChangeLog::default());
+    let mut state = AppState::new(Some(WebhookSecret::parse(SECRET).unwrap()), triager);
+    state.changes_token = FeedToken::new("feed-secret");
+    let app = router(Arc::new(state));
+
+    let argocd = include_str!("../examples/changes/argocd-application.json");
+    let deployment = include_str!("../examples/changes/gitlab-deployment.json");
+    let merge = include_str!("../examples/changes/gitlab-merge-request.json");
+
+    // Argo CD: bearer token, Application object.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes/argocd")
+                .header("authorization", "Bearer feed-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(argocd))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["change"]["component"], "checkout-api");
+    assert_eq!(body["change"]["kind"], "deploy");
+    assert_eq!(
+        body["change"]["url"],
+        "https://argocd.example.com/applications/checkout-api"
+    );
+
+    // Argo CD: a failed sync is acknowledged but not recorded.
+    let failed = argocd.replace("\"phase\": \"Succeeded\"", "\"phase\": \"Failed\"");
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes/argocd")
+                .header("authorization", "Bearer feed-secret")
+                .header("content-type", "application/json")
+                .body(Body::from(failed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // GitLab: X-Gitlab-Token, X-Gitlab-Event.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes/gitlab")
+                .header("x-gitlab-token", "feed-secret")
+                .header("x-gitlab-event", "Deployment Hook")
+                .header("content-type", "application/json")
+                .body(Body::from(deployment))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes/gitlab")
+                .header("x-gitlab-token", "feed-secret")
+                .header("x-gitlab-event", "Merge Request Hook")
+                .header("content-type", "application/json")
+                .body(Body::from(merge))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    // GitLab: an unmapped event is 200 ignored; a wrong token is 401; a
+    // bearer header is not how GitLab authenticates.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes/gitlab")
+                .header("x-gitlab-token", "feed-secret")
+                .header("x-gitlab-event", "Push Hook")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/changes/gitlab")
+                .header("authorization", "Bearer feed-secret")
+                .header("x-gitlab-event", "Deployment Hook")
+                .header("content-type", "application/json")
+                .body(Body::from(deployment))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Three changes held, all naming the same component.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get("/changes")
+                .header("authorization", "Bearer feed-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let held: Vec<serde_json::Value> =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(held.len(), 3);
+    assert!(held.iter().all(|c| c["component"] == "checkout-api"));
+    let kinds: Vec<&str> = held.iter().map(|c| c["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"deploy") && kinds.contains(&"merge"));
+}

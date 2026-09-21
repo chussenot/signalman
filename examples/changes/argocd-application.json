@@ -1,0 +1,29 @@
+{
+  "app": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Application",
+    "metadata": { "name": "checkout-api", "namespace": "argocd", "labels": { "team": "payments" } },
+    "spec": {
+      "project": "default",
+      "source": { "repoURL": "https://gitlab.example.com/shop/checkout-api-deploy.git", "path": "overlays/prod", "targetRevision": "main" },
+      "destination": { "server": "https://kubernetes.default.svc", "namespace": "shop" },
+      "syncPolicy": { "automated": { "prune": true, "selfHeal": true } }
+    },
+    "status": {
+      "sync": { "status": "Synced", "revision": "9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d" },
+      "health": { "status": "Healthy" },
+      "history": [
+        { "id": 41, "revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b", "deployedAt": "2026-09-20T09:10:00Z", "deployStartedAt": "2026-09-20T09:09:40Z", "initiatedBy": { "automated": true } },
+        { "id": 42, "revision": "9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d", "deployedAt": "2026-09-21T11:50:12Z", "deployStartedAt": "2026-09-21T11:49:58Z", "initiatedBy": { "username": "alice" } }
+      ],
+      "operationState": {
+        "phase": "Succeeded", "message": "successfully synced (all tasks run)",
+        "startedAt": "2026-09-21T11:49:58Z", "finishedAt": "2026-09-21T11:50:12Z",
+        "operation": { "sync": { "revision": "9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d", "prune": true } },
+        "syncResult": { "revision": "9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d" }
+      },
+      "summary": { "images": ["registry.example.com/shop/checkout-api:2.31.0"], "externalURLs": ["https://shop.example.com"] }
+    }
+  },
+  "context": { "argocdUrl": "https://argocd.example.com" }
+}

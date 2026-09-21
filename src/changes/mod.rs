@@ -13,6 +13,13 @@
 //! In memory only, per replica: a change survives a restart no better than
 //! the `webhook-id` set does, and the consequence is the same as before
 //! this module existed, a `caused_by_change` question that is not asked.
+//!
+//! Two adapters accept native payloads so the common sources need no
+//! template on their side: [`argocd`] takes an Argo CD `Application`,
+//! [`gitlab`] takes GitLab project webhooks.
+
+pub mod argocd;
+pub mod gitlab;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -226,11 +233,20 @@ impl FeedToken {
 
     /// Constant-time comparison against an `Authorization` header value.
     pub fn accepts(&self, authorization: Option<&str>) -> bool {
-        use subtle::ConstantTimeEq;
         let Some(h) = authorization else {
             return false;
         };
-        let Some(presented) = h.strip_prefix("Bearer ").map(str::trim) else {
+        let Some(presented) = h.strip_prefix("Bearer ") else {
+            return false;
+        };
+        self.accepts_raw(Some(presented))
+    }
+
+    /// Constant-time comparison against a bare token, as GitLab sends it in
+    /// `X-Gitlab-Token`.
+    pub fn accepts_raw(&self, token: Option<&str>) -> bool {
+        use subtle::ConstantTimeEq;
+        let Some(presented) = token.map(str::trim) else {
             return false;
         };
         presented.len() == self.0.len() && presented.as_bytes().ct_eq(self.0.as_bytes()).into()
@@ -328,6 +344,8 @@ mod tests {
         assert!(!t.accepts(Some("Bearer s3cre")));
         assert!(!t.accepts(Some("Basic s3cret")));
         assert!(!t.accepts(None));
+        assert!(t.accepts_raw(Some("s3cret")));
+        assert!(!t.accepts_raw(Some("Bearer s3cret")));
         assert!(FeedToken::new("  ").is_none());
         assert_eq!(format!("{t:?}"), "FeedToken(<redacted>)");
     }
