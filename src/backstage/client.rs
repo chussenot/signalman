@@ -13,10 +13,9 @@ use super::types::{
 };
 use crate::http::{self, Completed, Exhausted, RetryPolicy};
 
-/// Environment variable holding the Backstage backend base URL (e.g.
-/// `https://backstage.example.com`, without `/api`).
-pub const BASE_URL_ENV: &str = "BACKSTAGE_BASE_URL";
-/// Environment variable holding the static external-access token.
+/// Environment variable holding the static external-access token: the one
+/// secret this client reads itself. The base URL comes from the
+/// configuration layer.
 pub const TOKEN_ENV: &str = "BACKSTAGE_TOKEN";
 /// Default per-attempt timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -64,11 +63,10 @@ impl ClientBuilder {
         self
     }
 
-    /// Build; falls back to the environment for the base URL and token.
+    /// Build; the base URL is required, the token falls back to `BACKSTAGE_TOKEN`.
     pub fn build(self) -> Result<Client> {
         let base = self
             .base_url
-            .or_else(|| std::env::var(BASE_URL_ENV).ok())
             .filter(|s| !s.trim().is_empty())
             .ok_or(Error::MissingConfig)?;
         let base_url =
@@ -126,16 +124,6 @@ impl Client {
     /// Start building a client.
     pub fn builder() -> ClientBuilder {
         ClientBuilder::default()
-    }
-
-    /// Build from `BACKSTAGE_BASE_URL` and `BACKSTAGE_TOKEN`.
-    pub fn from_env() -> Result<Self> {
-        ClientBuilder::default().build()
-    }
-
-    /// True when `BACKSTAGE_BASE_URL` is set.
-    pub fn is_configured() -> bool {
-        std::env::var(BASE_URL_ENV).is_ok_and(|v| !v.trim().is_empty())
     }
 
     /// The backend base URL this client talks to.

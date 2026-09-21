@@ -22,7 +22,7 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   https://raw.githubusercontent.com/backstage/backstage/master/plugins/catalog-backend/src/schema/openapi.yaml,
   docs at https://backstage.io/docs. The catalog is the ownership source of
   truth (`docs/decisions/0004-catalog-is-the-ownership-source-of-truth.md`);
-  the static `Team` list is only the fallback.
+  the built-in team list (`triage::default_teams`) is only the fallback.
 - Deterministic logic stays in code; the model answers narrow, atomic
   questions. Questions reference state by backticked path. Every Choice has
   a no-match option.
@@ -31,6 +31,12 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   never let the model write its prose, never stack a second note.
 - Observability signals enter through incident.io (decision 0005). No Tsuga
   client until its spec is read with an operation API key.
+- Configuration (decision 0006): default < TOML file < env var < flag.
+  `src/config.rs` is the only module that reads a non-secret env var; the
+  three clients read their own key or token and nothing else. A new setting
+  needs the `Settings` schema, `Config::resolve`, and a row in
+  `docs/configuration.md` (a test checks the env-var table against the doc).
+  Secrets are never accepted from the file.
 - Wire types under `src/incidentio/types.rs` ignore unknown fields and
   default optional ones.
 - Tests never call a real API: wiremock for both clients, hand-built answers

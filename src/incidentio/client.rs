@@ -10,21 +10,18 @@ use std::fmt;
 
 use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::error::{Error, Result};
 use super::types::{
     Alert, AlertEnvelope, AlertEvent, AlertEventAck, AlertNote, AlertNoteEnvelope, AlertNotesPage,
     AlertsPage, Identity, IdentityEnvelope, Incident, IncidentAlert, IncidentAlertEnvelope,
-    IncidentEnvelope, IncidentsPage, StatusCategory,
+    IncidentsPage, StatusCategory,
 };
 use crate::http::{self, Completed, Exhausted, RetryPolicy};
 
 /// Environment variable holding the API key.
 pub const API_KEY_ENV: &str = "INCIDENTIO_API_KEY";
-/// Environment variable overriding the base URL.
-pub const BASE_URL_ENV: &str = "INCIDENTIO_BASE_URL";
 /// Production API base URL.
 pub const DEFAULT_BASE_URL: &str = "https://api.incident.io";
 /// Default per-attempt timeout.
@@ -138,13 +135,9 @@ impl Client {
         ClientBuilder::default()
     }
 
-    /// Build from environment variables only.
+    /// Production defaults with the API key from `INCIDENTIO_API_KEY`.
     pub fn from_env() -> Result<Self> {
-        let mut b = ClientBuilder::default();
-        if let Ok(url) = std::env::var(BASE_URL_ENV) {
-            b = b.base_url(url);
-        }
-        b.build()
+        ClientBuilder::default().build()
     }
 
     /// `GET /v1/identity`: which key this is and what it may do.
@@ -158,20 +151,6 @@ impl Client {
             })
             .await?;
         Ok(env.identity)
-    }
-
-    /// `GET /v2/incidents/{id}`. Accepts the ULID or the numeric part of the
-    /// reference.
-    pub async fn get_incident(&self, id: &str) -> Result<Incident> {
-        let url = self.url(&format!("v2/incidents/{id}"))?;
-        let env: IncidentEnvelope = self
-            .call(|| {
-                self.http
-                    .get(url.clone())
-                    .header(AUTHORIZATION, self.auth.clone())
-            })
-            .await?;
-        Ok(env.incident)
     }
 
     /// Incidents in the given status categories, following pagination until
@@ -245,22 +224,6 @@ impl Client {
             })
             .await?;
         Ok(env.alert)
-    }
-
-    /// Alerts with this deduplication key (normally zero or one).
-    pub async fn find_alerts_by_dedup_key(&self, key: &str) -> Result<Vec<Alert>> {
-        let mut url = self.url("v2/alerts")?;
-        url.query_pairs_mut()
-            .append_pair("deduplication_key[is]", key)
-            .append_pair("page_size", "10");
-        let page: AlertsPage = self
-            .call(|| {
-                self.http
-                    .get(url.clone())
-                    .header(AUTHORIZATION, self.auth.clone())
-            })
-            .await?;
-        Ok(page.alerts)
     }
 
     /// `POST /v2/alerts/{id}/actions/add_tags`. Existing tags are kept; unknown
@@ -426,10 +389,4 @@ impl Client {
             Err(Exhausted { attempts, source }) => Err(Error::Transport { attempts, source }),
         }
     }
-}
-
-/// Serialize helper kept for symmetry with the TypeSafe client.
-#[allow(dead_code)]
-fn to_body<T: Serialize>(v: &T) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(v)?)
 }

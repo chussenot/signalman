@@ -1,14 +1,16 @@
 //! Routing policy. Pure code over typed answers, so it is unit-testable
 //! without the model and tunable without re-running inference.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, TriageAnswers};
 use super::{Owner, OwnerCandidate};
 
 /// Thresholds. Start conservative, then tune on your own alert history and
-/// pin the model version you tuned against.
-#[derive(Debug, Clone, PartialEq)]
+/// pin the model version you tuned against. Deserialises from the `[policy]`
+/// table of the configuration file; absent fields keep their defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Policy {
     /// Below this `actionable` probability the alert is suppressed.
     pub suppress_below: f64,
@@ -34,6 +36,32 @@ impl Default for Policy {
             page_at: Impact::Major,
             flag_change_above: 0.65,
         }
+    }
+}
+
+impl Policy {
+    /// Every probability threshold in `0..=1`; the human threshold at or
+    /// below the automatic one, or no confidence could route automatically.
+    pub fn validate(&self) -> Result<(), String> {
+        let unit = [
+            ("suppress_below", self.suppress_below),
+            ("attach_confidence", self.attach_confidence),
+            ("auto_route_confidence", self.auto_route_confidence),
+            ("human_below_confidence", self.human_below_confidence),
+            ("flag_change_above", self.flag_change_above),
+        ];
+        for (name, v) in unit {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!("policy.{name} = {v} is outside 0..=1"));
+            }
+        }
+        if self.human_below_confidence > self.auto_route_confidence {
+            return Err(format!(
+                "policy.human_below_confidence ({}) must not exceed policy.auto_route_confidence ({})",
+                self.human_below_confidence, self.auto_route_confidence
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -98,14 +126,37 @@ impl Decision {
     }
 }
 
-impl Serialize for Impact {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(match self {
+impl Impact {
+    /// The lowercase wire and configuration name.
+    pub fn key(self) -> &'static str {
+        match self {
             Self::None => "none",
             Self::Minor => "minor",
             Self::Major => "major",
             Self::Outage => "outage",
-        })
+        }
+    }
+}
+
+impl Serialize for Impact {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for Impact {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        match raw.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "minor" => Ok(Self::Minor),
+            "major" => Ok(Self::Major),
+            "outage" => Ok(Self::Outage),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["none", "minor", "major", "outage"],
+            )),
+        }
     }
 }
 

@@ -62,7 +62,7 @@ flowchart TD
     C -.->|no component matched| ALL[by-query kind=group,spec.type=team, cap 24] --> ADD
 ```
 
-If the component resolved but no group could be fetched, the all-teams fallback also applies. Without any Backstage configuration the static `Team` list is used and this module is never called.
+If the component resolved but no group could be fetched, the all-teams fallback also applies. Without any Backstage configuration the fallback team list (`[[triage.teams]]`, or the built-in six) is used and this module is never called.
 
 ## Runbook selection
 

@@ -218,14 +218,6 @@ impl Entity {
             .contains_key("backstage.io/techdocs-ref")
             .then(|| self.entity_ref())
     }
-
-    /// `backstage.io/view-url` annotation, if present.
-    pub fn view_url(&self) -> Option<&str> {
-        self.metadata
-            .annotations
-            .get("backstage.io/view-url")
-            .map(String::as_str)
-    }
 }
 
 /// `GET /entities/by-query` response.

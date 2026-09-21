@@ -48,4 +48,4 @@ GitHub Actions has never run in this repository: every job is refused at schedul
 
 - `Retry-After` in HTTP-date form falls back to backoff.
 - The in-memory `webhook-id` set does not survive restarts; tag adds are idempotent, so the consequence is a repeated model call.
-- Without Backstage, the `Team` enum encodes one organisation's ownership model. The impact rubric always does.
+- Without Backstage, the built-in fallback team list encodes one organisation's ownership model; `[[triage.teams]]` in the configuration file replaces it, and `[triage.text]` the impact rubric, but both remain guesses until tuned on real alerts.

@@ -97,8 +97,8 @@ flowchart TD
 | Setting | Default | Override |
 |---|---|---|
 | API key | `TYPESAFE_API_KEY` | `Client::builder().api_key(..)` |
-| Base URL | `https://api.typesafe.ai` | `TYPESAFE_BASE_URL` |
-| Model | `jev-latest` | `TYPESAFE_DEFAULT_MODEL`, `--model` |
+| Base URL | `https://api.typesafe.ai` | `.base_url(..)`; the binary takes `typesafe.base_url` from the [configuration](configuration.md) |
+| Model | `jev-latest` | `.model(..)`; the binary takes `typesafe.model`, `TYPESAFE_DEFAULT_MODEL` or `--model` |
 | Timeout | 10 s per attempt | `.timeout(..)` |
 | Retries | 2; backoff 0.5 s doubling to 5 s; ±25 % jitter | `.retry(RetryPolicy { .. })` |
 | Retry on | 408, 429, 5xx (including 529), transport errors | |

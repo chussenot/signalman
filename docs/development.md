@@ -33,6 +33,7 @@ mise tasks          # everything below
 | `serve` | `cargo run -- serve` plus any flags |
 | `triage <file>` | `cargo run -- triage <file>` plus any flags |
 | `triage:examples` | print the TypeSafe request for every example alert |
+| `config:show` | effective configuration after file, environment and flags |
 | `bd:ready` / `bd:export` | ready issues / refresh the JSONL snapshot |
 
 ## Quality gates
@@ -71,6 +72,7 @@ src/
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
+  config.rs        configuration layers: file schema, env, flags, resolve
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs
 examples/          sample alerts and a sample webhook delivery
