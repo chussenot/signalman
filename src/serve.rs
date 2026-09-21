@@ -5,7 +5,16 @@
 //! (Svix resends with the same id), acknowledges with 202 immediately, and
 //! runs the triage in a background task. incident.io retries non-2xx for 24
 //! hours, so the endpoint must only fail on requests it truly cannot accept:
-//! bad signature (401) or an unparseable body (400).
+//! bad signature (401), an unparseable body (400), or more work than this
+//! replica will take on (503 with `Retry-After`, so the hub's retry becomes
+//! the backpressure).
+//!
+//! Work is bounded twice. At most [`Limits::max_concurrent`] triages run at
+//! once and at most [`Limits::max_queued`] wait for a slot; a delivery
+//! beyond that is refused before it is marked seen, so the retry is
+//! processed. Each triage has a deadline, [`Limits::timeout`], covering every
+//! upstream call; a triage that overruns is dropped and reported as an
+//! error, and its alert keeps the tags it had.
 //!
 //! The change feed takes one [`Change`] or an array of them, authenticated
 //! by a bearer token, and answers 202 with the count stored. `GET /changes`
@@ -13,6 +22,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
@@ -23,7 +33,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use jiff::Timestamp;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::changes::gitlab::{self, Delivery};
 use crate::changes::{Change, ChangeLog, FeedToken, argocd};
@@ -32,6 +42,41 @@ use crate::incidentio::{Outcome, Triager};
 
 /// How many recent `webhook-id`s to remember for idempotency.
 const SEEN_CAPACITY: usize = 4096;
+
+/// Triages running at once. Each costs a handful of incident.io calls, and
+/// the incidents list is limited to 60 a minute, so this is not a CPU bound.
+pub const DEFAULT_MAX_CONCURRENT: usize = 8;
+
+/// Triages waiting for a slot before deliveries are refused.
+pub const DEFAULT_MAX_QUEUED: usize = 64;
+
+/// Deadline for one triage, all upstream calls and retries included. The
+/// clients' own timeouts bound each call; this bounds the sum.
+pub const DEFAULT_TRIAGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Seconds suggested to the sender on a 503.
+const RETRY_AFTER_SECONDS: u64 = 30;
+
+/// Bounds on the background work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Triages running at once (at least 1).
+    pub max_concurrent: usize,
+    /// Triages waiting for a slot; beyond it, 503.
+    pub max_queued: usize,
+    /// Deadline per triage.
+    pub timeout: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
+            max_queued: DEFAULT_MAX_QUEUED,
+            timeout: DEFAULT_TRIAGE_TIMEOUT,
+        }
+    }
+}
 
 /// Shared state for the receiver.
 pub struct AppState {
@@ -43,7 +88,13 @@ pub struct AppState {
     pub on_outcome: Option<tokio::sync::mpsc::UnboundedSender<Result<Outcome, String>>>,
     /// Token for the change feed. `None` leaves `/changes` unrouted.
     pub changes_token: Option<FeedToken>,
+    /// The bounds in force.
+    pub limits: Limits,
     seen: Mutex<Seen>,
+    /// One permit per triage admitted (running or waiting).
+    admission: Arc<Semaphore>,
+    /// One permit per triage running.
+    running: Arc<Semaphore>,
 }
 
 struct Seen {
@@ -70,16 +121,39 @@ impl AppState {
     /// Build state. Pass `None` for `secret` only for local development; the
     /// server logs a loud warning and accepts unsigned deliveries.
     pub fn new(secret: Option<WebhookSecret>, triager: Triager) -> Self {
+        Self::with_limits(secret, triager, Limits::default())
+    }
+
+    /// Build state with explicit bounds.
+    pub fn with_limits(secret: Option<WebhookSecret>, triager: Triager, limits: Limits) -> Self {
+        let concurrent = limits.max_concurrent.max(1);
         Self {
             secret,
             triager,
             on_outcome: None,
             changes_token: None,
+            limits,
             seen: Mutex::new(Seen {
                 set: HashSet::new(),
                 order: VecDeque::new(),
             }),
+            admission: Arc::new(Semaphore::new(concurrent + limits.max_queued)),
+            running: Arc::new(Semaphore::new(concurrent)),
         }
+    }
+
+    /// Triages currently running.
+    pub fn running(&self) -> usize {
+        self.limits
+            .max_concurrent
+            .max(1)
+            .saturating_sub(self.running.available_permits())
+    }
+
+    /// Triages admitted and not yet finished (running plus waiting).
+    pub fn admitted(&self) -> usize {
+        (self.limits.max_concurrent.max(1) + self.limits.max_queued)
+            .saturating_sub(self.admission.available_permits())
     }
 }
 
@@ -267,7 +341,7 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    if !webhook_id.is_empty() && !state.seen.lock().await.insert(webhook_id.clone()) {
+    if !webhook_id.is_empty() && state.seen.lock().await.set.contains(&webhook_id) {
         tracing::info!(%webhook_id, "duplicate delivery ignored");
         return StatusCode::OK.into_response();
     }
@@ -282,15 +356,55 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
 
     match event {
         Event::AlertCreated(alert) => {
-            tracing::info!(alert_id = %alert.id, title = %alert.title, %webhook_id, "alert created; triaging");
+            // Admission first, then the seen set: a refused delivery must be
+            // retried, so it must not be remembered.
+            let Ok(admitted) = Arc::clone(&state.admission).try_acquire_owned() else {
+                tracing::warn!(
+                    alert_id = %alert.id,
+                    %webhook_id,
+                    running = state.running(),
+                    admitted = state.admitted(),
+                    "at capacity; asking incident.io to retry"
+                );
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(
+                        axum::http::header::RETRY_AFTER,
+                        RETRY_AFTER_SECONDS.to_string(),
+                    )],
+                    "triage capacity reached; retry later",
+                )
+                    .into_response();
+            };
+            if !webhook_id.is_empty() && !state.seen.lock().await.insert(webhook_id.clone()) {
+                tracing::info!(%webhook_id, "duplicate delivery ignored");
+                return StatusCode::OK.into_response();
+            }
+            tracing::info!(alert_id = %alert.id, title = %alert.title, %webhook_id, queued = state.admitted().saturating_sub(state.running()), "alert created; triaging");
             let state = Arc::clone(&state);
             tokio::spawn(async move {
-                let result = state.triager.triage_alert_by_id(&alert.id).await;
+                let _admitted = admitted;
+                let Ok(_running) = Arc::clone(&state.running).acquire_owned().await else {
+                    return; // semaphore closed: shutting down
+                };
+                let timeout = state.limits.timeout;
+                let result = match tokio::time::timeout(
+                    timeout,
+                    state.triager.triage_alert_by_id(&alert.id),
+                )
+                .await
+                {
+                    Ok(r) => r.map_err(|e| e.to_string()),
+                    Err(_) => Err(format!(
+                        "triage timed out after {:.1} s; the alert keeps whatever was written before the deadline",
+                        timeout.as_secs_f64()
+                    )),
+                };
                 if let Err(e) = &result {
                     tracing::error!(alert_id = %alert.id, error = %e, "triage failed");
                 }
                 if let Some(tx) = &state.on_outcome {
-                    let _ = tx.send(result.map_err(|e| e.to_string()));
+                    let _ = tx.send(result);
                 }
             });
             StatusCode::ACCEPTED.into_response()

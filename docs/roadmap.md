@@ -22,7 +22,7 @@ Nothing has run against a live TypeSafe, incident.io or Backstage instance. Wire
 
 ## Hardening the receiver (`signalman-m28`)
 
-Background triage concurrency is unbounded and there is no request timeout, body limit, readiness endpoint, telemetry export or container image.
+Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). Open: OpenTelemetry tracing and metrics for the flow, so time to qualify and the queue depth are exported rather than logged; a readiness endpoint that checks upstream reachability; a container image and the CI job that builds it.
 
 ## Triage quality (`signalman-ufg`)
 

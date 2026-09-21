@@ -29,13 +29,15 @@ flowchart TD
     D -->|no| E{body parses as<br/>event_type + payload?}
     E -->|no| B400[400]
     E -->|yes| K{event type}
-    K -->|public_alert.alert_created_v1| SP[spawn triage by alert id] --> A202[202 Accepted]
+    K -->|public_alert.alert_created_v1| CAP{slot or queue<br/>free?}
+    CAP -->|no| U503[503, Retry-After]
+    CAP -->|yes| SP[spawn triage by alert id<br/>under the deadline] --> A202[202 Accepted]
     K -->|anything else| OK200b[200, ignored]
 ```
 
 The signature is Svix's: HMAC-SHA256 over `id.timestamp.raw body`, keyed with the base64 part of the `whsec_` secret, compared in constant time; several space-separated `v1,` signatures are accepted during rotation, and both `webhook-*` and `svix-*` header names are read. The implementation is pinned to Svix's published test vector.
 
-Two responses are refusals, 401 and 400, and incident.io retries them for 24 hours. Everything else is acknowledged, including duplicates and event types signalman does not handle, because a retry would only repeat the same delivery. Private-resource events carry an id only and are ignored.
+Three responses are refusals and incident.io retries them for 24 hours: 401, 400, and 503 when the replica is at its [triage capacity](operations.md#backpressure), sent with `Retry-After` and before the delivery is marked seen. Everything else is acknowledged, including duplicates and event types signalman does not handle, because a retry would only repeat the same delivery. Private-resource events carry an id only and are ignored.
 
 ## The flow after acknowledgement
 

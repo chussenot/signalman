@@ -14,7 +14,7 @@ use signalman::backstage::{self, Enricher};
 use signalman::changes::{ChangeLog, FeedToken};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
-use signalman::serve::{AppState, router};
+use signalman::serve::{AppState, Limits, router};
 use signalman::triage::Decision;
 use signalman::{Client, RetryPolicy};
 use tower::ServiceExt;
@@ -982,4 +982,156 @@ async fn argocd_and_gitlab_adapters_record_native_payloads() {
     assert!(held.iter().all(|c| c["component"] == "checkout-api"));
     let kinds: Vec<&str> = held.iter().map(|c| c["kind"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"deploy") && kinds.contains(&"merge"));
+}
+
+/// A receiver whose TypeSafe answers after `delay`, with explicit bounds.
+async fn slow_receiver(
+    delay: Duration,
+    limits: Limits,
+) -> (
+    axum::Router,
+    tokio::sync::mpsc::UnboundedReceiver<Result<incidentio::Outcome, String>>,
+    MockServer,
+    MockServer,
+) {
+    let incidentio_srv = MockServer::start().await;
+    let typesafe_srv = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(wiremock::matchers::path_regex(r"^/v2/alerts/al-[a-z0-9]+$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": { "id": "al-x", "alert_source_id": "src", "title": "Slow", "description": "d",
+                       "status": "firing", "attributes": [], "tags": [] }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/incidents"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "incidents": [], "pagination_meta": { "page_size": 40 } })),
+        )
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alerts": [] })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(delay)
+                .set_body_json(json!({
+                    "model": "jev-1.13.0",
+                    "answers": {
+                        "owner": { "type": "choice", "choice": "platform",
+                                   "probabilities": { "platform": 0.9, "none_of_these": 0.1 }, "confidence": 0.9 },
+                        "impact": { "type": "score", "score": 1.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                                    "probabilities": { "0": 0.0, "1": 1.0, "2": 0.0, "3": 0.0 }, "confidence": 1.0 },
+                        "actionable": { "type": "noul", "noul": 0.9 }
+                    },
+                    "usage": { "input_tokens": 100, "output_tokens": 10 }
+                })),
+        )
+        .mount(&typesafe_srv)
+        .await;
+
+    let typesafe = Client::builder()
+        .api_key("ts")
+        .base_url(typesafe_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let io = incidentio::Client::builder()
+        .api_key("io")
+        .base_url(incidentio_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let mut triager = Triager::new(typesafe, io);
+    triager.write_back = WriteBack::DryRun;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut state =
+        AppState::with_limits(Some(WebhookSecret::parse(SECRET).unwrap()), triager, limits);
+    state.on_outcome = Some(tx);
+    (router(Arc::new(state)), rx, incidentio_srv, typesafe_srv)
+}
+
+#[tokio::test]
+async fn capacity_is_bounded_and_refused_deliveries_are_retried_later() {
+    let limits = Limits {
+        max_concurrent: 1,
+        max_queued: 1,
+        timeout: Duration::from_secs(10),
+    };
+    let (app, mut rx, _io, _ts) = slow_receiver(Duration::from_millis(600), limits).await;
+
+    let send = |id: &str, msg: &str| {
+        let body = alert_created(id);
+        let req = signed(&body, msg, SECRET);
+        let app = app.clone();
+        async move { app.oneshot(req).await.unwrap() }
+    };
+
+    // One running, one waiting, the third refused with Retry-After.
+    assert_eq!(send("al-a", "msg-a").await.status(), StatusCode::ACCEPTED);
+    assert_eq!(send("al-b", "msg-b").await.status(), StatusCode::ACCEPTED);
+    let refused = send("al-c", "msg-c").await;
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        refused
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        Some("30")
+    );
+
+    // Both admitted triages complete, in order, one at a time.
+    for _ in 0..2 {
+        let out = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(out.is_ok(), "{out:?}");
+    }
+
+    // The refused delivery was not marked seen: incident.io's retry is
+    // accepted and runs.
+    assert_eq!(send("al-c", "msg-c").await.status(), StatusCode::ACCEPTED);
+    let out = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(out.is_ok(), "{out:?}");
+
+    // And a true duplicate of an accepted one is still a 200 with no work.
+    assert_eq!(send("al-a", "msg-a").await.status(), StatusCode::OK);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_triage_that_overruns_the_deadline_is_reported_as_failed() {
+    let limits = Limits {
+        max_concurrent: 2,
+        max_queued: 2,
+        timeout: Duration::from_millis(250),
+    };
+    let (app, mut rx, _io, _ts) = slow_receiver(Duration::from_secs(3), limits).await;
+    let resp = app
+        .clone()
+        .oneshot(signed(&alert_created("al-slow"), "msg-slow", SECRET))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let out = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("deadline enforced well before the mock answers")
+        .unwrap();
+    let err = out.unwrap_err();
+    assert!(err.contains("timed out after 0.2 s"), "{err}");
 }

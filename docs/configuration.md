@@ -45,6 +45,9 @@ TOML, every key optional, unknown keys rejected. Location, first match wins: `--
 | File key | Environment | Flag | Default | Meaning |
 |---|---|---|---|---|
 | `server.addr` | `SIGNALMAN_ADDR` | `serve --addr` | `127.0.0.1:8080` | listen address |
+| `server.max_concurrent_triages` | `SIGNALMAN_MAX_CONCURRENT_TRIAGES` | | `8` | triages running at once; at least 1 |
+| `server.max_queued_triages` | `SIGNALMAN_MAX_QUEUED_TRIAGES` | | `64` | triages waiting for a slot; a delivery beyond that is refused with `503` and `Retry-After` so incident.io retries it |
+| `server.triage_timeout_seconds` | `SIGNALMAN_TRIAGE_TIMEOUT_SECONDS` | | `60` | deadline for one triage, every upstream call and retry included; at least 1 |
 
 ### `[typesafe]`
 
