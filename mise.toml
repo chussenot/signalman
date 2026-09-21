@@ -79,6 +79,10 @@ run = "cargo run -- serve {{arg(name='flags', var=true, default='')}}"
 description = "Triage one alert file, e.g. `mise run triage examples/alerts/dns.json -- --json`"
 run = "cargo run -- triage {{arg(name='alert')}} {{arg(name='flags', var=true, default='')}}"
 
+[tasks.eval]
+description = "Replay the labelled example cases and grade judgments and decisions"
+run = "cargo run -q -- eval examples/eval/cases.jsonl"
+
 [tasks."config:show"]
 description = "Print the effective configuration after file, environment and flags"
 run = "cargo run -q -- config show"

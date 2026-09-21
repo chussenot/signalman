@@ -64,6 +64,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
 | [Triage](docs/triage.md) | The questions, the policy, how to tune it |
+| [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
 | [Backstage bridge](docs/backstage.md) | Catalog ownership, TechDocs runbooks, notifications, registering signalman |
 | [Configuration](docs/configuration.md) | The four layers, every setting, Kubernetes |

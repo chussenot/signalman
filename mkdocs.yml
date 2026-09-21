@@ -17,6 +17,7 @@ nav:
   - TypeSafe client: typesafe-client.md
   - Laya as a model provider: laya.md
   - Triage: triage.md
+  - Evaluation harness: evaluation.md
   - incident.io integration: incidentio.md
   - Configuration: configuration.md
   - Operations: operations.md

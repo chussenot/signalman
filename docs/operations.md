@@ -38,6 +38,7 @@ signalman incidentio triage-alert <alert id> --dry-run   # the webhook flow for 
 signalman backstage lookup <component> --text "<alert>"  # what the catalog contributes
 signalman triage examples/alerts/dns.json --print-request  # exact TypeSafe request, no call
 signalman config show                                    # effective configuration after every layer
+signalman eval examples/eval/cases.jsonl --record runs/x  # grade labelled alerts, keep raw responses
 ```
 
 `incidentio triage-alert` is also the way to retry a triage that failed after the webhook was acknowledged.

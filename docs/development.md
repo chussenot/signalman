@@ -33,6 +33,7 @@ mise tasks          # everything below
 | `serve` | `cargo run -- serve` plus any flags |
 | `triage <file>` | `cargo run -- triage <file>` plus any flags |
 | `triage:examples` | print the TypeSafe request for every example alert |
+| `eval [args]` | `cargo run -- eval examples/eval/cases.jsonl` plus any flags |
 | `config:show` | effective configuration after file, environment and flags |
 | `bd:ready` / `bd:export` | ready issues / refresh the JSONL snapshot |
 
@@ -69,6 +70,7 @@ src/
   answer.rs        Answer wire shape, Probability/Confidence, typed views
   error.rs         TypeSafe-side error enum
   triage/          Alert state, owner candidates, questions, Decision policy
+  eval/            evaluation harness: cases, grading, metrics, record and replay
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
