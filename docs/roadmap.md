@@ -26,7 +26,7 @@ Background triage concurrency is unbounded and there is no request timeout, body
 
 ## Triage quality (`signalman-ufg`)
 
-Thresholds are untuned defaults. The plan: an evaluation harness over labelled historical alerts, threshold tuning from its report, `recent_changes` from deployment sources so `caused_by_change` is actually asked, and smarter candidate selection by team and recency.
+Thresholds are untuned defaults. The plan: an evaluation harness over labelled historical alerts, threshold tuning from its report, `recent_changes` from deployment sources so `caused_by_change` is actually asked, and smarter candidate selection by team and recency. The same harness decides whether [Laya](laya.md), an open-weights System One model that already runs behind the configured endpoint, can replace Jev after fine-tuning (`signalman-ufg.5`).
 
 ## Backstage bridge (`signalman-90m`)
 
