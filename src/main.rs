@@ -19,6 +19,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use signalman::backstage::enrich::hints_from_labels;
 use signalman::backstage::{self, Enricher};
 use signalman::config::{Config, Overrides};
+use signalman::eval;
 use signalman::incidentio::types::{AlertEvent, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
@@ -49,6 +50,8 @@ struct Cli {
 enum Command {
     /// Decide what to do with an alert (JSON file, or `-` for stdin).
     Triage(TriageArgs),
+    /// Replay labelled alerts and grade every judgment and decision.
+    Eval(EvalArgs),
     /// List the TypeSafe model names this account may use.
     Models,
     /// Receive incident.io webhooks and triage new alerts.
@@ -105,6 +108,25 @@ struct TriageArgs {
     #[arg(long)]
     print_request: bool,
     /// Emit the decision and raw answers as JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct EvalArgs {
+    /// JSON Lines file of cases: {id, alert, expected}. See examples/eval/cases.jsonl.
+    cases: PathBuf,
+    /// Model name or alias [file: typesafe.model, env: TYPESAFE_DEFAULT_MODEL, default: jev-latest].
+    #[arg(long)]
+    model: Option<String>,
+    /// Write every raw model response to DIR/<id>.json for later --replay.
+    #[arg(long, value_name = "DIR", conflicts_with = "replay")]
+    record: Option<PathBuf>,
+    /// Grade recorded responses from DIR under the current configuration
+    /// instead of calling the model. Tune [policy] and [triage.text] this way.
+    #[arg(long, value_name = "DIR")]
+    replay: Option<PathBuf>,
+    /// Emit the full report as JSON instead of text.
     #[arg(long)]
     json: bool,
 }
@@ -213,10 +235,12 @@ fn overrides(command: &Command) -> Overrides {
             notify_owners: *notify_owners,
             ..flow.overrides()
         },
-        Command::Triage(args) => Overrides {
-            model: args.model.clone(),
-            ..Overrides::default()
-        },
+        Command::Triage(TriageArgs { model, .. }) | Command::Eval(EvalArgs { model, .. }) => {
+            Overrides {
+                model: model.clone(),
+                ..Overrides::default()
+            }
+        }
         Command::Incidentio(IncidentIoCommand::TriageAlert { flow, .. }) => flow.overrides(),
         Command::Models | Command::Incidentio(_) | Command::Backstage(_) | Command::Config(_) => {
             Overrides::default()
@@ -229,6 +253,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
     tracing::debug!(file = ?file, "configuration resolved");
     match cli.command {
         Command::Triage(args) => triage(&cfg, args).await,
+        Command::Eval(args) => evaluate(&cfg, args).await,
         Command::Models => {
             let client = typesafe_client(&cfg)?;
             for m in client.list_models().await? {
@@ -425,6 +450,42 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
             println!(
                 "forwarded  incident.io accepted event (dedup key {})",
                 ack.deduplication_key
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
+    let cases = eval::read_cases(&args.cases)?;
+    let candidates = cfg.triage.fallback_candidates();
+    let setup = eval::Setup {
+        texts: &cfg.triage.text,
+        candidates: &candidates,
+        policy: &cfg.policy,
+    };
+    let report = if let Some(dir) = &args.replay {
+        eval::replay(dir, &cases, &setup)?
+    } else {
+        let client = typesafe_client(cfg)?;
+        eval::run(
+            &client,
+            &cfg.typesafe.model,
+            &cases,
+            &setup,
+            args.record.as_deref(),
+        )
+        .await?
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render());
+        if let Some(dir) = &args.record {
+            println!(
+                "\nrecorded {} responses under {}",
+                report.cases,
+                dir.display()
             );
         }
     }

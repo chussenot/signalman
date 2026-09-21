@@ -62,6 +62,7 @@ pub mod backstage;
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod eval;
 pub mod http;
 pub mod incidentio;
 pub mod question;

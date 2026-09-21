@@ -107,12 +107,13 @@ A Choice answer carries both the probability of each option and a confidence, wh
 
 ## Tuning
 
-Raw answers travel with every decision (`--json` on the CLI, `Outcome` in the flow). The loop:
+Raw answers travel with every decision (`--json` on the CLI, `Outcome` in the flow), and the [evaluation harness](evaluation.md) turns labelled alerts into accuracy, calibration and decision-agreement numbers. The loop:
 
-1. Collect alerts with the expected team, impact and action.
-2. Run them through `triage --json` and record the distributions and the versioned model id.
-3. Pick thresholds per band from the observed confidence distributions, higher for actions that are expensive when wrong, and set them in `[policy]`.
-4. Pin `typesafe.model` to the version tuned against in the same file and re-evaluate before moving to a new one.
+1. Collect alerts with the expected team, impact, actionability and action into a cases file.
+2. `signalman eval cases.jsonl --record runs/<model>`: one model call per case, every raw response kept.
+3. Read `conf|right` against `conf|wrong` per question and set thresholds in `[policy]`, higher for actions that are expensive when wrong.
+4. `signalman eval cases.jsonl --replay runs/<model>` to see the decisions under the new thresholds, without calling the model.
+5. Pin `typesafe.model` to the version recorded against in the same file and re-evaluate before moving to a new one.
 
 ## Testing
 

@@ -18,6 +18,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | What runs where | [C4 containers](c4/container.md), [Operations](operations.md) |
 | How the modules fit together | [C4 components](c4/component.md), [Architecture](architecture.md) |
 | What the model is asked and how the answer becomes an action | [Triage](triage.md) |
+| How well it decides, and how to tune it with numbers | [Evaluation harness](evaluation.md) |
 | How the catalog changes ownership, context and runbooks | [Backstage bridge](backstage.md) |
 | How webhooks are verified and what is written back | [incident.io integration](incidentio.md) |
 | How the typed client works and its defaults | [TypeSafe client](typesafe-client.md) |
