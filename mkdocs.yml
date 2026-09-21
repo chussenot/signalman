@@ -15,6 +15,7 @@ nav:
       - C4 components: c4/component.md
   - Backstage bridge: backstage.md
   - TypeSafe client: typesafe-client.md
+  - Laya as a model provider: laya.md
   - Triage: triage.md
   - incident.io integration: incidentio.md
   - Configuration: configuration.md
@@ -27,6 +28,8 @@ nav:
       - 0002 Calibrated judgments over generated text: decisions/0002-calibrated-judgments-over-generated-text.md
       - 0003 Typed handles between questions and answers: decisions/0003-typed-handles-between-questions-and-answers.md
       - 0004 The catalog is the ownership source of truth: decisions/0004-catalog-is-the-ownership-source-of-truth.md
+      - 0005 Observability signals enter through incident.io: decisions/0005-observability-signals-enter-through-incidentio.md
+      - 0006 Layered configuration with secrets outside the file: decisions/0006-layered-configuration.md
       - Template: decisions/template.md
 
 plugins:

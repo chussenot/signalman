@@ -62,10 +62,11 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Architecture](docs/architecture.md) | Components, the path of one alert, boundaries, failure containment |
 | [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams |
 | [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
+| [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
 | [Triage](docs/triage.md) | The questions, the policy, how to tune it |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
 | [Backstage bridge](docs/backstage.md) | Catalog ownership, TechDocs runbooks, notifications, registering signalman |
-| [Configuration](docs/configuration.md) | Environment variables and their scopes |
+| [Configuration](docs/configuration.md) | The four layers, every setting, Kubernetes |
 | [Operations](docs/operations.md) | Running, health, limits, failure modes |
 | [Development](docs/development.md) | Tools, tasks, gates, layout, planning, agent harness |
 | [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |
