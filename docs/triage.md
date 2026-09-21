@@ -19,7 +19,7 @@ The `state` is `{ "alert": Alert }`. Every field either answers a question or is
 | `source`, `title`, `description`, `labels` | the alert | every question |
 | `runbook` | the alert, or TechDocs when Backstage is configured | owner, actionable |
 | `open_incidents` | live incidents from incident.io, capped at 40 | `duplicate_of` |
-| `recent_changes` | the alert file today; deploy sources are on the roadmap | `caused_by_change` |
+| `recent_changes` | the alert file, or the [change feed](changes.md): deploys and changes posted by delivery tools that touched the component or the platform in the last two hours | `caused_by_change` |
 | `component` | the Backstage catalog: owner, lifecycle, system, dependencies, dependents, tags, links | owner, impact |
 | `related_alerts` | alerts firing in incident.io in the recent window (default 30 minutes, at most 20): title, age in minutes, component label | impact |
 

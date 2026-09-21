@@ -59,6 +59,7 @@
 
 pub mod answer;
 pub mod backstage;
+pub mod changes;
 pub mod client;
 pub mod config;
 pub mod error;

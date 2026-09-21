@@ -19,6 +19,7 @@ nav:
   - Triage: triage.md
   - Evaluation harness: evaluation.md
   - incident.io integration: incidentio.md
+  - Change feed: changes.md
   - Configuration: configuration.md
   - Operations: operations.md
   - Development: development.md
@@ -31,6 +32,7 @@ nav:
       - 0004 The catalog is the ownership source of truth: decisions/0004-catalog-is-the-ownership-source-of-truth.md
       - 0005 Observability signals enter through incident.io: decisions/0005-observability-signals-enter-through-incidentio.md
       - 0006 Layered configuration with secrets outside the file: decisions/0006-layered-configuration.md
+      - 0007 Changes are pushed, not polled: decisions/0007-changes-are-pushed-not-polled.md
       - Template: decisions/template.md
 
 plugins:

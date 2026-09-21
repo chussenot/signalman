@@ -67,6 +67,8 @@ Tags carry the verdict; the note carries what a responder needs to trust it and 
 - Impact: Major (P 0.71; Outage 0.22)
 - Actionable: 0.95
 - Duplicate of: none of the 3 open incidents offered (confidence 0.80)
+- Recent change as cause: 0.71
+  - 2026-09-21T11:50:00Z deploy checkout-api v2.31.0 by alice (checkout-api) https://argocd.example.com/applications/checkout-api
 - Component: [checkout-api](https://backstage.example.com/catalog/default/component/checkout-api) (service, production), registered owner Payments; depended on by component storefront
 - Runbook: [TechDocs page](https://backstage.example.com/docs/default/component/checkout-api/runbooks/high-error-rate/)
 - Related firing alerts (last 30 min): 2

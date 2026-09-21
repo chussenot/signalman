@@ -28,6 +28,7 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 ## What it does
 
 - Receives incident.io `alert_created` webhooks, verifies the Svix signature, fetches the alert, the live incidents and the other alerts firing in the last half hour fresh from the API, judges, and writes back `ai-team-*`, `ai-impact-*`, `ai-action-*`, `ai-dup-*` and `ai-suspected-change` tags, plus an attachment for a confident duplicate.
+- Accepts change events (deploys, configuration, flags) from any delivery tool on `POST /changes`, and offers the ones that touched the alerting component in the last two hours to the model as `recent_changes`, so "did something change" is asked and answered.
 - Leaves one qualification note on the alert: the decision, each judgment with its probability, the matched incident, the catalog component and owner with Backstage links, the TechDocs runbook page, the related firing alerts, and the time it took to qualify. Rewritten in place on a later pass, never stacked.
 - Resolves the alerting service in the Backstage catalog: owner group and dependency neighbours become the owner options, the component record and TechDocs runbook join the state, and the owning group can be notified through the Notifications plugin.
 - Triages an alert file from the CLI, optionally pulling live incidents as duplicate candidates, enriching from the catalog, and forwarding the enriched alert to an incident.io HTTP alert source.
@@ -66,6 +67,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Triage](docs/triage.md) | The questions, the policy, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
+| [Change feed](docs/changes.md) | Pushing deploys and changes into the triage, wiring Argo CD, Flux and GitHub Actions |
 | [Backstage bridge](docs/backstage.md) | Catalog ownership, TechDocs runbooks, notifications, registering signalman |
 | [Configuration](docs/configuration.md) | The four layers, every setting, Kubernetes |
 | [Operations](docs/operations.md) | Running, health, limits, failure modes |

@@ -18,6 +18,7 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0004](0004-catalog-is-the-ownership-source-of-truth.md) | The catalog is the ownership source of truth | accepted | |
 | [0005](0005-observability-signals-enter-through-incidentio.md) | Observability signals enter through incident.io | accepted | `signalman-3l7.4` |
 | [0006](0006-layered-configuration.md) | Layered configuration with secrets outside the file | accepted | `signalman-071.4` |
+| [0007](0007-changes-are-pushed-not-polled.md) | Changes are pushed to signalman, not polled from delivery tools | accepted | `signalman-ufg.3` |
 
 ## Writing a record
 

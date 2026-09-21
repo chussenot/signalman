@@ -1,10 +1,15 @@
-//! Webhook receiver: `POST /webhooks/incidentio`.
+//! Webhook receiver: `POST /webhooks/incidentio`, and the change feed on
+//! `POST /changes` when a token is configured.
 //!
 //! Verifies the Svix signature on the raw body, deduplicates on `webhook-id`
 //! (Svix resends with the same id), acknowledges with 202 immediately, and
 //! runs the triage in a background task. incident.io retries non-2xx for 24
 //! hours, so the endpoint must only fail on requests it truly cannot accept:
 //! bad signature (401) or an unparseable body (400).
+//!
+//! The change feed takes one [`Change`] or an array of them, authenticated
+//! by a bearer token, and answers 202 with the count stored. `GET /changes`
+//! with the same token lists what the replica holds.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -12,11 +17,15 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
+use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use jiff::Timestamp;
+use serde::Deserialize;
 use tokio::sync::Mutex;
 
+use crate::changes::{Change, FeedToken};
 use crate::incidentio::webhook::{Event, SignatureHeaders, VerifyError, WebhookSecret, verify_now};
 use crate::incidentio::{Outcome, Triager};
 
@@ -31,6 +40,8 @@ pub struct AppState {
     pub triager: Triager,
     /// Optional sink for outcomes (tests, metrics). Errors are logged.
     pub on_outcome: Option<tokio::sync::mpsc::UnboundedSender<Result<Outcome, String>>>,
+    /// Token for the change feed. `None` leaves `/changes` unrouted.
+    pub changes_token: Option<FeedToken>,
     seen: Mutex<Seen>,
 }
 
@@ -62,6 +73,7 @@ impl AppState {
             secret,
             triager,
             on_outcome: None,
+            changes_token: None,
             seen: Mutex::new(Seen {
                 set: HashSet::new(),
                 order: VecDeque::new(),
@@ -77,10 +89,90 @@ pub fn router(state: Arc<AppState>) -> Router {
             "webhook signature verification is DISABLED; never run this way in production"
         );
     }
-    Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/webhooks/incidentio", post(receive))
-        .with_state(state)
+        .route("/webhooks/incidentio", post(receive));
+    if state.changes_token.is_some() {
+        if state.triager.changes.is_none() {
+            tracing::warn!(
+                "change feed token set but the triager has no change log; changes will be refused"
+            );
+        }
+        router = router.route("/changes", post(post_changes).get(get_changes));
+    }
+    router.with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(Change),
+    Many(Vec<Change>),
+}
+
+fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    state
+        .changes_token
+        .as_ref()
+        .is_some_and(|t| t.accepts(headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok())))
+}
+
+fn unauthorized() -> Response {
+    (StatusCode::UNAUTHORIZED, "missing or wrong bearer token").into_response()
+}
+
+async fn post_changes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return unauthorized();
+    }
+    let Some(log) = &state.triager.changes else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "change feed disabled").into_response();
+    };
+    let parsed: OneOrMany = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid change: {e}")).into_response();
+        }
+    };
+    let changes = match parsed {
+        OneOrMany::One(c) => vec![c],
+        OneOrMany::Many(v) => v,
+    };
+    if changes
+        .iter()
+        .any(|c| c.kind.trim().is_empty() || c.summary.trim().is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "kind and summary must not be empty",
+        )
+            .into_response();
+    }
+    let now = Timestamp::now();
+    let n = changes.len();
+    for c in changes {
+        let stored = log.record(c, now);
+        tracing::info!(kind = %stored.kind, component = ?stored.component, summary = %stored.summary, "change recorded");
+    }
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({ "recorded": n, "held": log.len() })),
+    )
+        .into_response()
+}
+
+async fn get_changes(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&state, &headers) {
+        return unauthorized();
+    }
+    let Some(log) = &state.triager.changes else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "change feed disabled").into_response();
+    };
+    axum::Json(log.all()).into_response()
 }
 
 async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {

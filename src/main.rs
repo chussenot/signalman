@@ -18,6 +18,7 @@ use std::time::Duration;
 use clap::{ArgAction, Args, Parser, Subcommand};
 use signalman::backstage::enrich::hints_from_labels;
 use signalman::backstage::{self, Enricher};
+use signalman::changes::{ChangeLog, FeedToken};
 use signalman::config::{Config, Overrides};
 use signalman::eval;
 use signalman::incidentio::types::{AlertEvent, AlertStatus};
@@ -337,6 +338,8 @@ fn triager(cfg: &Config, io: incidentio::Client, dry_run: bool) -> Result<Triage
     t.note = cfg.flow.note;
     t.related_window = cfg.flow.related_window();
     t.related_max = cfg.flow.related_max;
+    t.change_window = cfg.flow.change_window();
+    t.change_max = cfg.flow.change_max;
     if dry_run {
         t.write_back = WriteBack::DryRun;
     }
@@ -536,15 +539,27 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
     } else {
         Some(WebhookSecret::from_env()?)
     };
-    let triager = triager(cfg, incidentio_client(cfg)?, dry_run)?;
+    let mut triager = triager(cfg, incidentio_client(cfg)?, dry_run)?;
     if triager.backstage.is_some() {
         tracing::info!(
             notify_owners = triager.notify_owner,
             "Backstage catalog enrichment enabled"
         );
     }
+    let changes_token = FeedToken::from_env();
+    if changes_token.is_some() {
+        triager.changes = Some(ChangeLog::default());
+        tracing::info!(
+            window_minutes = cfg.flow.change_window_minutes,
+            "change feed enabled at POST /changes"
+        );
+    } else {
+        tracing::info!("change feed disabled: SIGNALMAN_CHANGES_TOKEN is not set");
+    }
     let addr = cfg.server.addr;
-    let app = router(Arc::new(AppState::new(secret, triager)));
+    let mut state = AppState::new(secret, triager);
+    state.changes_token = changes_token;
+    let app = router(Arc::new(state));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, "listening for incident.io webhooks at /webhooks/incidentio");
     axum::serve(listener, app)

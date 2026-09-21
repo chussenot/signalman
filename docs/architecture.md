@@ -78,6 +78,9 @@ sequenceDiagram
         F->>BS: resolve component, neighbours, owner groups
         F->>BS: TechDocs search index
     end
+    opt change feed enabled
+        F->>F: recent changes for the component from the in-memory window
+    end
     F->>TS: POST /v1/systemone (state + all questions)
     TS-->>F: typed answers with probabilities
     F->>F: decide(answers, policy)
