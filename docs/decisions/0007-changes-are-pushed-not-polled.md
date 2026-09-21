@@ -41,6 +41,7 @@ Chosen option: push. It costs one bearer token that signalman itself owns, needs
 - Bad, because a change is only known if something posted it; adoption is per pipeline
 - Bad, because the window is per replica and not persisted; a restart forgets it
 - Neutral, because matching is by component name, which the posting side must spell as the alert labels do
+- Neutral, because native adapters (Argo CD `Application`, GitLab webhooks) are translations of documented payloads into the same change, not clients: they read a body, they call nothing
 
 ### Confirmation
 

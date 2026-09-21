@@ -1,0 +1,27 @@
+{
+  "object_kind": "deployment",
+  "status": "success",
+  "status_changed_at": "2026-09-21 11:50:00 +0200",
+  "deployment_id": 15,
+  "deployable_id": 796,
+  "deployable_url": "https://gitlab.example.com/shop/checkout-api/-/jobs/796",
+  "environment": "production",
+  "environment_tier": "production",
+  "environment_slug": "production",
+  "environment_external_url": "https://shop.example.com",
+  "project": {
+    "id": 30,
+    "name": "checkout-api",
+    "description": "Checkout API",
+    "web_url": "https://gitlab.example.com/shop/checkout-api",
+    "namespace": "shop",
+    "visibility_level": 0,
+    "path_with_namespace": "shop/checkout-api",
+    "default_branch": "main"
+  },
+  "short_sha": "9fceb02d",
+  "user": { "id": 7, "name": "Alice Martin", "username": "alice", "email": "alice@example.com" },
+  "user_url": "https://gitlab.example.com/alice",
+  "commit_url": "https://gitlab.example.com/shop/checkout-api/-/commit/9fceb02d4b1a8f0c3e2a7d6b5c4f3e2d1a0b9c8d",
+  "commit_title": "Raise memory limit to 768Mi"
+}

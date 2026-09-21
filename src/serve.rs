@@ -25,7 +25,8 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use crate::changes::{Change, FeedToken};
+use crate::changes::gitlab::{self, Delivery};
+use crate::changes::{Change, ChangeLog, FeedToken, argocd};
 use crate::incidentio::webhook::{Event, SignatureHeaders, VerifyError, WebhookSecret, verify_now};
 use crate::incidentio::{Outcome, Triager};
 
@@ -98,7 +99,10 @@ pub fn router(state: Arc<AppState>) -> Router {
                 "change feed token set but the triager has no change log; changes will be refused"
             );
         }
-        router = router.route("/changes", post(post_changes).get(get_changes));
+        router = router
+            .route("/changes", post(post_changes).get(get_changes))
+            .route("/changes/argocd", post(post_argocd))
+            .route("/changes/gitlab", post(post_gitlab));
     }
     router.with_state(state)
 }
@@ -163,6 +167,76 @@ async fn post_changes(
         axum::Json(serde_json::json!({ "recorded": n, "held": log.len() })),
     )
         .into_response()
+}
+
+/// Record one translated change and answer 202.
+fn accepted(log: &ChangeLog, change: Change, source: &str) -> Response {
+    let stored = log.record(change, Timestamp::now());
+    tracing::info!(source, kind = %stored.kind, component = ?stored.component, summary = %stored.summary, "change recorded");
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({ "recorded": 1, "held": log.len(), "change": stored })),
+    )
+        .into_response()
+}
+
+/// A delivery that is not a change: 200 so the sender does not retry.
+fn ignored(reason: &str) -> Response {
+    tracing::debug!(reason, "change delivery ignored");
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({ "recorded": 0, "ignored": reason })),
+    )
+        .into_response()
+}
+
+/// Argo CD Notifications posting the Application object.
+async fn post_argocd(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return unauthorized();
+    }
+    let Some(log) = &state.triager.changes else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "change feed disabled").into_response();
+    };
+    match argocd::parse(&body) {
+        Ok(change) => accepted(log, change, "argocd"),
+        Err(argocd::Error::NotSucceeded(phase)) => ignored(&format!("sync phase {phase}")),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// GitLab project webhooks, authenticated by `X-Gitlab-Token`.
+async fn post_gitlab(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let token = headers
+        .get(gitlab::TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok());
+    if !state
+        .changes_token
+        .as_ref()
+        .is_some_and(|t| t.accepts_raw(token))
+    {
+        return (StatusCode::UNAUTHORIZED, "missing or wrong X-Gitlab-Token").into_response();
+    }
+    let Some(log) = &state.triager.changes else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "change feed disabled").into_response();
+    };
+    let event = headers
+        .get(gitlab::EVENT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    match gitlab::parse(event, &body) {
+        Ok(Delivery::Change(change)) => accepted(log, change, "gitlab"),
+        Ok(Delivery::Ignored(reason)) => ignored(&reason),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
 }
 
 async fn get_changes(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {

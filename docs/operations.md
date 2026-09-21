@@ -27,6 +27,7 @@ Startup fails fast on a missing secret, an unknown key in the configuration file
 | `POST /webhooks/incidentio` | delivery endpoint |
 | `GET /healthz` | liveness; returns `ok` |
 | `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
+| `POST /changes/argocd`, `POST /changes/gitlab` | native adapters: Argo CD `Application` (bearer) and GitLab webhooks (`X-Gitlab-Token`) |
 
 There is no readiness endpoint yet; upstream reachability is only known when a flow runs.
 
