@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use super::{Alert, OwnerCandidates};
 use crate::Result;
 use crate::answer::{Choice, Noul, Response, Score};
-use crate::question::{Handle, NoulCriteria, Questions};
+use crate::question::{Handle, NoulCriteria, Question, Questions};
 
 /// The words of every question: instructions, guidance and criteria. The
 /// *set* of questions and their primitive types are code, because the policy
@@ -257,16 +257,22 @@ impl TriageQuestions {
     }
 
     /// Read every answer through its handle.
+    ///
+    /// Answers are confined to what was asked: a Choice may only name an
+    /// option the question offered, and a Score must be a position on the
+    /// scale the question defined. Everything downstream — the policy, the
+    /// tags, the outcome document — may therefore assume that an answer
+    /// refers to the request it answers.
     pub fn read(&self, response: &Response) -> Result<TriageAnswers> {
         Ok(TriageAnswers {
-            owner: response.get(&self.owner)?,
+            owner: self.read_choice(response, &self.owner, NONE_OF_THESE)?,
             candidates: self.candidates.clone(),
-            impact: response.get(&self.impact)?,
+            impact: self.read_impact(response)?,
             actionable: response.get(&self.actionable)?,
             duplicate_of: self
                 .duplicate_of
                 .as_ref()
-                .map(|h| response.get(h))
+                .map(|h| self.read_choice(response, h, NO_DUPLICATE))
                 .transpose()?,
             caused_by_change: self
                 .caused_by_change
@@ -275,6 +281,81 @@ impl TriageQuestions {
                 .transpose()?,
             model: response.model.clone(),
         })
+    }
+
+    /// Read a dynamic Choice and drop anything the question did not offer.
+    ///
+    /// Nothing on the wire forces the model to answer with one of the option
+    /// keys it was given. An unoffered key is not a choice signalman can act
+    /// on — it names no candidate team and no open incident — so it is read
+    /// as the question's no-match option, which every Choice here offers,
+    /// and unoffered keys are dropped from the distribution. Without this a
+    /// hallucinated incident reference would travel all the way into an
+    /// attach decision naming an incident that was never a candidate.
+    fn read_choice(
+        &self,
+        response: &Response,
+        handle: &Handle<Choice<String>>,
+        no_match: &str,
+    ) -> Result<Choice<String>> {
+        let mut answer = response.get(handle)?;
+        // The handle came from `self.questions`, so the question is there and
+        // it is a Choice; if that ever stopped holding there would be no
+        // option set to confine the answer to.
+        let Some(Question::Choice { criteria, .. }) = self.questions.get(handle.id()) else {
+            return Ok(answer);
+        };
+        answer
+            .probabilities
+            .retain(|option, _| criteria.contains_key(option));
+        if !criteria.contains_key(&answer.chosen) {
+            tracing::warn!(
+                question = handle.id(),
+                chosen = answer.chosen,
+                fallback = no_match,
+                "the model chose an option that was not offered; reading it as the no-match option"
+            );
+            no_match.clone_into(&mut answer.chosen);
+        }
+        Ok(answer)
+    }
+
+    /// Read the impact Score, rejecting an answer that is not a position on
+    /// the scale the question sent.
+    ///
+    /// The levels are positional: [`Impact::from_level`] reads the answer's
+    /// index as a position on [`Impact::LEVELS`], and the outcome document
+    /// publishes that position as a number bounded by the scale. A legend of
+    /// a different length is a different scale, and a value off the end of
+    /// this one is not a position on it; folding either onto the four levels
+    /// would put a level, a score and a distribution in the document that
+    /// describe nothing the model was asked.
+    fn read_impact(&self, response: &Response) -> Result<Score> {
+        let answer: Score = response.get(&self.impact)?;
+        let levels = match self.questions.get(self.impact.id()) {
+            Some(Question::Score { criteria, .. }) => criteria.len(),
+            _ => return Ok(answer),
+        };
+        let invalid = |reason: String| crate::Error::InvalidAnswer {
+            id: self.impact.id().to_owned(),
+            reason,
+        };
+        if answer.levels.len() != levels {
+            return Err(invalid(format!(
+                "its legend has {} levels but the question defined {levels}",
+                answer.levels.len()
+            )));
+        }
+        // `levels` is at least 2 here: `Questions::score` refuses fewer.
+        #[allow(clippy::cast_precision_loss)]
+        let top = (levels - 1) as f64;
+        if !(0.0..=top).contains(&answer.value) {
+            return Err(invalid(format!(
+                "score {} is outside 0..={top}, the scale the question defined",
+                answer.value
+            )));
+        }
+        Ok(answer)
     }
 }
 
@@ -410,6 +491,131 @@ mod tests {
         );
         let state = TriageQuestions::state(&a);
         assert_eq!(state["alert"]["component"]["owner"], "Payments");
+    }
+
+    /// An alert with one open incident and one recent change, so every
+    /// question is asked.
+    fn full_alert() -> Alert {
+        let mut a = alert();
+        a.open_incidents.push(OpenIncident {
+            id: "INC-1".into(),
+            summary: "checkout down".into(),
+        });
+        a.recent_changes.push("deploy checkout-api v2".into());
+        a
+    }
+
+    fn response(answers: &serde_json::Value) -> Response {
+        serde_json::from_value(json!({
+            "model": "jev-1.13.0",
+            "answers": answers.clone(),
+            "usage": { "input_tokens": 1, "output_tokens": 1 },
+        }))
+        .unwrap()
+    }
+
+    fn score_4() -> serde_json::Value {
+        json!({ "type": "score", "score": 2.0,
+                "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 },
+                "confidence": 0.9 })
+    }
+
+    #[test]
+    fn a_choice_the_question_never_offered_is_read_as_the_no_match_option() {
+        let q = TriageQuestions::for_alert(&full_alert()).unwrap();
+        let answers = q
+            .read(&response(&json!({
+                "owner": { "type": "choice", "choice": "made-up-team",
+                           "probabilities": { "platform": 0.3, "made-up-team": 0.7 },
+                           "confidence": 0.9 },
+                "impact": score_4(),
+                "actionable": { "type": "noul", "noul": 0.9 },
+                "duplicate_of": { "type": "choice", "choice": "INC-9999",
+                                  "probabilities": { "INC-1": 0.1, "INC-9999": 0.8, "none": 0.1 },
+                                  "confidence": 0.9 },
+                "caused_by_change": { "type": "noul", "noul": 0.2 },
+            })))
+            .unwrap();
+
+        // The chosen key falls back to the no-match option the question
+        // always offers, and the invented keys leave the distribution.
+        assert_eq!(answers.owner.chosen, NONE_OF_THESE);
+        assert!(!answers.owner.probabilities.contains_key("made-up-team"));
+        assert!((answers.owner.probability_of(&"platform".to_owned()) - 0.3).abs() < 1e-9);
+
+        let dup = answers.duplicate_of.unwrap();
+        assert_eq!(dup.chosen, NO_DUPLICATE);
+        assert!(!dup.probabilities.contains_key("INC-9999"));
+        assert!(dup.probabilities.contains_key("INC-1"));
+    }
+
+    #[test]
+    fn an_offered_choice_is_left_exactly_as_the_model_gave_it() {
+        let q = TriageQuestions::for_alert(&full_alert()).unwrap();
+        let answers = q
+            .read(&response(&json!({
+                "owner": { "type": "choice", "choice": "platform",
+                           "probabilities": { "platform": 0.8, "database": 0.2 },
+                           "confidence": 0.8 },
+                "impact": score_4(),
+                "actionable": { "type": "noul", "noul": 0.9 },
+                "duplicate_of": { "type": "choice", "choice": "INC-1",
+                                  "probabilities": { "INC-1": 0.9, "none": 0.1 },
+                                  "confidence": 0.9 },
+                "caused_by_change": { "type": "noul", "noul": 0.2 },
+            })))
+            .unwrap();
+        assert_eq!(answers.owner.chosen, "platform");
+        assert_eq!(answers.owner.probabilities.len(), 2);
+        let dup = answers.duplicate_of.unwrap();
+        assert_eq!(dup.chosen, "INC-1");
+        assert_eq!(dup.probabilities.len(), 2);
+    }
+
+    #[test]
+    fn a_score_off_the_end_of_the_scale_is_refused() {
+        let q = TriageQuestions::for_alert(&full_alert()).unwrap();
+        let err = q
+            .read(&response(&json!({
+                "owner": { "type": "choice", "choice": "platform",
+                           "probabilities": { "platform": 1.0 }, "confidence": 0.9 },
+                "impact": { "type": "score", "score": 4.0,
+                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "probabilities": { "0": 0.0, "1": 0.0, "2": 0.0, "3": 1.0 },
+                            "confidence": 0.9 },
+                "actionable": { "type": "noul", "noul": 0.9 },
+                "duplicate_of": { "type": "choice", "choice": "none",
+                                  "probabilities": { "none": 1.0 }, "confidence": 0.9 },
+                "caused_by_change": { "type": "noul", "noul": 0.2 },
+            })))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("impact"), "{err}");
+        assert!(err.contains("0..=3"), "{err}");
+    }
+
+    #[test]
+    fn a_score_on_a_different_scale_is_refused_rather_than_folded_onto_this_one() {
+        let q = TriageQuestions::for_alert(&full_alert()).unwrap();
+        let err = q
+            .read(&response(&json!({
+                "owner": { "type": "choice", "choice": "platform",
+                           "probabilities": { "platform": 1.0 }, "confidence": 0.9 },
+                "impact": { "type": "score", "score": 4.0,
+                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d", "4": "e" },
+                            "probabilities": { "0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0, "4": 1.0 },
+                            "confidence": 0.9 },
+                "actionable": { "type": "noul", "noul": 0.9 },
+                "duplicate_of": { "type": "choice", "choice": "none",
+                                  "probabilities": { "none": 1.0 }, "confidence": 0.9 },
+                "caused_by_change": { "type": "noul", "noul": 0.2 },
+            })))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("impact"), "{err}");
+        assert!(err.contains('5'), "{err}");
+        assert!(err.contains('4'), "{err}");
     }
 
     #[test]

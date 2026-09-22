@@ -9,6 +9,7 @@
 // Doc comments on the CLI types are `--help` text, shown verbatim: no backticks.
 #![allow(clippy::doc_markdown)]
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -16,14 +17,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
+use jiff::Timestamp;
 use signalman::backstage::enrich::hints_from_labels;
 use signalman::backstage::{self, Enricher};
 use signalman::changes::{ChangeLog, FeedToken};
 use signalman::config::{Config, Overrides};
 use signalman::eval;
-use signalman::incidentio::types::{AlertEvent, AlertStatus};
+use signalman::incidentio::types::{AlertEvent, AlertEventAck, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
+use signalman::outcome::{self, AlertRef, IncidentRef, Outcome};
 use signalman::serve::{AppState, Limits, router};
 use signalman::triage::{Alert, Decision, OpenIncident, TriageAnswers, TriageQuestions, decide};
 use signalman::{Client, Request, Response};
@@ -82,6 +85,9 @@ enum Command {
     /// Configuration utilities.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Print a JSON Schema this tool publishes.
+    #[command(subcommand)]
+    Schema(SchemaCommand),
 }
 
 #[derive(Args)]
@@ -108,7 +114,7 @@ struct TriageArgs {
     /// Print the TypeSafe request body and exit without calling the model.
     #[arg(long)]
     print_request: bool,
-    /// Emit the decision and raw answers as JSON instead of text.
+    /// Emit the outcome contract (schema v1) as JSON instead of text.
     #[arg(long)]
     json: bool,
 }
@@ -190,6 +196,13 @@ enum BackstageCommand {
 }
 
 #[derive(Subcommand)]
+enum SchemaCommand {
+    /// The outcome contract every triage emits (schema v1). Regenerate the
+    /// committed copy with `mise run schema`.
+    Outcome,
+}
+
+#[derive(Subcommand)]
 enum ConfigCommand {
     /// Print the effective configuration as TOML, after every layer, with the
     /// file and environment variables that contributed. Exits non-zero when
@@ -243,13 +256,35 @@ fn overrides(command: &Command) -> Overrides {
             }
         }
         Command::Incidentio(IncidentIoCommand::TriageAlert { flow, .. }) => flow.overrides(),
-        Command::Models | Command::Incidentio(_) | Command::Backstage(_) | Command::Config(_) => {
-            Overrides::default()
+        Command::Models
+        | Command::Incidentio(_)
+        | Command::Backstage(_)
+        | Command::Config(_)
+        | Command::Schema(_) => Overrides::default(),
+    }
+}
+
+/// Print a JSON Schema this tool publishes.
+///
+/// Generated from the wire types; it reads no configuration, which is why
+/// `run` answers it before resolving one.
+fn schema_cmd(cmd: &SchemaCommand) -> Result<(), AnyError> {
+    match cmd {
+        SchemaCommand::Outcome => {
+            println!("{}", serde_json::to_string_pretty(&Outcome::schema())?);
+            Ok(())
         }
     }
 }
 
 async fn run(cli: Cli) -> Result<(), AnyError> {
+    // Answered before the configuration is resolved: `mise run schema`
+    // regenerates the committed contract, and an unrelated configuration
+    // error must not be able to fail it.
+    if let Command::Schema(cmd) = &cli.command {
+        return schema_cmd(cmd);
+    }
+
     let (cfg, file) = Config::load(cli.config.as_deref(), &overrides(&cli.command))?;
     tracing::debug!(file = ?file, "configuration resolved");
     match cli.command {
@@ -269,6 +304,9 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
         } => serve(&cfg, insecure_skip_verify, dry_run).await,
         Command::Incidentio(cmd) => incidentio_cmd(&cfg, cmd).await,
         Command::Backstage(cmd) => backstage_cmd(&cfg, cmd).await,
+        // Unreachable: answered above. Dispatched through the same
+        // function anyway, so this arm cannot drift from that one.
+        Command::Schema(cmd) => schema_cmd(&cmd),
         Command::Config(ConfigCommand::Show) => {
             println!("# signalman effective configuration");
             match &file {
@@ -364,25 +402,18 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
         None
     };
 
+    // Kept so the outcome can carry each candidate's id and permalink; the
+    // alert itself only ever names references.
+    let mut fetched_incidents: Vec<incidentio::Incident> = Vec::new();
     if args.dedup_from_incidentio {
         let client = io_client.as_ref().ok_or("incident.io client missing")?;
-        let incidents = client
-            .list_open_incidents(cfg.incidentio.max_candidates)
-            .await?;
-        tracing::info!(
-            count = incidents.len(),
-            "loaded dedup candidates from incident.io"
-        );
-        alert.open_incidents = incidents
-            .iter()
-            .map(|i| OpenIncident {
-                id: i.reference.clone(),
-                summary: i.candidate_summary(),
-            })
-            .collect();
+        fetched_incidents = dedup_candidates(cfg, client, &mut alert).await?;
     }
 
     let mut candidates = cfg.triage.fallback_candidates();
+    let mut component_url = None;
+    let mut runbook_url = None;
+    let mut candidate_urls = BTreeMap::new();
     if args.enrich_from_backstage {
         let enricher = enricher(cfg)?.ok_or(
             "--enrich-from-backstage needs backstage.base_url in the file or BACKSTAGE_BASE_URL",
@@ -401,7 +432,10 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
             alert.runbook = enrichment.runbook;
         }
         alert.component = enrichment.component;
+        component_url = enrichment.component_url;
+        runbook_url = enrichment.runbook_url;
         candidates = enrichment.candidates;
+        candidate_urls = enricher.candidate_urls(&candidates);
     }
 
     let questions = TriageQuestions::for_alert_with_texts(&alert, candidates, &cfg.triage.text)?;
@@ -425,28 +459,23 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
     let mut forwarded = None;
     if args.forward_to_incidentio {
         let client = io_client.as_ref().ok_or("incident.io client missing")?;
-        let source_id = std::env::var("INCIDENTIO_ALERT_SOURCE_CONFIG_ID")
-            .map_err(|_| "set INCIDENTIO_ALERT_SOURCE_CONFIG_ID to forward alerts")?;
-        let token = std::env::var("INCIDENTIO_ALERT_SOURCE_TOKEN")
-            .map_err(|_| "set INCIDENTIO_ALERT_SOURCE_TOKEN to forward alerts")?;
-        let event = alert_event(&alert, &answers, &decision, &response.model);
-        let ack = client.send_alert_event(&source_id, &token, &event).await?;
-        tracing::info!(dedup_key = %ack.deduplication_key, status = %ack.status, "forwarded to incident.io");
-        forwarded = Some(ack);
+        forwarded = Some(forward(client, &alert, &answers, &decision, &response.model).await?);
     }
 
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "decision": decision,
-                "component": alert.component,
-                "model": response.model,
-                "usage": response.usage,
-                "answers": response.answers,
-                "forwarded": forwarded,
-            }))?
-        );
+        let outcome = triage_outcome(TriageOutcome {
+            cfg,
+            alert: &alert,
+            answers: &answers,
+            decision: &decision,
+            response: &response,
+            fetched_incidents: &fetched_incidents,
+            candidate_urls: &candidate_urls,
+            component_url: component_url.clone(),
+            runbook_url: runbook_url.clone(),
+            forwarded: forwarded.as_ref(),
+        });
+        println!("{}", serde_json::to_string_pretty(&outcome)?);
     } else {
         print_report(&alert, &answers, &decision, &response);
         if let Some(ack) = forwarded {
@@ -457,6 +486,155 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
         }
     }
     Ok(())
+}
+
+/// Replace the alert's `open_incidents` with the incidents that are live in
+/// incident.io right now, and hand them back so the outcome can carry each
+/// candidate's id and permalink.
+async fn dedup_candidates(
+    cfg: &Config,
+    client: &incidentio::Client,
+    alert: &mut Alert,
+) -> Result<Vec<incidentio::Incident>, AnyError> {
+    let incidents = client
+        .list_open_incidents(cfg.incidentio.max_candidates)
+        .await?;
+    tracing::info!(
+        count = incidents.len(),
+        "loaded dedup candidates from incident.io"
+    );
+    alert.open_incidents = incidents
+        .iter()
+        .map(|i| OpenIncident {
+            id: i.reference.clone(),
+            summary: i.candidate_summary(),
+        })
+        .collect();
+    Ok(incidents)
+}
+
+/// Post the alert with its judgments to the incident.io HTTP alert source
+/// named by the environment, and let incident.io's alert routes escalate.
+async fn forward(
+    client: &incidentio::Client,
+    alert: &Alert,
+    answers: &TriageAnswers,
+    decision: &Decision,
+    model: &str,
+) -> Result<AlertEventAck, AnyError> {
+    let source_id = std::env::var("INCIDENTIO_ALERT_SOURCE_CONFIG_ID")
+        .map_err(|_| "set INCIDENTIO_ALERT_SOURCE_CONFIG_ID to forward alerts")?;
+    let token = std::env::var("INCIDENTIO_ALERT_SOURCE_TOKEN")
+        .map_err(|_| "set INCIDENTIO_ALERT_SOURCE_TOKEN to forward alerts")?;
+    let event = alert_event(alert, answers, decision, model);
+    let ack = client.send_alert_event(&source_id, &token, &event).await?;
+    tracing::info!(dedup_key = %ack.deduplication_key, status = %ack.status, "forwarded to incident.io");
+    Ok(ack)
+}
+
+/// What the file-based CLI has gathered by the time it can build an
+/// [`Outcome`]. A struct because the pieces come from four optional flags.
+struct TriageOutcome<'a> {
+    cfg: &'a Config,
+    alert: &'a Alert,
+    answers: &'a TriageAnswers,
+    decision: &'a Decision,
+    response: &'a Response,
+    fetched_incidents: &'a [incidentio::Incident],
+    candidate_urls: &'a BTreeMap<String, String>,
+    component_url: Option<String>,
+    runbook_url: Option<String>,
+    forwarded: Option<&'a AlertEventAck>,
+}
+
+/// The same contract the webhook flow emits, built from a file-based run.
+/// Nothing was written back, so `writes.mode` is `detached`.
+fn triage_outcome(input: TriageOutcome<'_>) -> Outcome {
+    let TriageOutcome {
+        cfg,
+        alert,
+        answers,
+        decision,
+        response,
+        fetched_incidents,
+        candidate_urls,
+        component_url,
+        runbook_url,
+        forwarded,
+    } = input;
+
+    let candidate_incidents: Vec<IncidentRef> = alert
+        .open_incidents
+        .iter()
+        .map(|open| {
+            let known = fetched_incidents.iter().find(|i| i.reference == open.id);
+            IncidentRef {
+                id: known.map(|i| i.id.clone()),
+                reference: open.id.clone(),
+                url: known.and_then(|i| i.permalink.clone()),
+            }
+        })
+        .collect();
+    let incident = match decision {
+        Decision::AttachToIncident { incident_id, .. } => Some(
+            candidate_incidents
+                .iter()
+                .find(|i| &i.reference == incident_id)
+                .cloned()
+                .unwrap_or_else(|| IncidentRef {
+                    id: None,
+                    reference: incident_id.clone(),
+                    url: None,
+                }),
+        ),
+        _ => None,
+    };
+    let owner_url = decision
+        .owner()
+        .and_then(|owner| candidate_urls.get(&owner.key).cloned());
+    let tags = incidentio::sync::tags_for(answers, decision);
+
+    Outcome::build(outcome::Input {
+        version: env!("CARGO_PKG_VERSION"),
+        decided_at: Timestamp::now(),
+        // A file carries no creation time, so there is nothing to measure from.
+        time_to_qualify: None,
+        alert: AlertRef {
+            id: None,
+            title: alert.title.clone(),
+            source: alert.source.clone(),
+            source_url: alert.labels.get("source_url").cloned(),
+            created_at: None,
+            labels: alert.labels.clone(),
+        },
+        answers,
+        decision,
+        policy: &cfg.policy,
+        owner_url,
+        candidate_urls,
+        incident,
+        candidate_incidents: &candidate_incidents,
+        component: alert.component.as_ref(),
+        component_url,
+        runbook_url,
+        related: &alert.related_alerts,
+        changes: outcome::Changes::Lines(&alert.recent_changes),
+        // Neither lookup exists on this path: the file is the whole world.
+        windows: outcome::Windows {
+            related_seconds: None,
+            change_seconds: None,
+        },
+        tags: &tags,
+        model: &response.model,
+        usage: response.usage.into(),
+        writes: outcome::Writes {
+            forwarded: forwarded.map(|ack| outcome::Forwarded {
+                deduplication_key: ack.deduplication_key.clone(),
+                status: ack.status.clone(),
+            }),
+            ..outcome::Writes::detached()
+        },
+    })
 }
 
 async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {

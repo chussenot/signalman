@@ -32,7 +32,7 @@ Responders increasingly work through assistants: a coding agent in the terminal,
 
 ## Decision outcome
 
-Chosen option: expose typed capabilities to external agents. signalman is a tool that agents call; it is not itself an agent. The outcome of a triage is a versioned JSON document ([schema v1](../schema/outcome.v1.json), described in [Triage](../triage.md#the-outcome-contract)) emitted by every `--json` path and the receiver's log line. An MCP server (`signalman-4gp.5`) will serve the same capabilities the CLI subcommands already expose, from the same functions, read-only first. A write tool, when added, takes the outcome document back as its input and re-derives tags, note and attachment from it, so an agent cannot invent a write.
+Chosen option: expose typed capabilities to external agents. signalman is a tool that agents call; it is not itself an agent. The outcome of a triage is a versioned JSON document ([schema v1](../schema/outcome.v1.json), described in [Triage](../triage.md#the-outcome-contract)) emitted by `signalman triage --json`, `signalman incidentio triage-alert` and the receiver's log line. An MCP server (`signalman-4gp.5`) will serve the same capabilities the CLI subcommands already expose, from the same functions, read-only first. A write tool, when added, takes the outcome document back as its input and re-derives tags, note and attachment from it, so an agent cannot invent a write.
 
 A generative model may appear in offline tooling outside the binary, such as labelling alert history for the evaluation harness, and never in the triage path and never with write access to incident.io.
 

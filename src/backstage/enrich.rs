@@ -92,6 +92,21 @@ impl Enricher {
         )
     }
 
+    /// Catalog page of every owner candidate that carries an entity
+    /// reference, keyed by candidate key.
+    ///
+    /// One place computes these links, so the webhook flow and the CLI
+    /// cannot drift apart on what an owner's URL is.
+    pub fn candidate_urls(&self, candidates: &OwnerCandidates) -> BTreeMap<String, String> {
+        candidates
+            .iter()
+            .filter_map(|c| {
+                let r = EntityRef::parse(c.entity_ref.as_deref()?, "group")?;
+                Some((c.key.clone(), self.entity_url(&r)))
+            })
+            .collect()
+    }
+
     /// TechDocs page: `{app_url}/docs/{namespace}/{kind}/{name}/{location}`.
     pub fn techdocs_url(&self, r: &EntityRef, location: &str) -> String {
         format!(

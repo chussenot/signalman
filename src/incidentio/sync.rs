@@ -17,10 +17,13 @@ use serde::Serialize;
 use super::client::Client as IncidentIo;
 use super::note::{self, Links, NoteInput};
 use super::types::{Alert as IoAlert, Incident};
+use crate::backstage::Enricher;
 use crate::backstage::enrich::hints_from_labels;
-use crate::backstage::{Enricher, EntityRef};
 use crate::changes::{Change, ChangeLog};
 use crate::config::DEFAULT_COMPONENT_KEYS;
+use crate::outcome::{
+    self, AlertRef, Changes, IncidentRef, NoteStatus, NoteWrite, Outcome, WriteMode, Writes,
+};
 use crate::triage::{
     Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, Texts,
     TriageAnswers, TriageQuestions, decide,
@@ -93,42 +96,6 @@ pub struct Triager {
     pub change_max: usize,
 }
 
-/// What happened for one alert.
-#[derive(Debug, Clone, Serialize)]
-pub struct Outcome {
-    /// incident.io alert id.
-    pub alert_id: String,
-    /// Alert title, for logs.
-    pub title: String,
-    /// The routing decision.
-    pub decision: Decision,
-    /// Tags added (or that would be added in a dry run).
-    pub tags: Vec<String>,
-    /// Incident the alert was attached to, when a confident duplicate.
-    pub attached_to: Option<AttachedIncident>,
-    /// Catalog component the alert was resolved to.
-    pub component: Option<String>,
-    /// Group notified through Backstage.
-    pub notified: Option<String>,
-    /// Versioned model that answered.
-    pub model: String,
-    /// Dedup candidates offered.
-    pub candidates_offered: usize,
-    /// Owner candidates offered.
-    pub owner_candidates_offered: usize,
-    /// Other firing alerts put in the state.
-    pub related_alerts: usize,
-    /// Recent changes put in the state.
-    pub recent_changes: usize,
-    /// Note written or rewritten on the alert.
-    pub note_id: Option<String>,
-    /// Seconds from the alert's creation in incident.io to the decision.
-    /// `None` when the alert carries no parsable `created_at`.
-    pub time_to_qualify_seconds: Option<f64>,
-    /// Whether side effects were applied.
-    pub applied: bool,
-}
-
 /// The incident an alert was attached to.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AttachedIncident {
@@ -193,13 +160,12 @@ impl Triager {
 
         // Catalog enrichment: component context, owner candidates, runbook.
         let mut owner_candidates = self.fallback_owners.clone();
-        let mut component_name = None;
         let mut links = Links::default();
         if let Some(enricher) = &self.backstage {
             let hints = hints_from_labels(&alert.labels, &self.component_keys);
             let text = format!("{} {}", alert.title, alert.description);
             let enrichment = enricher.enrich(&hints, &text).await?;
-            component_name = enrichment.component.as_ref().map(|c| c.name.clone());
+            let component_name = enrichment.component.as_ref().map(|c| c.name.clone());
             if enrichment.runbook.is_some() {
                 alert.runbook = enrichment.runbook;
             }
@@ -218,7 +184,9 @@ impl Triager {
 
         // Recent changes: what the feed knows about this component and the
         // platform. Only when the alert itself carried none, so a source that
-        // lists its own changes keeps them.
+        // lists its own changes keeps them. The typed rows are kept so the
+        // outcome document can carry every field, not just the state line.
+        let mut matched_changes: Vec<Change> = Vec::new();
         if alert.recent_changes.is_empty()
             && let Some(log) = &self.changes
         {
@@ -228,11 +196,8 @@ impl Triager {
             {
                 hints.push(c.name.clone());
             }
-            alert.recent_changes = log
-                .recent(&hints, self.change_window, now, self.change_max)
-                .iter()
-                .map(Change::to_state_line)
-                .collect();
+            matched_changes = log.recent(&hints, self.change_window, now, self.change_max);
+            alert.recent_changes = matched_changes.iter().map(Change::to_state_line).collect();
         }
 
         let questions =
@@ -244,17 +209,22 @@ impl Triager {
             .await?;
         let answers = questions.read(&response)?;
         let decision = decide(&answers, &self.policy);
-        let time_to_qualify = time_since(io_alert.created_at.as_deref(), Timestamp::now());
-        if let (Some(enricher), Some(owner)) = (&self.backstage, decision.owner()) {
-            links.owner = owner
-                .entity_ref
-                .as_deref()
-                .and_then(|r| EntityRef::parse(r, "group"))
-                .map(|r| enricher.entity_url(&r));
-        }
+        // One instant for the whole document: `decided_at` and
+        // `time_to_qualify_seconds` must agree.
+        let decided_at = Timestamp::now();
+        let time_to_qualify = time_since(io_alert.created_at.as_deref(), decided_at);
+
+        let candidate_urls = self
+            .backstage
+            .as_ref()
+            .map_or_else(BTreeMap::new, |e| e.candidate_urls(&answers.candidates));
+        links.owner = decision
+            .owner()
+            .and_then(|owner| candidate_urls.get(&owner.key).cloned());
 
         let mut tags = tags_for(&answers, &decision);
         let mut attached_to = None;
+        let mut incident = None;
         if let Decision::AttachToIncident {
             incident_id: reference,
             confidence,
@@ -268,17 +238,33 @@ impl Triager {
                     confidence: *confidence,
                     permalink: inc.permalink.clone(),
                 });
+                incident = Some(IncidentRef {
+                    id: Some(inc.id.clone()),
+                    reference: inc.reference.clone(),
+                    url: inc.permalink.clone(),
+                });
             } else {
+                // Unreachable: `TriageQuestions::read` confines the dedup
+                // answer to the references this map was built from, so the
+                // policy cannot choose one that is not a key here. Kept as a
+                // boundary check rather than a silent drop.
                 tracing::warn!(
                     reference,
                     "dedup chose a reference not in the candidate map"
                 );
+                // The document still names the target the decision chose;
+                // `writes.attached` stays false because nothing was written.
+                incident = Some(IncidentRef {
+                    id: None,
+                    reference: reference.clone(),
+                    url: None,
+                });
             }
         }
 
         let applied = self.write_back == WriteBack::Apply;
         let mut notified = None;
-        let mut note_id = None;
+        let mut note_write = NoteWrite::skipped();
         if applied {
             self.incidentio.add_alert_tags(&io_alert.id, &tags).await?;
             if let Some(a) = &attached_to {
@@ -303,9 +289,28 @@ impl Triager {
                 // The note is a convenience on top of the tags; its failure
                 // must not undo what was already written.
                 match self.write_note(&io_alert.id, &content).await {
-                    Ok(id) => note_id = Some(id),
-                    Err(e) => tracing::warn!(error = %e, "qualification note failed"),
+                    Ok((id, status)) => {
+                        note_write = NoteWrite {
+                            status,
+                            id: Some(id),
+                            error: None,
+                        };
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "qualification note failed");
+                        note_write = NoteWrite {
+                            status: NoteStatus::Failed,
+                            id: None,
+                            error: Some(e.to_string()),
+                        };
+                    }
                 }
+            } else {
+                note_write = NoteWrite {
+                    status: NoteStatus::Disabled,
+                    id: None,
+                    error: None,
+                };
             }
             if self.notify_owner
                 && let Some(enricher) = &self.backstage
@@ -329,39 +334,89 @@ impl Triager {
             }
         }
 
+        let candidate_incidents: Vec<IncidentRef> = candidates
+            .iter()
+            .map(|i| IncidentRef {
+                id: Some(i.id.clone()),
+                reference: i.reference.clone(),
+                url: i.permalink.clone(),
+            })
+            .collect();
+
+        let outcome = Outcome::build(outcome::Input {
+            version: env!("CARGO_PKG_VERSION"),
+            decided_at,
+            time_to_qualify,
+            alert: AlertRef {
+                id: Some(io_alert.id.clone()),
+                title: io_alert.title.clone(),
+                source: alert.source.clone(),
+                source_url: io_alert.source_url.clone(),
+                created_at: io_alert.created_at.clone(),
+                labels: alert.labels.clone(),
+            },
+            answers: &answers,
+            decision: &decision,
+            policy: &self.policy,
+            owner_url: links.owner.clone(),
+            candidate_urls: &candidate_urls,
+            incident,
+            candidate_incidents: &candidate_incidents,
+            component: alert.component.as_ref(),
+            component_url: links.component.clone(),
+            runbook_url: links.runbook.clone(),
+            related: &alert.related_alerts,
+            // Typed rows when the feed filled them; the alert's own lines
+            // otherwise, where only the summary is known.
+            changes: if matched_changes.is_empty() {
+                Changes::Lines(&alert.recent_changes)
+            } else {
+                Changes::Typed(&matched_changes)
+            },
+            // `null` means the lookup was not performed: the related-alert
+            // search is skipped on a zero window or a zero cap, exactly as
+            // `related_alerts` skips it, and there is no change feed to
+            // search without one configured.
+            windows: outcome::Windows {
+                related_seconds: (!self.related_window.is_zero() && self.related_max > 0)
+                    .then_some(self.related_window.as_secs()),
+                change_seconds: self.changes.as_ref().map(|_| self.change_window.as_secs()),
+            },
+            tags: &tags,
+            model: &response.model,
+            usage: response.usage.into(),
+            writes: Writes {
+                mode: if applied {
+                    WriteMode::Applied
+                } else {
+                    WriteMode::DryRun
+                },
+                tags_applied: applied,
+                attached: applied && attached_to.is_some(),
+                note: note_write,
+                notified,
+                forwarded: None,
+            },
+        });
+
+        // A handful of flat fields stay indexable on their own; everything
+        // else that used to be dumped here is inside `outcome`, which is the
+        // whole document as one JSON object per triaged alert.
         tracing::info!(
             alert_id = %io_alert.id,
             title = %io_alert.title,
-            decision = ?decision,
-            component = ?component_name,
-            attached = ?attached_to.as_ref().map(|a| &a.reference),
-            notified = ?notified,
-            note = ?note_id,
-            related_alerts = alert.related_alerts.len(),
-            recent_changes = alert.recent_changes.len(),
-            time_to_qualify_seconds = ?time_to_qualify.map(|d| d.as_secs_f64()),
+            decision = outcome.decision.key(),
+            impact = outcome.impact.key(),
+            // A number when the alert carried a creation time; the field is
+            // absent when it did not, never a `Some(..)` debug dump.
+            time_to_qualify_seconds = outcome.time_to_qualify_seconds,
             applied,
-            model = %response.model,
+            model = %outcome.model,
+            outcome = %outcome.to_json_line(),
             "alert triaged"
         );
 
-        Ok(Outcome {
-            alert_id: io_alert.id,
-            title: io_alert.title,
-            decision,
-            tags,
-            attached_to,
-            component: component_name,
-            notified,
-            model: response.model,
-            candidates_offered: candidates.len(),
-            owner_candidates_offered: answers.candidates.len(),
-            related_alerts: alert.related_alerts.len(),
-            recent_changes: alert.recent_changes.len(),
-            note_id,
-            time_to_qualify_seconds: time_to_qualify.map(|d| d.as_secs_f64()),
-            applied,
-        })
+        Ok(outcome)
     }
 
     /// Other alerts firing in the window, newest first, without this one.
@@ -396,17 +451,22 @@ impl Triager {
     }
 
     /// Create the note, or rewrite the one signalman left on an earlier pass.
-    async fn write_note(&self, alert_id: &str, content: &str) -> super::error::Result<String> {
+    /// Returns the note's id and which of the two happened.
+    async fn write_note(
+        &self,
+        alert_id: &str,
+        content: &str,
+    ) -> super::error::Result<(String, NoteStatus)> {
         let existing = self.incidentio.list_alert_notes(alert_id).await?;
         if let Some(mine) = existing
             .iter()
             .find(|n| note::is_signalman_note(&n.content))
         {
             let updated = self.incidentio.update_alert_note(&mine.id, content).await?;
-            return Ok(updated.id);
+            return Ok((updated.id, NoteStatus::Replaced));
         }
         let created = self.incidentio.create_alert_note(alert_id, content).await?;
-        Ok(created.id)
+        Ok((created.id, NoteStatus::Created))
     }
 }
 
@@ -493,10 +553,19 @@ pub fn tags_for(answers: &TriageAnswers, decision: &Decision) -> Vec<String> {
         tag("impact", impact_key(impact)),
         tag("action", action_key(decision)),
     ];
-    if answers
-        .caused_by_change
-        .is_some_and(|n| n.yes.value() > 0.65)
-    {
+    // Taken from the decision, not recomputed from the answers: the policy
+    // threshold lives in one place, and the tag stays derivable from the
+    // outcome document.
+    if matches!(
+        decision,
+        Decision::Page {
+            suspected_change: true,
+            ..
+        } | Decision::Ticket {
+            suspected_change: true,
+            ..
+        }
+    ) {
         tags.push(tag("suspected-change", ""));
     }
     tags

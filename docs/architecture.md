@@ -49,11 +49,12 @@ flowchart LR
 | Enricher | `src/backstage/enrich.rs` | Resolve the component, assemble owner candidates, pick the runbook, notify the owner |
 | Questions | `src/triage/questions.rs` | Build the fan-out request with typed handles |
 | Policy | `src/triage/policy.rs` | Turn typed answers into one decision with risk-scaled thresholds |
+| Outcome contract | `src/outcome.rs` | The wire types of one triaged alert, the builder both emitters share, and the generated schema |
 | TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs` | Wire contract, typed handles, validated probabilities |
 | incident.io client | `src/incidentio/client.rs`, `types.rs` | Incidents, alerts, tags, attachments, alert-source events |
 | Backstage client | `src/backstage/client.rs`, `types.rs` | Catalog queries, TechDocs search index, notifications |
 | Shared HTTP | `src/http.rs` | One retry loop for all three clients |
-| CLI | `src/main.rs` | `triage`, `serve`, `models`, `incidentio`, `backstage` |
+| CLI | `src/main.rs` | `triage`, `eval`, `serve`, `models`, `incidentio`, `backstage`, `config`, `schema` |
 
 Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. No other module reads the environment except the three clients for their own key or token ([Configuration](configuration.md)).
 

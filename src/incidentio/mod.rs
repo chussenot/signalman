@@ -23,8 +23,9 @@ pub mod sync;
 pub mod types;
 pub mod webhook;
 
+pub use crate::outcome::Outcome;
 pub use client::Client;
 pub use error::{Error, Result};
-pub use sync::{Outcome, Triager, WriteBack};
+pub use sync::{Triager, WriteBack};
 pub use types::{Alert, AlertEvent, AlertNote, AlertStatus, Incident, StatusCategory};
 pub use webhook::{Event, WebhookSecret, verify};

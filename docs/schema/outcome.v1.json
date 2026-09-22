@@ -1,0 +1,1044 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Outcome",
+  "description": "One triaged alert: what was judged, what was decided, and what was\nwritten back.\n\nSee `docs/triage.md`, section \"The outcome contract\", for the shape rules\nand the evolution policy.",
+  "type": "object",
+  "properties": {
+    "alert": {
+      "description": "The alert as the model saw it.",
+      "$ref": "#/$defs/AlertRef"
+    },
+    "component": {
+      "description": "The alerting component in the software catalog; `null` when Backstage\nis not configured or nothing matched.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComponentRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decided_at": {
+      "description": "When the decision was reached, RFC 3339.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "decision": {
+      "description": "What to do with it.",
+      "$ref": "#/$defs/Action"
+    },
+    "impact": {
+      "description": "The impact level the policy used. Always equals\n`judgments.impact.level`; repeated at the top level because it is\nhalf of the routing decision.",
+      "$ref": "#/$defs/ImpactLevel"
+    },
+    "incident": {
+      "description": "The incident to attach to; `null` unless the decision is\n`attach_to_incident`. It names the target even in a dry run:\n`writes.attached` says whether the attachment happened.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IncidentRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "judgments": {
+      "description": "Everything the model judged.",
+      "$ref": "#/$defs/Judgments"
+    },
+    "model": {
+      "description": "The versioned model that answered, e.g. `jev-1.13.0`. Thresholds are\ntuned per version.",
+      "type": "string"
+    },
+    "owner": {
+      "description": "The team the decision addresses; `null` for `suppress` and\n`attach_to_incident`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OwnerRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy": {
+      "description": "The thresholds in force.",
+      "$ref": "#/$defs/PolicySnapshot"
+    },
+    "recent_changes": {
+      "description": "Recent changes offered to the model as possible causes.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ChangeRef"
+      }
+    },
+    "related_alerts": {
+      "description": "Other alerts firing in the window, newest first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RelatedAlertRef"
+      }
+    },
+    "runbook_url": {
+      "description": "The runbook page the alert was read against.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
+    "schema_version": {
+      "description": "Version of this contract. Always `1`.",
+      "type": "integer",
+      "const": 1
+    },
+    "signalman_version": {
+      "description": "The signalman build that produced the document.",
+      "type": "string"
+    },
+    "suspected_change": {
+      "description": "Whether a listed recent change is flagged as the likely cause. Only\never true for `page` and `ticket`.",
+      "type": "boolean"
+    },
+    "tags": {
+      "description": "The `ai-*` tags written on the alert, or that would be written. Every\none is derivable from the fields above.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "time_to_qualify_seconds": {
+      "description": "Seconds from the alert's creation to the decision. `null` when the\nalert carries no creation time, as on the file-based CLI.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "usage": {
+      "description": "Token accounting for the request.",
+      "$ref": "#/$defs/Usage"
+    },
+    "windows": {
+      "description": "How far back the two lookups reached.",
+      "$ref": "#/$defs/Windows"
+    },
+    "writes": {
+      "description": "What was actually written.",
+      "$ref": "#/$defs/Writes"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "alert",
+    "component",
+    "decided_at",
+    "decision",
+    "impact",
+    "incident",
+    "judgments",
+    "model",
+    "owner",
+    "policy",
+    "recent_changes",
+    "related_alerts",
+    "runbook_url",
+    "schema_version",
+    "signalman_version",
+    "suspected_change",
+    "tags",
+    "time_to_qualify_seconds",
+    "usage",
+    "windows",
+    "writes"
+  ],
+  "$defs": {
+    "Action": {
+      "description": "What signalman decided to do with the alert. The vocabulary of the\n`decision` field and of the `ai-action-*` tag (which is hyphenated:\n`human_triage` is tagged `ai-action-human-triage`, and\n`attach_to_incident` is tagged `ai-action-attach`).",
+      "oneOf": [
+        {
+          "description": "Nobody needs to act; log and drop.",
+          "type": "string",
+          "const": "suppress"
+        },
+        {
+          "description": "The same underlying problem as an incident that is already open.",
+          "type": "string",
+          "const": "attach_to_incident"
+        },
+        {
+          "description": "Wake the owning team now.",
+          "type": "string",
+          "const": "page"
+        },
+        {
+          "description": "Open a ticket for the owning team; no page.",
+          "type": "string",
+          "const": "ticket"
+        },
+        {
+          "description": "A person decides: the owner is not clear enough to route.",
+          "type": "string",
+          "const": "human_triage"
+        }
+      ]
+    },
+    "AlertRef": {
+      "description": "The alert as the model saw it.",
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "description": "When the alert was created, RFC 3339. `null` when the source does not\nsay.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "id": {
+          "description": "incident.io alert id (a ULID). `null` when the alert came from a file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "description": "The labels the model saw, after merging the alert's own tags.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "description": "Emitting system, exactly as it was sent in the state: `prometheus`, or\n`incident.io alert source <id>` on the webhook path.",
+          "type": "string"
+        },
+        "source_url": {
+          "description": "Link back to the monitor or query that fired.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "title": {
+          "description": "The alert's title.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "created_at",
+        "id",
+        "labels",
+        "source",
+        "source_url",
+        "title"
+      ]
+    },
+    "ChangeRef": {
+      "description": "A deploy, configuration change or feature flag offered to the model as a\npossible cause. Everything but `summary` is `null` when the alert carried\nits changes as plain lines instead of through the change feed.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When it happened, RFC 3339.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "component": {
+          "description": "The component it touched; `null` means platform-wide.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`deploy`, `config`, `flag`, `infra`, `migration`, or anything short.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The tool that reported it: `argocd`, `gitlab`, ...",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "One line: what changed, which version, who did it.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Link to the deploy, merge request or commit.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "component",
+        "kind",
+        "source",
+        "summary",
+        "url"
+      ]
+    },
+    "ComponentRef": {
+      "description": "The alerting component as the software catalog knows it.",
+      "type": "object",
+      "properties": {
+        "catalog_owner": {
+          "description": "The owner the catalog records, as a display name. Not the same thing\nas `owner`: this is what the catalog says, `owner` is what signalman\ndecided.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dependents": {
+          "description": "What depends on it, as `kind name` strings: the blast radius.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_on": {
+          "description": "What it depends on, as `kind name` strings.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lifecycle": {
+          "description": "`spec.lifecycle`: production, experimental, deprecated.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Catalog name.",
+          "type": "string"
+        },
+        "system": {
+          "description": "The system it belongs to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "`spec.type`: service, website, library, ...",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The component's page in the Backstage catalog.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "catalog_owner",
+        "dependents",
+        "depends_on",
+        "lifecycle",
+        "name",
+        "system",
+        "type",
+        "url"
+      ]
+    },
+    "DuplicateJudgment": {
+      "description": "Whether the alert duplicates an open incident. The whole object is `null`\nwhen the question was not asked because no incident was open.",
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "description": "Every incident offered, most probable first. Excludes the \"none\"\noption, whose probability is `none_probability`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IncidentOption"
+          }
+        },
+        "chosen": {
+          "description": "The incident reference the model chose, or `null` when it chose the\n\"new, separate problem\" option.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "description": "How concentrated the distribution is. Compared against\n`policy.attach_confidence`.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "none_probability": {
+          "description": "Probability the alert is a new, separate problem.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "candidates",
+        "chosen",
+        "confidence",
+        "none_probability"
+      ]
+    },
+    "Forwarded": {
+      "description": "The alert the CLI forwarded to an incident.io HTTP alert source.",
+      "type": "object",
+      "properties": {
+        "deduplication_key": {
+          "description": "The key incident.io deduplicated the event under.",
+          "type": "string"
+        },
+        "status": {
+          "description": "The status incident.io reported back.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "deduplication_key",
+        "status"
+      ]
+    },
+    "ImpactJudgment": {
+      "description": "How bad it is for users.",
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "description": "How concentrated the distribution is.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "distribution": {
+          "description": "Probability of every level, always four rows, lowest level first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ImpactOption"
+          },
+          "maxItems": 4,
+          "minItems": 4
+        },
+        "index": {
+          "description": "Index of `level` on the scale, `0..=3`.",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 3,
+          "minimum": 0
+        },
+        "level": {
+          "description": "The level nearest to `score`. This is what the policy compares\nagainst `policy.page_at`, and what the top-level `impact` repeats.",
+          "$ref": "#/$defs/ImpactLevel"
+        },
+        "score": {
+          "description": "Probability-weighted position on the scale, `0.0..=3.0`. It may fall\nbetween levels: 2.6 is \"worse than major, not quite an outage\".",
+          "type": "number",
+          "format": "double",
+          "maximum": 3.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "confidence",
+        "distribution",
+        "index",
+        "level",
+        "score"
+      ]
+    },
+    "ImpactLevel": {
+      "description": "User-facing impact, lowest first. The same vocabulary as the\n`ai-impact-*` tag and as `policy.page_at`.",
+      "oneOf": [
+        {
+          "description": "Internal, informational, or non-production only.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "A small subset of users, or one non-critical feature, degraded.",
+          "type": "string",
+          "const": "minor"
+        },
+        {
+          "description": "Most users degraded, or a critical feature unavailable.",
+          "type": "string",
+          "const": "major"
+        },
+        {
+          "description": "The product is unavailable, or data integrity is at risk, for everyone.",
+          "type": "string",
+          "const": "outage"
+        }
+      ]
+    },
+    "ImpactOption": {
+      "description": "One level of the impact scale with its probability.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "The level.",
+          "$ref": "#/$defs/ImpactLevel"
+        },
+        "probability": {
+          "description": "Probability the impact is at this level.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "probability"
+      ]
+    },
+    "IncidentOption": {
+      "description": "One open incident offered as a duplicate candidate.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "incident.io incident id (a ULID), when it was fetched from the API.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probability": {
+          "description": "Probability this alert is the same underlying problem.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "reference": {
+          "description": "Human reference, `INC-4821`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The incident in the incident.io app.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "probability",
+        "reference",
+        "url"
+      ]
+    },
+    "IncidentRef": {
+      "description": "An incident this alert belongs to. Its dedup confidence is not repeated\nhere: it is `judgments.duplicate_of.confidence`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "incident.io incident id (a ULID), when it was fetched from the API.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference": {
+          "description": "Human reference, `INC-4821`. Always present.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The incident in the incident.io app.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "reference",
+        "url"
+      ]
+    },
+    "Judgments": {
+      "description": "Everything the model judged. One question, one field.",
+      "type": "object",
+      "properties": {
+        "actionable": {
+          "description": "Probability a person must act now rather than let it resolve itself.",
+          "$ref": "#/$defs/Probability"
+        },
+        "caused_by_change": {
+          "description": "Probability a listed recent change caused it; `null` when no change\nwas listed, so the question was never asked.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Probability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duplicate_of": {
+          "description": "Whether it duplicates an open incident; `null` when no incident was\nopen, so the question was never asked.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DuplicateJudgment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "impact": {
+          "description": "How bad it is for users.",
+          "$ref": "#/$defs/ImpactJudgment"
+        },
+        "owner": {
+          "description": "Who should own the first response.",
+          "$ref": "#/$defs/OwnerJudgment"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "actionable",
+        "caused_by_change",
+        "duplicate_of",
+        "impact",
+        "owner"
+      ]
+    },
+    "NoteStatus": {
+      "description": "What became of the qualification note.",
+      "oneOf": [
+        {
+          "description": "A new note was created on the alert.",
+          "type": "string",
+          "const": "created"
+        },
+        {
+          "description": "The note signalman left on an earlier pass was rewritten in place.",
+          "type": "string",
+          "const": "replaced"
+        },
+        {
+          "description": "Writing the note failed; `error` says why. The tags were still written.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "The note is switched off in the configuration.",
+          "type": "string",
+          "const": "disabled"
+        },
+        {
+          "description": "No note was attempted: a dry run, or the detached CLI.",
+          "type": "string",
+          "const": "skipped"
+        }
+      ]
+    },
+    "NoteWrite": {
+      "description": "The qualification note signalman writes on the incident.io alert.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "description": "Why it failed, when `status` is `failed`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The note's id when one was written.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "What happened to the note.",
+          "$ref": "#/$defs/NoteStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "error",
+        "id",
+        "status"
+      ]
+    },
+    "OwnerJudgment": {
+      "description": "Who should own the first response.",
+      "type": "object",
+      "properties": {
+        "chosen": {
+          "description": "The option the model chose. May be `none_of_these`.",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "How concentrated the distribution is. Not the probability of\n`chosen`: that is in `options`.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "options": {
+          "description": "Every option offered, including `none_of_these`, most probable first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OwnerOption"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chosen",
+        "confidence",
+        "options"
+      ]
+    },
+    "OwnerOption": {
+      "description": "One option of the owner question, with the probability the model gave it.",
+      "type": "object",
+      "properties": {
+        "entity_ref": {
+          "description": "Software-catalog reference, when the candidate came from Backstage.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "Candidate key. `none_of_these` is the no-match option, always offered.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "probability": {
+          "description": "Probability this is the owning team.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "url": {
+          "description": "The team's page in the Backstage catalog.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entity_ref",
+        "key",
+        "label",
+        "probability",
+        "url"
+      ]
+    },
+    "OwnerRef": {
+      "description": "The team the decision addresses. `null` unless the decision routes to\nsomebody (`page`, `ticket`, `human_triage`).",
+      "type": "object",
+      "properties": {
+        "entity_ref": {
+          "description": "Software-catalog reference (`group:default/payments`) when the\ncandidate came from Backstage; `null` for the built-in team list.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "Candidate key, also the suffix of the `ai-team-*` tag.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "status": {
+          "description": "How firmly the team is attributed.",
+          "$ref": "#/$defs/OwnerStatus"
+        },
+        "url": {
+          "description": "The team's page in the Backstage catalog.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entity_ref",
+        "key",
+        "label",
+        "status",
+        "url"
+      ]
+    },
+    "OwnerStatus": {
+      "description": "How firmly the owner is attributed.",
+      "oneOf": [
+        {
+          "description": "Routed to this team; owner confidence cleared the automatic threshold.",
+          "type": "string",
+          "const": "assigned"
+        },
+        {
+          "description": "Routed to this team, but the responder should confirm ownership:\nconfidence was middling.",
+          "type": "string",
+          "const": "confirm"
+        },
+        {
+          "description": "Nobody was confident enough to route; this is the best guess offered\nto whoever triages by hand.",
+          "type": "string",
+          "const": "best_guess"
+        }
+      ]
+    },
+    "PolicySnapshot": {
+      "description": "The thresholds in force when the decision was made. Kept in the document\nbecause a decision is only interpretable against the policy that produced\nit.",
+      "type": "object",
+      "properties": {
+        "attach_confidence": {
+          "description": "Minimum dedup confidence to attach to an existing incident.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "auto_route_confidence": {
+          "description": "Owner confidence at or above which routing is automatic.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "flag_change_above": {
+          "description": "`caused_by_change` probability above which the change is flagged.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "human_below_confidence": {
+          "description": "Owner confidence below which a person triages instead.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "page_at": {
+          "description": "Impact at or above which the owner is paged rather than ticketed.",
+          "$ref": "#/$defs/ImpactLevel"
+        },
+        "suppress_below": {
+          "description": "Below this `actionable` probability the alert is suppressed.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attach_confidence",
+        "auto_route_confidence",
+        "flag_change_above",
+        "human_below_confidence",
+        "page_at",
+        "suppress_below"
+      ]
+    },
+    "Probability": {
+      "description": "One probability, as its own object so the field reads the same wherever\na yes/no judgment appears.",
+      "type": "object",
+      "properties": {
+        "probability": {
+          "description": "Probability of yes.",
+          "type": "number",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "probability"
+      ]
+    },
+    "RelatedAlertRef": {
+      "description": "Another alert firing in the same window: the blast radius as the alert\nhub saw it when the decision was made.",
+      "type": "object",
+      "properties": {
+        "age_minutes": {
+          "description": "Minutes since it was created.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "component": {
+          "description": "The component it names, when it names one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Its title.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "age_minutes",
+        "component",
+        "title"
+      ]
+    },
+    "Usage": {
+      "description": "Token accounting for the one TypeSafe request behind this decision.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Tokens in the state plus all questions. These are the billed ones.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Tokens in the answers.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ]
+    },
+    "Windows": {
+      "description": "How far back the two lookups reached. `null` means the lookup was not\nperformed at all.",
+      "type": "object",
+      "properties": {
+        "change_seconds": {
+          "description": "Seconds of history searched in the change feed.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "related_seconds": {
+          "description": "Seconds of history searched for other firing alerts.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "change_seconds",
+        "related_seconds"
+      ]
+    },
+    "WriteMode": {
+      "description": "Whether the side effects the document describes actually happened.",
+      "oneOf": [
+        {
+          "description": "Tags, attachment, note and notification were written back.",
+          "type": "string",
+          "const": "applied"
+        },
+        {
+          "description": "Everything was computed, nothing was written (evaluation runs).",
+          "type": "string",
+          "const": "dry_run"
+        },
+        {
+          "description": "The file-based CLI: there is no incident.io alert to write back to.",
+          "type": "string",
+          "const": "detached"
+        }
+      ]
+    },
+    "Writes": {
+      "description": "What signalman actually did, as opposed to what it decided.",
+      "type": "object",
+      "properties": {
+        "attached": {
+          "description": "Whether the alert was attached to `incident`.",
+          "type": "boolean"
+        },
+        "forwarded": {
+          "description": "The forwarded alert event, when the CLI ran with\n`--forward-to-incidentio`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Forwarded"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "description": "Whether the side effects happened at all.",
+          "$ref": "#/$defs/WriteMode"
+        },
+        "note": {
+          "description": "What became of the qualification note.",
+          "$ref": "#/$defs/NoteWrite"
+        },
+        "notified": {
+          "description": "Catalog reference of the group notified through Backstage, when one\nwas notified.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags_applied": {
+          "description": "Whether `tags` were written on the alert.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attached",
+        "forwarded",
+        "mode",
+        "note",
+        "notified",
+        "tags_applied"
+      ]
+    }
+  }
+}
