@@ -24,7 +24,7 @@ use signalman::eval;
 use signalman::incidentio::types::{AlertEvent, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
-use signalman::serve::{AppState, router};
+use signalman::serve::{AppState, Limits, router};
 use signalman::triage::{Alert, Decision, OpenIncident, TriageAnswers, TriageQuestions, decide};
 use signalman::{Client, Request, Response};
 use tracing_subscriber::EnvFilter;
@@ -557,11 +557,16 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
         tracing::info!("change feed disabled: SIGNALMAN_CHANGES_TOKEN is not set");
     }
     let addr = cfg.server.addr;
-    let mut state = AppState::new(secret, triager);
+    let limits = Limits {
+        max_concurrent: cfg.server.max_concurrent_triages,
+        max_queued: cfg.server.max_queued_triages,
+        timeout: cfg.server.triage_timeout(),
+    };
+    let mut state = AppState::with_limits(secret, triager, limits);
     state.changes_token = changes_token;
     let app = router(Arc::new(state));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, "listening for incident.io webhooks at /webhooks/incidentio");
+    tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, max_concurrent = limits.max_concurrent, max_queued = limits.max_queued, timeout_seconds = limits.timeout.as_secs(), "listening for incident.io webhooks at /webhooks/incidentio");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

@@ -94,7 +94,7 @@ sequenceDiagram
     end
 ```
 
-Fetching the alert and the incidents fresh (steps 5 and 6) is what makes delivery order irrelevant. The webhook carries an id and a snapshot; only the id is used. Step 7 is context and degrades to an empty list on failure; the note is a convenience on top of the tags and its failure is logged, not propagated.
+Deliveries beyond the replica's running and waiting capacity are refused with 503 before being marked seen, so incident.io's retry is the backpressure, and each spawned triage runs under a deadline ([Operations](operations.md#backpressure)). Fetching the alert and the incidents fresh (steps 5 and 6) is what makes delivery order irrelevant. The webhook carries an id and a snapshot; only the id is used. Step 7 is context and degrades to an empty list on failure; the note is a convenience on top of the tags and its failure is logged, not propagated.
 
 ## Boundaries
 

@@ -130,7 +130,14 @@ Validate the rendered file in the pipeline before applying: `signalman config sh
 | TypeSafe | 1,200 requests/min; 64k tokens per request | one request per triage, roughly 1 to 4k tokens with catalog context |
 | Backstage | instance dependent | up to five catalog calls and one TechDocs call per triage |
 | Change feed | 1,000 newest changes per replica, in memory | older changes evicted; a restart forgets the window |
-| Background triage concurrency | unbounded today | see roadmap |
+| Background triages | 8 running, 64 waiting per replica | a delivery beyond that gets `503` with `Retry-After: 30`; incident.io retries it, so the hub's retry is the backpressure |
+| Triage deadline | 60 s per alert | the flow is dropped at the deadline and reported as an error; tags written before it stay |
+
+## Backpressure
+
+A replica admits at most `server.max_concurrent_triages` running plus `server.max_queued_triages` waiting triages ([Configuration](configuration.md#server)). The next `alert_created` delivery is answered `503` with `Retry-After: 30` before it is marked seen, so incident.io's retry (up to 24 hours, with backoff) delivers it again when a slot is free. A refused delivery costs nothing but the retry; an alert storm therefore degrades to slower qualification, not to memory growth or a rate-limited incident.io key. The log line at `warn` carries the running and admitted counts.
+
+Each triage runs under `server.triage_timeout_seconds`. The clients' own timeouts and retries bound every call; the deadline bounds their sum, so a stuck upstream cannot hold a slot forever. A triage that overruns is dropped and reported as a failed outcome; whatever it had already written (tags, an attachment) stays, and `incidentio triage-alert` re-runs it by hand.
 
 ## Logs
 

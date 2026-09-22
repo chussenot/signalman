@@ -44,6 +44,15 @@ pub const DEFAULT_COMPONENT_KEYS: [&str; 6] = [
 /// overrides. One table, so the documentation can be checked against it.
 pub const ENV_VARS: &[(&str, &str)] = &[
     ("SIGNALMAN_ADDR", "server.addr"),
+    (
+        "SIGNALMAN_MAX_CONCURRENT_TRIAGES",
+        "server.max_concurrent_triages",
+    ),
+    ("SIGNALMAN_MAX_QUEUED_TRIAGES", "server.max_queued_triages"),
+    (
+        "SIGNALMAN_TRIAGE_TIMEOUT_SECONDS",
+        "server.triage_timeout_seconds",
+    ),
     ("TYPESAFE_BASE_URL", "typesafe.base_url"),
     ("TYPESAFE_DEFAULT_MODEL", "typesafe.model"),
     ("TYPESAFE_TIMEOUT_SECONDS", "typesafe.timeout_seconds"),
@@ -139,6 +148,12 @@ pub struct Settings {
 pub struct ServerFile {
     /// Listen address for `serve`.
     pub addr: Option<SocketAddr>,
+    /// Triages running at once.
+    pub max_concurrent_triages: Option<usize>,
+    /// Triages waiting for a slot before deliveries are refused with 503.
+    pub max_queued_triages: Option<usize>,
+    /// Deadline for one triage, all upstream calls included.
+    pub triage_timeout_seconds: Option<u64>,
 }
 
 /// `[typesafe]`
@@ -343,6 +358,19 @@ pub struct Config {
 pub struct Server {
     /// Listen address.
     pub addr: SocketAddr,
+    /// Triages running at once.
+    pub max_concurrent_triages: usize,
+    /// Triages waiting for a slot before deliveries are refused with 503.
+    pub max_queued_triages: usize,
+    /// Deadline for one triage in seconds.
+    pub triage_timeout_seconds: u64,
+}
+
+impl Server {
+    /// The triage deadline as a duration.
+    pub fn triage_timeout(&self) -> Duration {
+        Duration::from_secs(self.triage_timeout_seconds)
+    }
 }
 
 /// Effective `[typesafe]`.
@@ -446,7 +474,35 @@ impl Config {
                         .parse()
                         .unwrap_or_else(|_| unreachable!("default address is valid"))
                 }),
+            max_concurrent_triages: env_parsed(
+                "SIGNALMAN_MAX_CONCURRENT_TRIAGES",
+                "server.max_concurrent_triages",
+            )?
+            .or(file.server.max_concurrent_triages)
+            .unwrap_or(crate::serve::DEFAULT_MAX_CONCURRENT),
+            max_queued_triages: env_parsed(
+                "SIGNALMAN_MAX_QUEUED_TRIAGES",
+                "server.max_queued_triages",
+            )?
+            .or(file.server.max_queued_triages)
+            .unwrap_or(crate::serve::DEFAULT_MAX_QUEUED),
+            triage_timeout_seconds: env_parsed(
+                "SIGNALMAN_TRIAGE_TIMEOUT_SECONDS",
+                "server.triage_timeout_seconds",
+            )?
+            .or(file.server.triage_timeout_seconds)
+            .unwrap_or(crate::serve::DEFAULT_TRIAGE_TIMEOUT.as_secs()),
         };
+        if server.max_concurrent_triages == 0 {
+            return Err(Error::Invalid(
+                "server.max_concurrent_triages must be at least 1".into(),
+            ));
+        }
+        if server.triage_timeout_seconds == 0 {
+            return Err(Error::Invalid(
+                "server.triage_timeout_seconds must be at least 1".into(),
+            ));
+        }
         let typesafe = Typesafe {
             base_url: env_string("TYPESAFE_BASE_URL")
                 .or_else(|| file.typesafe.base_url.clone())
@@ -626,6 +682,9 @@ mod tests {
     fn defaults_apply_when_nothing_is_set() {
         let c = Config::resolve(&Settings::default(), &Overrides::default()).unwrap();
         assert_eq!(c.server.addr.to_string(), DEFAULT_ADDR);
+        assert_eq!(c.server.max_concurrent_triages, 8);
+        assert_eq!(c.server.max_queued_triages, 64);
+        assert_eq!(c.server.triage_timeout_seconds, 60);
         assert_eq!(c.typesafe.model, crate::client::DEFAULT_MODEL);
         assert!(c.flow.note);
         assert_eq!(c.flow.related_window_minutes, 30);
@@ -703,6 +762,16 @@ mod tests {
 
     #[test]
     fn invalid_ranges_are_named() {
+        let s = Settings::parse(
+            "[server]\nmax_concurrent_triages = 0\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let err = Config::resolve(&s, &Overrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("max_concurrent_triages"), "{err}");
+
         let s = Settings::parse("[policy]\nsuppress_below = 1.5\n", Path::new("t.toml")).unwrap();
         let err = Config::resolve(&s, &Overrides::default())
             .unwrap_err()
