@@ -18,10 +18,11 @@ use std::time::Duration;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use jiff::Timestamp;
+use rmcp::ServiceExt;
 use signalman::backstage::enrich::hints_from_labels;
 use signalman::backstage::{self, Enricher};
 use signalman::changes::{ChangeLog, FeedToken};
-use signalman::config::{Config, Overrides};
+use signalman::config::{Config, McpTransport, Overrides};
 use signalman::eval;
 use signalman::incidentio::types::{AlertEvent, AlertEventAck, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
@@ -76,6 +77,12 @@ enum Command {
         #[command(flatten)]
         flow: FlowArgs,
     },
+    /// Serve signalman's read-only tools over the Model Context Protocol
+    /// (decision 0008): qualify_alert, related_alerts, recent_changes,
+    /// lookup_owner, open_incidents. Never writes to incident.io or
+    /// Backstage. [file: mcp.enabled, mcp.transport, env: SIGNALMAN_MCP_ENABLED,
+    /// SIGNALMAN_MCP_TRANSPORT].
+    Mcp,
     /// incident.io utilities.
     #[command(subcommand)]
     Incidentio(IncidentIoCommand),
@@ -257,6 +264,7 @@ fn overrides(command: &Command) -> Overrides {
         }
         Command::Incidentio(IncidentIoCommand::TriageAlert { flow, .. }) => flow.overrides(),
         Command::Models
+        | Command::Mcp
         | Command::Incidentio(_)
         | Command::Backstage(_)
         | Command::Config(_)
@@ -302,6 +310,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             dry_run,
             ..
         } => serve(&cfg, insecure_skip_verify, dry_run).await,
+        Command::Mcp => mcp_cmd(&cfg).await,
         Command::Incidentio(cmd) => incidentio_cmd(&cfg, cmd).await,
         Command::Backstage(cmd) => backstage_cmd(&cfg, cmd).await,
         // Unreachable: answered above. Dispatched through the same
@@ -748,6 +757,33 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    Ok(())
+}
+
+/// Serve the MCP tools. Always dry run: [`signalman::mcp::Server::new`]
+/// forces it regardless of `cfg`, and this function never passes a
+/// `dry_run` flag to `triager` either, so the invariant holds twice over.
+async fn mcp_cmd(cfg: &Config) -> Result<(), AnyError> {
+    if !cfg.mcp.enabled {
+        return Err("mcp.enabled is false".into());
+    }
+    match cfg.mcp.transport {
+        McpTransport::Http => {
+            return Err(concat!(
+                "mcp.transport = \"http\" is not implemented yet; use \"stdio\". ",
+                "Tracked as signalman-4gp.7."
+            )
+            .into());
+        }
+        McpTransport::Stdio => {}
+    }
+    let triager = triager(cfg, incidentio_client(cfg)?, true)?;
+    tracing::info!("MCP server listening on stdio (read-only; decision 0008)");
+    let service = signalman::mcp::Server::new(triager)
+        .serve(rmcp::transport::stdio())
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "MCP server failed to start"))?;
+    service.waiting().await?;
     Ok(())
 }
 

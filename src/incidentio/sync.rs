@@ -46,8 +46,9 @@ pub const DEFAULT_RELATED_WINDOW: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_RELATED_MAX: usize = 20;
 
 /// Page size asked for when listing firing alerts; the cap is applied after
-/// dropping the alert itself.
-const RELATED_PAGE: usize = 50;
+/// dropping the alert itself. `pub` so the MCP `related_alerts` tool
+/// ([`crate::mcp`]) fetches with the same page size as the flow.
+pub const RELATED_PAGE: usize = 50;
 
 /// Which side effects to apply after deciding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -74,6 +74,9 @@ pub const ENV_VARS: &[(&str, &str)] = &[
         "flow.change_window_minutes",
     ),
     ("SIGNALMAN_CHANGE_MAX", "flow.change_max"),
+    ("SIGNALMAN_MCP_ENABLED", "mcp.enabled"),
+    ("SIGNALMAN_MCP_TRANSPORT", "mcp.transport"),
+    ("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address"),
 ];
 
 /// Configuration failure. Every variant names what to fix.
@@ -136,6 +139,8 @@ pub struct Settings {
     pub backstage: BackstageFile,
     /// `[flow]`
     pub flow: FlowFile,
+    /// `[mcp]`
+    pub mcp: McpFile,
     /// `[policy]`: routing thresholds, file only.
     pub policy: Option<Policy>,
     /// `[triage]`: rubric text and the fallback team list, file only.
@@ -192,6 +197,45 @@ pub struct BackstageFile {
     pub component_keys: Option<Vec<String>>,
     /// Notify the owning group after page, ticket and human-triage decisions.
     pub notify: Option<bool>,
+}
+
+/// `[mcp]`
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpFile {
+    /// Serve the MCP tools. A kill switch: `signalman mcp` still needs to be
+    /// invoked (nothing auto-starts it), but a deployment can force it off.
+    pub enabled: Option<bool>,
+    /// How to serve. Only `"stdio"` is implemented; `"http"` is accepted so
+    /// the setting exists ahead of the Streamable HTTP transport
+    /// (`signalman-4gp.5`'s follow-up) and fails clearly at start-up.
+    pub transport: Option<McpTransport>,
+    /// Listen address for the `"http"` transport. Unused by `"stdio"`.
+    pub bind_address: Option<SocketAddr>,
+}
+
+/// `mcp.transport`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    /// Newline-delimited JSON-RPC over stdin/stdout. One client per process.
+    #[default]
+    Stdio,
+    /// Streamable HTTP, mounted on the same router as `serve`. Not yet
+    /// implemented.
+    Http,
+}
+
+impl std::str::FromStr for McpTransport {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "stdio" => Ok(Self::Stdio),
+            "http" => Ok(Self::Http),
+            other => Err(format!("must be \"stdio\" or \"http\", got {other:?}")),
+        }
+    }
 }
 
 /// `[flow]`
@@ -347,6 +391,8 @@ pub struct Config {
     pub backstage: Backstage,
     /// `[flow]`
     pub flow: Flow,
+    /// `[mcp]`
+    pub mcp: Mcp,
     /// `[policy]`
     pub policy: Policy,
     /// `[triage]`
@@ -413,6 +459,17 @@ impl Backstage {
     pub fn enabled(&self) -> bool {
         self.base_url.is_some()
     }
+}
+
+/// Effective `[mcp]`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Mcp {
+    /// Serve the MCP tools.
+    pub enabled: bool,
+    /// Transport `signalman mcp` uses.
+    pub transport: McpTransport,
+    /// Listen address for the `"http"` transport.
+    pub bind_address: Option<SocketAddr>,
 }
 
 /// Effective `[flow]`.
@@ -570,6 +627,16 @@ impl Config {
                 .or(file.flow.change_max)
                 .unwrap_or(crate::changes::DEFAULT_MAX),
         };
+        let mcp = Mcp {
+            enabled: env_parsed("SIGNALMAN_MCP_ENABLED", "mcp.enabled")?
+                .or(file.mcp.enabled)
+                .unwrap_or(true),
+            transport: env_parsed("SIGNALMAN_MCP_TRANSPORT", "mcp.transport")?
+                .or(file.mcp.transport)
+                .unwrap_or_default(),
+            bind_address: env_parsed("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address")?
+                .or(file.mcp.bind_address),
+        };
         let policy = file.policy.clone().unwrap_or_default();
         policy.validate().map_err(Error::Invalid)?;
         let text = file
@@ -591,6 +658,7 @@ impl Config {
             incidentio,
             backstage,
             flow,
+            mcp,
             policy,
             triage: Triage { text, teams },
         })
@@ -691,9 +759,33 @@ mod tests {
         assert_eq!(c.flow.change_window_minutes, 120);
         assert_eq!(c.flow.change_max, 10);
         assert!(!c.backstage.enabled());
+        assert!(c.mcp.enabled);
+        assert_eq!(c.mcp.transport, McpTransport::Stdio);
+        assert_eq!(c.mcp.bind_address, None);
         assert_eq!(c.policy, Policy::default());
         assert_eq!(c.triage.teams, crate::triage::default_teams());
         assert_eq!(c.triage.text, Texts::default());
+    }
+
+    #[test]
+    fn mcp_table_is_file_then_env_then_validated() {
+        let s = Settings::parse(
+            "[mcp]\nenabled = false\ntransport = \"http\"\nbind_address = \"0.0.0.0:8081\"\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        assert!(!c.mcp.enabled);
+        assert_eq!(c.mcp.transport, McpTransport::Http);
+        assert_eq!(c.mcp.bind_address.unwrap().to_string(), "0.0.0.0:8081");
+
+        let err = Settings::parse(
+            "[mcp]\ntransport = \"carrier-pigeon\"\n",
+            Path::new("t.toml"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("transport"), "{err}");
     }
 
     #[test]

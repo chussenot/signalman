@@ -20,6 +20,7 @@ nav:
   - Evaluation harness: evaluation.md
   - incident.io integration: incidentio.md
   - Change feed: changes.md
+  - MCP server: mcp.md
   - Configuration: configuration.md
   - Operations: operations.md
   - Development: development.md

@@ -68,6 +68,7 @@ pub mod error;
 pub mod eval;
 pub mod http;
 pub mod incidentio;
+pub mod mcp;
 pub mod outcome;
 pub mod question;
 pub mod serve;

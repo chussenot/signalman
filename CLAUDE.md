@@ -43,9 +43,14 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 - Agents (decision 0008): signalman is a tool for agents, not an agent. No
   generative-model SDK in the triage path; agents consume the outcome
   contract (`src/outcome.rs`, schema committed at
-  `docs/schema/outcome.v1.json`, drift-tested) and, later, MCP. A change to
-  the wire shape is a schema change: regenerate the file, update the doc
-  example, and bump `schema_version` only for a breaking change.
+  `docs/schema/outcome.v1.json`, drift-tested) and the MCP tools
+  (`src/mcp.rs`, `signalman mcp`, stdio only for now). A change to the wire
+  shape is a schema change: regenerate the file, update the doc example, and
+  bump `schema_version` only for a breaking change. Every MCP tool wraps a
+  function the CLI already calls (`Triager`'s own fields and methods cover
+  all five) — never reimplement decision logic in `src/mcp.rs`, and never
+  add a write there: that is `mcp.allow_write` (signalman-4gp.6), a separate
+  bead, off by default.
 - Tests never call a real API: wiremock for both clients, hand-built answers
   for policy. Nothing has been verified against a live account yet; say so
   in docs where it matters.
