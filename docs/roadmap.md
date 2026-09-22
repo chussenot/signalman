@@ -2,7 +2,7 @@
 title: Roadmap
 description: What has not been verified against live systems, what is missing, and how the gaps map to the beads backlog.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [roadmap]
 ---
 
@@ -39,6 +39,10 @@ Delivered against mocks: the qualification note, related firing alerts in the st
 ## incident.io coverage (`signalman-5s9`)
 
 Incident-created events are parsed but not acted on; the intended first use is a severity suggestion posted as a timeline note. Resolved events are not forwarded by the CLI. Private alerts are ignored.
+
+## Agents (`signalman-4gp`)
+
+signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)): no generative-model loop runs in the triage path, and what an assistant needs from signalman is its typed judgments, callable. Delivered: the outcome as a versioned JSON contract, schema v1, emitted by every `--json` path and the receiver's log line, with the schema committed under `docs/schema/` and a test that fails on drift ([Triage](triage.md#the-outcome-contract)). Open: an MCP server over the existing capabilities, read-only first (`signalman-4gp.5`), then a write tool that takes the outcome document back and re-derives the writes from it, off by default (`signalman-4gp.6`); an `llms.txt` for this documentation (`signalman-4gp.3`). Agent-driven remediation is deferred with its unblock criteria written in the decision record (`signalman-4gp.4`). The runbook section that applies to an alert, the one investigation step with a measurable effect on time to qualify, is planned as a typed Choice question under the MTTQ epic (`signalman-3l7.8`).
 
 ## CI
 

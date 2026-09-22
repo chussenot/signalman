@@ -2,7 +2,7 @@
 title: Architecture
 description: The components of signalman, how an alert moves through them, where the boundaries between catalog, model and code lie, and how failures are contained.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [architecture]
 ---
 
@@ -98,7 +98,7 @@ Deliveries beyond the replica's running and waiting capacity are refused with 50
 
 ## Boundaries
 
-Three boundaries organise the design. Each is a decision record.
+Four boundaries organise the design. Each is a decision record.
 
 **Catalog versus model.** The catalog states facts: who owns what, what depends on what, what the runbook says. The model judges what those facts imply for this alert: which owner takes first response, how severe the impact is, whether it duplicates an open incident. The catalog never decides; the model never invents ownership. [ADR 0004](decisions/0004-catalog-is-the-ownership-source-of-truth.md).
 
@@ -106,7 +106,9 @@ Three boundaries organise the design. Each is a decision record.
 
 **signalman versus incident.io.** signalman writes tags and attachments. incident.io owns incident creation, escalation and the human workflow. [ADR 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
 
-A fourth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
+**signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and, later, an MCP server. The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
+
+A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
 
 ## Failure containment
 

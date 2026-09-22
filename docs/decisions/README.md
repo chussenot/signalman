@@ -2,7 +2,7 @@
 title: Decisions
 description: Architecture decision records for signalman in MADR form, the index of accepted decisions, and how to add one.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [decisions, adr, madr]
 ---
 
@@ -19,6 +19,7 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0005](0005-observability-signals-enter-through-incidentio.md) | Observability signals enter through incident.io | accepted | `signalman-3l7.4` |
 | [0006](0006-layered-configuration.md) | Layered configuration with secrets outside the file | accepted | `signalman-071.4` |
 | [0007](0007-changes-are-pushed-not-polled.md) | Changes are pushed to signalman, not polled from delivery tools | accepted | `signalman-ufg.3` |
+| [0008](0008-signalman-is-a-tool-for-agents.md) | signalman is a tool for agents, not an agent | accepted | `signalman-4gp.1` |
 
 ## Writing a record
 

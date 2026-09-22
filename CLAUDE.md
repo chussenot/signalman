@@ -40,6 +40,12 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   Secrets are never accepted from the file.
 - Wire types under `src/incidentio/types.rs` ignore unknown fields and
   default optional ones.
+- Agents (decision 0008): signalman is a tool for agents, not an agent. No
+  generative-model SDK in the triage path; agents consume the outcome
+  contract (`src/outcome.rs`, schema committed at
+  `docs/schema/outcome.v1.json`, drift-tested) and, later, MCP. A change to
+  the wire shape is a schema change: regenerate the file, update the doc
+  example, and bump `schema_version` only for a breaking change.
 - Tests never call a real API: wiremock for both clients, hand-built answers
   for policy. Nothing has been verified against a live account yet; say so
   in docs where it matters.
