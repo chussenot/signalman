@@ -40,6 +40,19 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   Secrets are never accepted from the file.
 - Wire types under `src/incidentio/types.rs` ignore unknown fields and
   default optional ones.
+- Agents (decision 0008): signalman is a tool for agents, not an agent. No
+  generative-model SDK in the triage path; agents consume the outcome
+  contract (`src/outcome.rs`, schema committed at
+  `docs/schema/outcome.v1.json`, drift-tested) and the MCP tools
+  (`src/mcp.rs`, `signalman mcp`, stdio only for now). A change to the wire
+  shape is a schema change: regenerate the file, update the doc example, and
+  bump `schema_version` only for a breaking change. Every MCP tool wraps a
+  function the CLI already calls (`Triager`'s own fields and methods cover
+  all six) — never reimplement decision logic in `src/mcp.rs`. The one write
+  tool, `apply_qualification`, is registered only when `mcp.allow_write` is
+  true (default off); it re-derives every write from the caller's own
+  `Outcome` document (`validate`, `decision`, `answers`, `expected_tags`) —
+  never add a second write path that trusts free-form input instead.
 - Tests never call a real API: wiremock for both clients, hand-built answers
   for policy. Nothing has been verified against a live account yet; say so
   in docs where it matters.

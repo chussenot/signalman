@@ -14,6 +14,7 @@ use signalman::backstage::{self, Enricher};
 use signalman::changes::{ChangeLog, FeedToken};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
+use signalman::outcome::{Action, NoteStatus, SchemaV1, WriteMode};
 use signalman::serve::{AppState, Limits, router};
 use signalman::triage::Decision;
 use signalman::{Client, RetryPolicy};
@@ -242,16 +243,27 @@ async fn signed_alert_created_webhook_triages_tags_and_attaches() {
         .expect("outcome in time")
         .expect("channel open")
         .expect("triage succeeded");
-    assert_eq!(outcome.alert_id, "al-1");
-    assert!(
-        matches!(outcome.decision, Decision::AttachToIncident { ref incident_id, .. } if incident_id == "INC-4821")
-    );
-    assert_eq!(outcome.attached_to.as_ref().unwrap().id, "01INC4821");
-    assert_eq!(outcome.candidates_offered, 1);
-    assert_eq!(outcome.related_alerts, 1);
-    assert_eq!(outcome.note_id.as_deref(), Some("note-1"));
+    assert_eq!(outcome.alert.id.as_deref(), Some("al-1"));
+    assert_eq!(outcome.decision, Action::AttachToIncident);
+    let incident = outcome.incident.as_ref().unwrap();
+    assert_eq!(incident.id.as_deref(), Some("01INC4821"));
+    assert_eq!(incident.reference, "INC-4821");
+    let duplicate = outcome.judgments.duplicate_of.as_ref().unwrap();
+    assert_eq!(duplicate.candidates.len(), 1);
+    assert_eq!(duplicate.chosen.as_deref(), Some("INC-4821"));
+    assert_eq!(outcome.related_alerts.len(), 1);
+    assert_eq!(outcome.recent_changes.len(), 0);
+    assert_eq!(outcome.writes.note.id.as_deref(), Some("note-1"));
+    assert_eq!(outcome.writes.note.status, NoteStatus::Created);
+    assert_eq!(outcome.writes.mode, WriteMode::Applied);
+    assert!(outcome.writes.tags_applied && outcome.writes.attached);
     assert!(outcome.time_to_qualify_seconds.is_some_and(|s| s > 0.0));
-    assert!(outcome.applied);
+    assert_eq!(outcome.schema_version, SchemaV1);
+    // The document says the same thing the flow decided, and holds together.
+    outcome.validate().unwrap();
+    assert!(
+        matches!(outcome.decision().unwrap(), Decision::AttachToIncident { ref incident_id, .. } if incident_id == "INC-4821")
+    );
     h.incidentio.verify().await;
 }
 
@@ -270,7 +282,14 @@ async fn dry_run_decides_but_writes_nothing() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(!outcome.applied);
+    assert_eq!(outcome.writes.mode, WriteMode::DryRun);
+    assert!(!outcome.writes.tags_applied && !outcome.writes.attached);
+    assert_eq!(outcome.writes.note.status, NoteStatus::Skipped);
+    // The dry run still names the target it would have attached to.
+    assert_eq!(
+        outcome.incident.as_ref().map(|i| i.reference.as_str()),
+        Some("INC-4821")
+    );
     assert_eq!(
         outcome.tags,
         vec![
@@ -595,12 +614,29 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(outcome.component.as_deref(), Some("checkout-api"));
-    assert_eq!(outcome.notified.as_deref(), Some("group:default/payments"));
-    assert_eq!(outcome.owner_candidates_offered, 3);
-    assert_eq!(outcome.note_id.as_deref(), Some("n-old"));
-    assert_eq!(outcome.related_alerts, 0);
-    match outcome.decision {
+    assert_eq!(
+        outcome.component.as_ref().map(|c| c.name.as_str()),
+        Some("checkout-api")
+    );
+    assert_eq!(
+        outcome.writes.notified.as_deref(),
+        Some("group:default/payments")
+    );
+    assert_eq!(outcome.judgments.owner.options.len(), 3);
+    assert_eq!(outcome.writes.note.id.as_deref(), Some("n-old"));
+    assert_eq!(outcome.writes.note.status, NoteStatus::Replaced);
+    assert_eq!(outcome.related_alerts.len(), 0);
+    assert_eq!(outcome.decision, Action::Page);
+    let owner = outcome.owner.as_ref().unwrap();
+    assert_eq!(owner.key, "payments");
+    assert_eq!(owner.entity_ref.as_deref(), Some("group:default/payments"));
+    assert_eq!(
+        owner.url.as_deref(),
+        Some(format!("{}/catalog/default/group/payments", backstage_srv.uri()).as_str())
+    );
+    assert!(outcome.judgments.duplicate_of.is_none());
+    outcome.validate().unwrap();
+    match outcome.decision().unwrap() {
         Decision::Page { owner, .. } => {
             assert_eq!(owner.key, "payments");
             assert_eq!(owner.entity_ref.as_deref(), Some("group:default/payments"));
@@ -813,9 +849,21 @@ async fn change_feed_fills_recent_changes_and_asks_caused_by_change() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(outcome.recent_changes, 2);
+    assert_eq!(outcome.recent_changes.len(), 2);
+    // Typed rows from the feed, not just the state line.
+    assert_eq!(outcome.recent_changes[0].kind.as_deref(), Some("deploy"));
+    assert_eq!(
+        outcome.recent_changes[0].component.as_deref(),
+        Some("checkout-api")
+    );
+    assert_eq!(outcome.recent_changes[1].component, None);
+    assert_eq!(outcome.decision, Action::Page);
+    assert!(outcome.suspected_change);
+    assert!(outcome.tags.iter().any(|t| t == "ai-suspected-change"));
+    assert_eq!(outcome.windows.change_seconds, Some(20 * 365 * 24 * 3600));
+    outcome.validate().unwrap();
     assert!(matches!(
-        outcome.decision,
+        outcome.decision().unwrap(),
         Decision::Page {
             suspected_change: true,
             ..

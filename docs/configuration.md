@@ -2,7 +2,7 @@
 title: Configuration
 description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [configuration, kubernetes]
 ---
 
@@ -85,6 +85,17 @@ Setting `backstage.base_url` (or its variable) turns catalog enrichment on.
 | `flow.related_max` | `SIGNALMAN_RELATED_MAX` | | `20` | cap on related alerts put in the state |
 | `flow.change_window_minutes` | `SIGNALMAN_CHANGE_WINDOW_MINUTES` | | `120` | how far back a posted change may lie to be offered as a cause; `0` disables |
 | `flow.change_max` | `SIGNALMAN_CHANGE_MAX` | | `10` | cap on changes put in the state |
+
+### `[mcp]`
+
+`signalman mcp` serves signalman's typed capabilities as read-only tools over the Model Context Protocol ([MCP](mcp.md)), decision 0008.
+
+| File key | Environment | Default | Meaning |
+|---|---|---|---|
+| `mcp.enabled` | `SIGNALMAN_MCP_ENABLED` | `true` | a kill switch: `signalman mcp` still has to be invoked, nothing auto-starts it, but a deployment can force it off |
+| `mcp.transport` | `SIGNALMAN_MCP_TRANSPORT` | `"stdio"` | `"stdio"` or `"http"`; only `"stdio"` is implemented today, `"http"` fails clearly at start-up |
+| `mcp.bind_address` | `SIGNALMAN_MCP_BIND_ADDRESS` | unset | listen address for the `"http"` transport; unused by `"stdio"` |
+| `mcp.allow_write` | `SIGNALMAN_MCP_ALLOW_WRITE` | `false` | registers the `apply_qualification` write tool; an MCP client that can call it can write alert tags, a qualification note, and an incident attachment (never create an incident, decision 0001); off by default |
 
 ### `[policy]`, file only
 

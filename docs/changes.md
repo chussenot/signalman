@@ -2,7 +2,7 @@
 title: Change feed
 description: How recent deploys, configuration changes and flag flips reach the triage as alert.recent_changes through a push endpoint any delivery tool can call, the native Argo CD and GitLab adapters, how the window and matching work, and the limits.
 status: current
-last_reviewed: 2026-09-21
+last_reviewed: 2026-09-22
 tags: [changes, triage, argocd, flux, github-actions, mttq]
 ---
 
@@ -113,11 +113,11 @@ Anything else posts the generic shape. **Flux** notification-controller: a `Prov
                  '{kind: "deploy", source: "github-actions", component: "checkout-api", summary: $s, url: $u}')"
 ```
 
-Name `component` the way the alert labels will: the value of the `service` attribute in incident.io, or the catalog component name. For the adapters that is the Argo CD application name and the GitLab project name; when those differ from what the alerts carry, the change is not matched, which the `recent_changes` count in the outcome and the log line make visible.
+Name `component` the way the alert labels will: the value of the `service` attribute in incident.io, or the catalog component name. For the adapters that is the Argo CD application name and the GitLab project name; when those differ from what the alerts carry, the change is not matched, which the `recent_changes` array of the [outcome document](triage.md#the-outcome-contract) makes visible: it lists what was actually offered to the model.
 
 ## What the responder sees
 
-When changes were offered, the [qualification note](incidentio.md#the-qualification-note) lists them under the cause line, and `ai-suspected-change` is tagged when the probability clears `policy.flag_change_above`. The `Outcome` carries `recent_changes`, the count offered.
+When changes were offered, the [qualification note](incidentio.md#the-qualification-note) lists them under the cause line, and `ai-suspected-change` is tagged when the probability clears `policy.flag_change_above`. The [outcome document](triage.md#the-outcome-contract) carries `recent_changes`, one row per change offered.
 
 ## Limits
 

@@ -83,6 +83,15 @@ pub enum Error {
         /// The option string the API returned.
         option: String,
     },
+    /// The answer is of the right primitive but does not describe the
+    /// question it answers: a Score on a different scale, for example.
+    #[error("answer {id:?} does not fit its question: {reason}")]
+    InvalidAnswer {
+        /// Question id.
+        id: String,
+        /// What does not fit.
+        reason: String,
+    },
     /// A probability or confidence was outside `[0, 1]`.
     #[error("value {value} is not a probability in [0, 1]")]
     NotAProbability {

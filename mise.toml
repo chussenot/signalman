@@ -71,6 +71,19 @@ run = "prek run --all-files"
 description = "Release build"
 run = "cargo build --release"
 
+[tasks.schema]
+description = "Regenerate the committed outcome contract schema at docs/schema/outcome.v1.json"
+# Written through a temporary file: a redirection straight onto the committed
+# schema truncates it before cargo runs, so any failure would leave the file
+# the drift test compares against empty.
+run = """
+set -eu
+trap 'rm -f docs/schema/outcome.v1.json.tmp' EXIT
+mkdir -p docs/schema
+cargo run -q -- schema outcome > docs/schema/outcome.v1.json.tmp
+mv docs/schema/outcome.v1.json.tmp docs/schema/outcome.v1.json
+"""
+
 [tasks.serve]
 description = "Run the incident.io webhook receiver (needs TYPESAFE_API_KEY, INCIDENTIO_API_KEY, INCIDENTIO_WEBHOOK_SECRET)"
 run = "cargo run -- serve {{arg(name='flags', var=true, default='')}}"

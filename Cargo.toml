@@ -18,7 +18,13 @@ clap = { version = "4", features = ["derive", "env"] }
 fastrand = "2"
 hmac = "0.12"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
+schemars = "1.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "charset"] }
+# MCP server: `signalman mcp` exposes the read-only tools over stdio (decision
+# 0008). Only the server macros and the stdio transport; no client, no HTTP
+# transport, no auth extras. "client" is added under dev-dependencies only,
+# for an in-process test — it never reaches the production binary.
+rmcp = { version = "3.4", default-features = false, features = ["server", "macros", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -31,6 +37,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+jsonschema = { version = "0.57", default-features = false }
+rmcp = { version = "3.4", default-features = false, features = ["client"] }
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 

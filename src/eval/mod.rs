@@ -28,6 +28,10 @@ use crate::triage::{
 };
 use crate::{Client, Request};
 
+/// The decision's kind, as graded. The vocabulary belongs to the outcome
+/// contract, which publishes it; the harness grades against the same values.
+pub use crate::outcome::Action;
+
 /// Bins for expected calibration error.
 pub const ECE_BINS: usize = 10;
 
@@ -60,47 +64,6 @@ pub struct Expected {
     pub caused_by_change: Option<bool>,
     /// The decision the policy should have reached.
     pub action: Option<Action>,
-}
-
-/// The decision's kind, as graded. Mirrors the `action` tag of [`Decision`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Action {
-    /// Nobody needs to act.
-    Suppress,
-    /// Same problem as an open incident.
-    AttachToIncident,
-    /// Wake the owner.
-    Page,
-    /// Ticket for the owner.
-    Ticket,
-    /// A person decides.
-    HumanTriage,
-}
-
-impl Action {
-    /// The `snake_case` name.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Suppress => "suppress",
-            Self::AttachToIncident => "attach_to_incident",
-            Self::Page => "page",
-            Self::Ticket => "ticket",
-            Self::HumanTriage => "human_triage",
-        }
-    }
-}
-
-impl From<&Decision> for Action {
-    fn from(d: &Decision) -> Self {
-        match d {
-            Decision::Suppress { .. } => Self::Suppress,
-            Decision::AttachToIncident { .. } => Self::AttachToIncident,
-            Decision::Page { .. } => Self::Page,
-            Decision::Ticket { .. } => Self::Ticket,
-            Decision::HumanTriage { .. } => Self::HumanTriage,
-        }
-    }
 }
 
 /// A raw model response kept for replay.

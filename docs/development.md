@@ -2,7 +2,7 @@
 title: Development
 description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, TechDocs rendering, and the Claude Code harness for contributors.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [development, tooling]
 ---
 
@@ -28,6 +28,7 @@ mise tasks          # everything below
 | `test` | `cargo test --all-features` |
 | `doc` | `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS=-D warnings` |
 | `docs:check` | frontmatter on `README.md` and `docs/**` |
+| `schema` | regenerate `docs/schema/outcome.v1.json` from the wire types in `src/outcome.rs` |
 | `precommit` | `prek run --all-files` |
 | `build` | release build |
 | `serve` | `cargo run -- serve` plus any flags |
@@ -40,6 +41,8 @@ mise tasks          # everything below
 ## Quality gates
 
 Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests include a `compile_fail` case. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+
+`docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
 
 ## Git hooks
 
@@ -75,11 +78,12 @@ src/
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
+  outcome.rs       the outcome contract: wire types, builder, schema
   config.rs        configuration layers: file schema, env, flags, resolve
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs
 examples/          sample alerts and a sample webhook delivery
-docs/              this documentation (TechDocs source)
+docs/              this documentation (TechDocs source); docs/schema/ is generated
 scripts/           check-frontmatter.sh, setup-hooks.sh
 .beads/            issue tracker data and git hooks
 .claude/           agents, hooks, settings for Claude Code

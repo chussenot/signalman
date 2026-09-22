@@ -55,6 +55,8 @@
 //! * [`incidentio`] connects the triage to incident.io: an API client, Svix
 //!   webhook verification, and the sync flow that triages an alert incident.io
 //!   received and writes tags and incident attachments back.
+//! * [`outcome`] is the JSON contract every triage emits, whichever way it
+//!   was started: one document per alert, schema committed and drift-tested.
 //! * [`serve`] is the webhook receiver.
 
 pub mod answer;
@@ -66,6 +68,8 @@ pub mod error;
 pub mod eval;
 pub mod http;
 pub mod incidentio;
+pub mod mcp;
+pub mod outcome;
 pub mod question;
 pub mod serve;
 pub mod triage;
@@ -75,4 +79,5 @@ pub use answer::{
 };
 pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
 pub use error::{Error, Result};
+pub use outcome::Outcome;
 pub use question::{Handle, NoulCriteria, Options, Question, Questions};

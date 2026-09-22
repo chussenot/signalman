@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [overview]
 ---
 
@@ -32,6 +32,8 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 - Leaves one qualification note on the alert: the decision, each judgment with its probability, the matched incident, the catalog component and owner with Backstage links, the TechDocs runbook page, the related firing alerts, and the time it took to qualify. Rewritten in place on a later pass, never stacked.
 - Resolves the alerting service in the Backstage catalog: owner group and dependency neighbours become the owner options, the component record and TechDocs runbook join the state, and the owning group can be notified through the Notifications plugin.
 - Triages an alert file from the CLI, optionally pulling live incidents as duplicate candidates, enriching from the catalog, and forwarding the enriched alert to an incident.io HTTP alert source.
+- Emits one JSON document per triaged alert: the judgments with their probabilities, the decision, the thresholds that produced it, and what was written back. The schema is committed and a test fails when the code and the file drift apart, so a script or an agent can read the document without reading the source.
+- Serves the same judgments as read-only tools over the Model Context Protocol (`signalman mcp`), so an agent can qualify an alert, list related alerts and open incidents, and look up an owner, without ever writing to incident.io or Backstage.
 - Exposes the TypeSafe client as a library: a question returns a typed handle, and reading the answer through that handle yields a Rust enum, a probability, or a score. A response of the wrong shape is an error, not a misread number.
 
 ## What it does not do
@@ -40,6 +42,7 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 - It does not page anyone. It tags; incident.io routes.
 - It does not generate text. No summaries, no explanations; only judgments a policy can threshold. The note is a fixed template filled with those judgments.
 - It does not talk to the observability platform. Tsuga alerts reach it as incident.io alerts, through Tsuga's own integration.
+- It is not itself an agent. No generative model runs in the triage path; the MCP server exposes typed judgments to agents that call it, and does nothing on its own.
 - It has not yet run against a live TypeSafe, incident.io or Backstage instance. Every wire shape is asserted against the published documentation and OpenAPI specification, not observed traffic. See [the roadmap](docs/roadmap.md).
 
 ## Quick start
@@ -64,10 +67,11 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams |
 | [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
-| [Triage](docs/triage.md) | The questions, the policy, how to tune it |
+| [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
 | [Change feed](docs/changes.md) | Pushing deploys and changes into the triage, wiring Argo CD, Flux and GitHub Actions |
+| [MCP server](docs/mcp.md) | The read-only tools an agent calls, connecting a client, what still writes nothing |
 | [Backstage bridge](docs/backstage.md) | Catalog ownership, TechDocs runbooks, notifications, registering signalman |
 | [Configuration](docs/configuration.md) | The four layers, every setting, Kubernetes |
 | [Operations](docs/operations.md) | Running, health, limits, failure modes |

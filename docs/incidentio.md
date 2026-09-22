@@ -2,7 +2,7 @@
 title: incident.io integration
 description: How signalman verifies and processes incident.io webhooks, what it reads and writes through the API including the qualification note, how to configure alert routes on the result, and how the CLI forwards enriched alerts.
 status: current
-last_reviewed: 2026-09-20
+last_reviewed: 2026-09-22
 tags: [incidentio, webhooks]
 ---
 
@@ -51,10 +51,14 @@ Alerts from any source that notifies incident.io appear in that list. Tsuga, the
 |---|---|---|
 | Tags `ai-team-<key>`, `ai-impact-<level>`, `ai-action-<decision>` | `POST /v2/alerts/{id}/actions/add_tags` | every triaged alert |
 | Tag `ai-dup-<reference>` and the attachment | `add_tags` and `POST /v2/incident_alerts` | decision is attach |
-| Tag `ai-suspected-change` | `add_tags` | `caused_by_change` above threshold |
+| Tag `ai-suspected-change` | `add_tags` | the decision flagged a recent change as the likely cause, which only `page` and `ticket` do |
 | The qualification note | `POST /v1/alert_notes`, or `PUT /v1/alert_notes/{id}` on a later pass | every triaged alert unless `--no-note` |
 
 Tag names are lowercase with hyphens and prefixed `ai-`, so alert routes can filter on them and humans can tell them from their own tags. `<key>` is the catalog group name when Backstage is configured, or the static team key otherwise. Existing tags are kept. `--dry-run` on `serve` and `incidentio triage-alert` computes everything and writes nothing.
+
+`ai-suspected-change` follows the `flag_change_above` threshold in the policy. It used to be recomputed from a hardcoded `caused_by_change` probability of 0.65, which could disagree with the decision the same run had already made; it is now read off the decision itself.
+
+Every triage, applied or dry run, also returns [the outcome contract](triage.md#the-outcome-contract): one JSON document holding the judgments, the decision, the policy that produced it and what was written. `writes.mode` says `applied` or `dry_run`, `writes.note` says what became of the note, and `writes.attached` says whether the attachment happened. The tags are a lossy view of that document, and every one of them is derivable from it.
 
 ### The qualification note
 
@@ -81,9 +85,9 @@ Tags carry the verdict; the note carries what a responder needs to trust it and 
 _Time to qualify: 42 s. Model jev-1.13.0. Tags: ai-team-payments, ai-impact-major, ai-action-page._
 ```
 
-Every line is a judgment with its probability, a link, or a fact from the catalog or the hub. Alternatives are listed when they carry at least 0.05 probability, so a close call reads as one. The time to qualify is measured from the alert's `created_at` in incident.io to the decision and is also logged and returned in the outcome as `time_to_qualify_seconds`; it is the number this tool exists to lower.
+Every line is a judgment with its probability, a link, or a fact from the catalog or the hub. Alternatives are listed when they carry at least 0.05 probability, so a close call reads as one. The time to qualify is measured from the alert's `created_at` in incident.io to the decision and is also logged and returned in [the outcome contract](triage.md#the-outcome-contract) as `time_to_qualify_seconds`; it is the number this tool exists to lower.
 
-The note starts with a fixed marker line. Before writing, signalman lists the alert's notes and, when one of them starts with the marker, replaces that note instead of adding another; a human's notes are never touched. One alert therefore carries at most one signalman note, always the latest pass. Writing the note requires the manage alert notes scope. A failure to write it is logged and does not undo the tags or the attachment.
+The note starts with a fixed marker line. Before writing, signalman lists the alert's notes and, when one of them starts with the marker, replaces that note instead of adding another; a human's notes are never touched. One alert therefore carries at most one signalman note, always the latest pass. Writing the note requires the manage alert notes scope. A failure to write it is logged and does not undo the tags or the attachment; the outcome document records it as `writes.note.status` `failed`, with the reason in `writes.note.error`.
 
 ## Setup
 
@@ -110,6 +114,8 @@ Tags arrive a few seconds after the alert is created. Routes should evaluate on 
 ## Forwarding from the CLI
 
 `triage --forward-to-incidentio` posts the alert to an HTTP alert source (`POST /v2/alert_events/http/{config id}`), authenticated with the source's token rather than the API key. The judgments travel under `metadata.ai` (`team`, `team_confidence`, `impact_level`, `impact_label`, `impact_score`, `actionable`, `decision`, `model`), and the resolved component under `metadata.component`. Map them to alert attributes in the source's template, then route on the attributes. Only `status: firing` is sent today.
+
+That block is flat on purpose and is not the same shape as [the outcome contract](triage.md#the-outcome-contract). Attribute templates in incident.io read flat paths, so the forwarded metadata stays flat and the versioned contract is free to nest. The two evolve separately. What incident.io accepted is reported back in the document as `writes.forwarded`. None of this has been checked against a live alert source.
 
 ## Candidate incidents
 
