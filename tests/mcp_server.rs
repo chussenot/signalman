@@ -16,7 +16,9 @@ use signalman::incidentio::{Triager, WriteBack};
 use signalman::mcp;
 use signalman::outcome::Outcome;
 use signalman::{Client, RetryPolicy};
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{
+    body_json, body_partial_json, body_string_contains, method, path, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Serialises this file's tests. Each spins up one to three `wiremock`
@@ -199,7 +201,7 @@ async fn triager(
 async fn the_five_tools_are_listed_with_read_only_annotations() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     for name in [
@@ -227,7 +229,7 @@ async fn qualify_alert_by_id_returns_a_schema_valid_outcome_and_writes_nothing()
     // Configured to apply writes; `mcp::Server::new` must force dry run
     // regardless, which the zero-expectation write mocks above confirm.
     let (t, ..) = triager(WriteBack::Apply, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let result = client
         .call_tool(call("qualify_alert", json!({ "alert_id": "al-1" })))
@@ -256,7 +258,7 @@ async fn qualify_alert_by_id_returns_a_schema_valid_outcome_and_writes_nothing()
 async fn qualify_alert_inline_triages_a_standalone_alert_detached() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let alert = json!({
         "source": "prometheus",
@@ -278,13 +280,13 @@ async fn qualify_alert_inline_triages_a_standalone_alert_detached() {
 async fn qualify_alert_rejects_both_or_neither_input() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let neither = client.call_tool(call("qualify_alert", json!({}))).await;
     assert_invalid_params(neither.expect_err("neither alert_id nor alert should be rejected"));
 
     let (t2, ..) = triager(WriteBack::DryRun, None).await;
-    let client2 = connected(mcp::Server::new(t2)).await;
+    let client2 = connected(mcp::Server::new(t2, false)).await;
     let both = client2
         .call_tool(call(
             "qualify_alert",
@@ -298,7 +300,7 @@ async fn qualify_alert_rejects_both_or_neither_input() {
 async fn related_alerts_lists_everything_else_firing_when_given_an_id() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let result = client
         .call_tool(call(
@@ -322,7 +324,7 @@ async fn related_alerts_lists_everything_else_firing_when_given_an_id() {
 async fn recent_changes_explains_itself_when_the_feed_is_not_configured() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let result = client
         .call_tool(call("recent_changes", json!({})))
@@ -356,7 +358,7 @@ async fn recent_changes_matches_a_configured_feed() {
         Timestamp::now(),
     );
     let (t, ..) = triager(WriteBack::DryRun, Some(log)).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let result = client
         .call_tool(call(
@@ -379,7 +381,7 @@ async fn recent_changes_matches_a_configured_feed() {
 async fn lookup_owner_needs_backstage_configured() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let err = client
         .call_tool(call("lookup_owner", json!({ "component": "checkout-api" })))
@@ -432,7 +434,7 @@ async fn lookup_owner_resolves_against_the_catalog() {
         .unwrap();
     t.backstage = Some(Enricher::new(backstage_client));
 
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
     let result = client
         .call_tool(call(
             "lookup_owner",
@@ -454,7 +456,7 @@ async fn lookup_owner_resolves_against_the_catalog() {
 async fn open_incidents_lists_what_incident_io_has_open() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;
-    let client = connected(mcp::Server::new(t)).await;
+    let client = connected(mcp::Server::new(t, false)).await;
 
     let result = client
         .call_tool(call("open_incidents", json!({})))
@@ -465,4 +467,434 @@ async fn open_incidents_lists_what_incident_io_has_open() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["reference"], json!("INC-4821"));
     assert_eq!(rows[0]["id"], json!("01INC4821"));
+}
+
+// ---------------------------------------------------------------------------
+// apply_qualification
+// ---------------------------------------------------------------------------
+
+/// The same read fixtures as `triager()` (alert `al-1`, one open incident
+/// `INC-4821`, one other firing alert), but with the write endpoints mocked
+/// to succeed and asserted against precisely, for `apply_qualification`
+/// tests. `duplicate_choice` picks the model's `duplicate_of` answer:
+/// `"none"` decides `page` (tags and a note, no attachment); `"INC-4821"`
+/// decides `attach_to_incident` (tags, a note, and the attachment).
+/// `POST /v1/incidents` is mounted with a zero-call expectation: signalman
+/// never creates one (decision 0001), whichever path is under test.
+async fn write_scenario(duplicate_choice: &str) -> (Triager, MockServer, MockServer) {
+    let incidentio_srv = MockServer::start().await;
+    let typesafe_srv = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts/al-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": {
+                "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
+                "description": "5xx ratio 12% for 10m", "status": "firing",
+                "created_at": "2026-09-20T11:58:00Z", "attributes": [], "tags": []
+            }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/incidents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "incidents": [{
+                "id": "01INC4821", "reference": "INC-4821", "name": "Checkout 5xx spike",
+                "summary": "payments-gateway returning errors",
+                "permalink": "https://app.incident.io/org/incidents/4821",
+                "incident_status": { "id": "s", "name": "Active", "category": "live" },
+                "mode": "standard"
+            }],
+            "pagination_meta": { "page_size": 40 }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .and(query_param("status[one_of]", "firing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alerts": [
+                { "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
+                  "status": "firing", "attributes": [], "tags": [], "created_at": "2026-09-20T11:58:00Z" }
+            ],
+            "pagination_meta": { "page_size": 50 }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "owner": { "type": "choice", "choice": "application",
+                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.75 },
+                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 0.9 },
+                "actionable": { "type": "noul", "noul": 0.95 },
+                "duplicate_of": { "type": "choice", "choice": duplicate_choice,
+                                  "probabilities": { "INC-4821": if duplicate_choice == "INC-4821" { 0.9 } else { 0.1 },
+                                                      "none": if duplicate_choice == "none" { 0.9 } else { 0.1 } },
+                                  "confidence": 0.85 },
+                "caused_by_change": { "type": "noul", "noul": 0.2 }
+            },
+            "usage": { "input_tokens": 500, "output_tokens": 30 }
+        })))
+        .mount(&typesafe_srv)
+        .await;
+
+    let mut expected_tags = vec!["ai-team-application", "ai-impact-major"];
+    if duplicate_choice == "INC-4821" {
+        expected_tags.push("ai-action-attach");
+        expected_tags.push("ai-dup-inc-4821");
+    } else {
+        expected_tags.push("ai-action-page");
+    }
+    Mock::given(method("POST"))
+        .and(path("/v2/alerts/al-1/actions/add_tags"))
+        .and(body_json(json!({ "tags": expected_tags })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": { "id": "al-1", "alert_source_id": "src-dd", "title": "t", "status": "firing", "attributes": [], "tags": [] }
+        })))
+        .expect(1)
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .and(query_param("alert_id", "al-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alert_notes": [] })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alert_notes"))
+        .and(body_partial_json(json!({ "alert_id": "al-1" })))
+        .and(body_string_contains("**Signalman qualification**"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "alert_note": { "id": "note-1", "alert_id": "al-1", "content": "…" }
+        })))
+        .expect(1)
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v2/incident_alerts"))
+        .and(body_json(
+            json!({ "alert_id": "al-1", "incident_id": "01INC4821" }),
+        ))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(json!({ "incident_alert": { "id": "ia" } })),
+        )
+        .expect(u64::from(duplicate_choice == "INC-4821"))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/incidents"))
+        .respond_with(ResponseTemplate::new(201))
+        .expect(0)
+        .mount(&incidentio_srv)
+        .await;
+
+    let typesafe = Client::builder()
+        .api_key("ts")
+        .base_url(typesafe_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let io = signalman::incidentio::Client::builder()
+        .api_key("io")
+        .base_url(incidentio_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    (Triager::new(typesafe, io), incidentio_srv, typesafe_srv)
+}
+
+/// Round-trip through the two tools an agent actually uses: qualify, then
+/// apply. `apply_qualification` re-derives everything it writes from the
+/// document `qualify_alert` returned; nothing here is a free parameter.
+#[tokio::test]
+async fn apply_qualification_applies_tags_and_a_note_for_a_page_decision() {
+    let _serialize = serialized().await;
+    // Bind the mock servers, not `..`: an unbound tuple field is dropped at
+    // the end of *this* statement, which would tear the servers down (and
+    // fail their `expect(1)` verification) before any request is made.
+    let (t, _incidentio_srv, _typesafe_srv) = write_scenario("none").await;
+    let client = connected(mcp::Server::new(t, true)).await;
+
+    let qualified = client
+        .call_tool(call("qualify_alert", json!({ "alert_id": "al-1" })))
+        .await
+        .unwrap();
+    let outcome: Outcome = qualified.into_typed().unwrap();
+    assert_eq!(format!("{:?}", outcome.decision), "Page");
+
+    let applied = client
+        .call_tool(call(
+            "apply_qualification",
+            json!({ "alert_id": "al-1", "outcome": outcome }),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(applied.is_error, Some(true), "{applied:?}");
+    let writes = applied.structured_content.expect("structured content");
+    assert_eq!(writes["mode"], json!("applied"));
+    assert_eq!(writes["tags_applied"], json!(true));
+    assert_eq!(writes["attached"], json!(false));
+    assert_eq!(writes["note"]["status"], json!("created"));
+    assert_eq!(writes["note"]["id"], json!("note-1"));
+}
+
+/// The attach path: the same round trip, with the model choosing the open
+/// incident instead of `none`.
+#[tokio::test]
+async fn apply_qualification_attaches_the_incident_for_a_duplicate_decision() {
+    let _serialize = serialized().await;
+    let (t, _incidentio_srv, _typesafe_srv) = write_scenario("INC-4821").await;
+    let client = connected(mcp::Server::new(t, true)).await;
+
+    let qualified = client
+        .call_tool(call("qualify_alert", json!({ "alert_id": "al-1" })))
+        .await
+        .unwrap();
+    let outcome: Outcome = qualified.into_typed().unwrap();
+    assert_eq!(format!("{:?}", outcome.decision), "AttachToIncident");
+
+    let applied = client
+        .call_tool(call(
+            "apply_qualification",
+            json!({ "alert_id": "al-1", "outcome": outcome }),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(applied.is_error, Some(true), "{applied:?}");
+    let writes = applied.structured_content.expect("structured content");
+    assert_eq!(writes["attached"], json!(true));
+    assert_eq!(writes["note"]["status"], json!("created"));
+}
+
+/// Calling `apply_qualification` twice with the same outcome is safe: tags
+/// are reapplied harmlessly, and the note is rewritten in place through the
+/// same `write_note` path the rest of the flow uses — never a second note
+/// stacked alongside the first. The second `GET /v1/alert_notes` returns
+/// the note the first call created, exactly as incident.io would.
+#[tokio::test]
+async fn apply_qualification_twice_replaces_the_note_in_place_not_stacks_it() {
+    let _serialize = serialized().await;
+    let incidentio_srv = MockServer::start().await;
+    let typesafe_srv = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts/al-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": { "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
+                       "status": "firing", "attributes": [], "tags": [] }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/incidents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "incidents": [], "pagination_meta": { "page_size": 40 }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts"))
+        .and(query_param("status[one_of]", "firing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alerts": [{ "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
+                        "status": "firing", "attributes": [], "tags": [], "created_at": "2026-09-20T11:58:00Z" }],
+            "pagination_meta": { "page_size": 50 }
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "owner": { "type": "choice", "choice": "application",
+                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.75 },
+                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 0.9 },
+                "actionable": { "type": "noul", "noul": 0.95 },
+                "duplicate_of": { "type": "choice", "choice": "none",
+                                  "probabilities": { "INC-4821": 0.1, "none": 0.9 }, "confidence": 0.8 },
+                "caused_by_change": { "type": "noul", "noul": 0.2 }
+            },
+            "usage": { "input_tokens": 500, "output_tokens": 30 }
+        })))
+        .mount(&typesafe_srv)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v2/alerts/al-1/actions/add_tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert": { "id": "al-1", "alert_source_id": "src-dd", "title": "t", "status": "firing", "attributes": [], "tags": [] }
+        })))
+        .expect(2)
+        .mount(&incidentio_srv)
+        .await;
+
+    // Nothing to find on the first pass; from the second call on, incident.io
+    // would return the note signalman itself just created.
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .and(query_param("alert_id", "al-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "alert_notes": [] })))
+        .up_to_n_times(1)
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/alert_notes"))
+        .and(query_param("alert_id", "al-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert_notes": [{ "id": "note-1", "alert_id": "al-1", "content": "**Signalman qualification**\n…" }]
+        })))
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alert_notes"))
+        .and(body_partial_json(json!({ "alert_id": "al-1" })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "alert_note": { "id": "note-1", "alert_id": "al-1", "content": "…" }
+        })))
+        .expect(1)
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/alert_notes/note-1"))
+        .and(body_string_contains("**Signalman qualification**"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "alert_note": { "id": "note-1", "alert_id": "al-1", "content": "…" }
+        })))
+        .expect(1)
+        .mount(&incidentio_srv)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/incidents"))
+        .respond_with(ResponseTemplate::new(201))
+        .expect(0)
+        .mount(&incidentio_srv)
+        .await;
+
+    let typesafe = Client::builder()
+        .api_key("ts")
+        .base_url(typesafe_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let io = signalman::incidentio::Client::builder()
+        .api_key("io")
+        .base_url(incidentio_srv.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let client = connected(mcp::Server::new(Triager::new(typesafe, io), true)).await;
+
+    let qualified = client
+        .call_tool(call("qualify_alert", json!({ "alert_id": "al-1" })))
+        .await
+        .unwrap();
+    let outcome: Outcome = qualified.into_typed().unwrap();
+
+    for expected_status in ["created", "replaced"] {
+        let applied = client
+            .call_tool(call(
+                "apply_qualification",
+                json!({ "alert_id": "al-1", "outcome": outcome }),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(applied.is_error, Some(true), "{applied:?}");
+        let writes = applied.structured_content.expect("structured content");
+        assert_eq!(
+            writes["note"]["status"],
+            json!(expected_status),
+            "{writes:?}"
+        );
+        assert_eq!(writes["note"]["id"], json!("note-1"));
+    }
+}
+
+/// `apply_qualification` refuses a document built for a different alert:
+/// the tool never guesses which alert a document belongs to.
+#[tokio::test]
+async fn apply_qualification_rejects_a_mismatched_alert_id() {
+    let _serialize = serialized().await;
+    // `triager()`, not `write_scenario()`: the mismatch is refused before
+    // any write, and `triager()`'s fixture already expects zero calls on
+    // every write endpoint.
+    let (t, ..) = triager(WriteBack::DryRun, None).await;
+    let client = connected(mcp::Server::new(t, true)).await;
+
+    let qualified = client
+        .call_tool(call("qualify_alert", json!({ "alert_id": "al-1" })))
+        .await
+        .unwrap();
+    let outcome: Outcome = qualified.into_typed().unwrap();
+
+    let err = client
+        .call_tool(call(
+            "apply_qualification",
+            json!({ "alert_id": "al-9-not-the-alert", "outcome": outcome }),
+        ))
+        .await
+        .expect_err("a mismatched alert_id must be refused");
+    assert_invalid_params(err);
+}
+
+/// The write tool is absent from the tool list unless the server was
+/// constructed with `allow_write: true` — `mcp.allow_write`, off by
+/// default. A client cannot call what was never registered.
+#[tokio::test]
+async fn apply_qualification_is_absent_unless_allow_write_is_true() {
+    let _serialize = serialized().await;
+    let (t, ..) = triager(WriteBack::DryRun, None).await;
+    let client = connected(mcp::Server::new(t, false)).await;
+
+    let tools = client.list_all_tools().await.unwrap();
+    assert!(
+        !tools.iter().any(|t| t.name == "apply_qualification"),
+        "apply_qualification must not be listed when allow_write is false: {tools:?}"
+    );
+
+    let err = client
+        .call_tool(call(
+            "apply_qualification",
+            json!({ "alert_id": "al-1", "outcome": {} }),
+        ))
+        .await
+        .expect_err("an unregistered tool must not be callable");
+    // rmcp reports an unregistered tool name as `invalid_params` ("tool not
+    // found"), not `method_not_found`.
+    assert!(
+        matches!(&err, ServiceError::McpError(e) if e.code == ErrorCode::INVALID_PARAMS
+            && e.message.contains("not found")),
+        "{err:?}"
+    );
+}
+
+/// The mirror image: present, and its annotations say what it is.
+#[tokio::test]
+async fn apply_qualification_is_present_and_marked_as_a_write_when_allow_write_is_true() {
+    let _serialize = serialized().await;
+    // No tool call happens here, only `list_all_tools`: `triager()`'s
+    // fixture (zero writes expected) is all this test needs.
+    let (t, ..) = triager(WriteBack::DryRun, None).await;
+    let client = connected(mcp::Server::new(t, true)).await;
+
+    let tools = client.list_all_tools().await.unwrap();
+    let tool = tools
+        .iter()
+        .find(|t| t.name == "apply_qualification")
+        .expect("apply_qualification must be listed when allow_write is true");
+    let read_only = tool
+        .annotations
+        .as_ref()
+        .and_then(|a| a.read_only_hint)
+        .unwrap_or(true);
+    assert!(
+        !read_only,
+        "apply_qualification must not be read_only_hint: true"
+    );
 }

@@ -453,7 +453,11 @@ impl Triager {
 
     /// Create the note, or rewrite the one signalman left on an earlier pass.
     /// Returns the note's id and which of the two happened.
-    async fn write_note(
+    ///
+    /// `pub(crate)`, not private: [`crate::mcp`]'s `apply_qualification`
+    /// tool needs the same list-then-create-or-replace logic, and this is
+    /// the one implementation of it.
+    pub(crate) async fn write_note(
         &self,
         alert_id: &str,
         content: &str,

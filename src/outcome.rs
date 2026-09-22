@@ -13,11 +13,12 @@
 //! * The webhook receiver logs it as one compact line
 //!   ([`Outcome::to_json_line`]), so a log pipeline can index every field of
 //!   every decision without parsing prose.
-//! * Agents consume it: today by reading the JSON, later over MCP. signalman
-//!   is a tool for agents, not an agent (decision 0008), so the contract is
-//!   the boundary.
-//! * The future `apply_qualification` write tool takes this document back
-//!   and replays the decision it describes; [`Outcome::decision`] is that
+//! * Agents consume it: over MCP (`signalman mcp`, [`crate::mcp`]) and by
+//!   reading the JSON. signalman is a tool for agents, not an agent
+//!   (decision 0008), so the contract is the boundary.
+//! * The `apply_qualification` write tool ([`crate::mcp`], gated on
+//!   `mcp.allow_write`) takes this document back and replays the decision
+//!   it describes; [`Outcome::decision`] and [`Outcome::answers`] are that
 //!   inverse, and [`Outcome::validate`] is what a reader checks first.
 //!
 //! # Shape rules
@@ -68,7 +69,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::answer;
 use crate::changes::Change;
 use crate::triage::{
-    ComponentContext, Decision, Impact, NO_DUPLICATE, Owner, Policy, RelatedAlert, TriageAnswers,
+    ComponentContext, Decision, Impact, NO_DUPLICATE, NONE_OF_THESE, Owner, OwnerCandidate,
+    OwnerCandidates, Policy, RelatedAlert, TriageAnswers,
 };
 
 /// The version this module reads and writes.
@@ -1296,6 +1298,99 @@ impl Outcome {
         }
     }
 
+    /// Rebuild the typed answers the document describes: the inverse of
+    /// [`Outcome::build`]'s `judgments` half, the way [`Outcome::decision`]
+    /// inverts its `decision` half. Together they let a reader — the note
+    /// renderer, `apply_qualification` ([`crate::mcp`]) — act on the
+    /// document without re-running the model.
+    ///
+    /// Infallible: every [`Unit`] on the document is already validated to
+    /// `[0, 1]` by construction (on deserialisation), so converting it back
+    /// to an [`answer::Probability`] or [`answer::Confidence`] cannot fail.
+    ///
+    /// Two things a reader gets back are not byte-identical to what the
+    /// model originally answered, because the contract does not carry them:
+    /// [`TriageAnswers::candidates`]' rubric text (`description`) is empty —
+    /// nothing downstream reads it, only `.key` and `.label` — and
+    /// [`answer::Score::levels`] is empty for the same reason. Calling this
+    /// before [`Outcome::validate`] on an untrusted document is a logic
+    /// error: `judgments.impact.distribution` is trusted to already be in
+    /// level order, which `validate` is what checks.
+    pub fn answers(&self) -> TriageAnswers {
+        let j = &self.judgments;
+
+        let owner = answer::Choice {
+            chosen: j.owner.chosen.clone(),
+            probabilities: j
+                .owner
+                .options
+                .iter()
+                .map(|o| (o.key.clone(), probability(o.probability)))
+                .collect(),
+            confidence: confidence(j.owner.confidence),
+        };
+        let candidates = OwnerCandidates::new(
+            j.owner
+                .options
+                .iter()
+                .filter(|o| o.key != NONE_OF_THESE)
+                .map(|o| OwnerCandidate {
+                    key: o.key.clone(),
+                    label: o.label.clone(),
+                    description: String::new(),
+                    entity_ref: o.entity_ref.clone(),
+                })
+                .collect(),
+        );
+
+        let impact = answer::Score {
+            value: j.impact.score,
+            levels: Vec::new(),
+            probabilities: j
+                .impact
+                .distribution
+                .iter()
+                .map(|row| probability(row.probability))
+                .collect(),
+            confidence: confidence(j.impact.confidence),
+        };
+
+        let actionable = answer::Noul {
+            yes: probability(j.actionable.probability),
+        };
+
+        let duplicate_of = j.duplicate_of.as_ref().map(|dup| {
+            let mut probabilities: BTreeMap<String, answer::Probability> = dup
+                .candidates
+                .iter()
+                .map(|c| (c.reference.clone(), probability(c.probability)))
+                .collect();
+            probabilities.insert(NO_DUPLICATE.to_owned(), probability(dup.none_probability));
+            answer::Choice {
+                chosen: dup
+                    .chosen
+                    .clone()
+                    .unwrap_or_else(|| NO_DUPLICATE.to_owned()),
+                probabilities: probabilities.into_iter().collect(),
+                confidence: confidence(dup.confidence),
+            }
+        });
+
+        let caused_by_change = j.caused_by_change.as_ref().map(|p| answer::Noul {
+            yes: probability(p.probability),
+        });
+
+        TriageAnswers {
+            owner,
+            candidates,
+            impact,
+            actionable,
+            duplicate_of,
+            caused_by_change,
+            model: self.model.clone(),
+        }
+    }
+
     /// The document as one compact JSON line, for a log field.
     ///
     /// Infallible on purpose: a log line must never take the process down.
@@ -1361,6 +1456,20 @@ fn unit(value: f64) -> Unit {
     } else {
         value.clamp(0.0, 1.0)
     })
+}
+
+/// `Unit` is already validated to `[0, 1]`; this can never fail. A thin
+/// wrapper so [`Outcome::answers`] reads cleanly without a `Result` at
+/// every field.
+fn probability(u: Unit) -> answer::Probability {
+    answer::Probability::new(u.value())
+        .unwrap_or_else(|_| unreachable!("Unit is already validated to [0, 1]: {u:?}"))
+}
+
+/// See [`probability`].
+fn confidence(u: Unit) -> answer::Confidence {
+    answer::Confidence::new(u.value())
+        .unwrap_or_else(|_| unreachable!("Unit is already validated to [0, 1]: {u:?}"))
 }
 
 /// Most probable first, then by key so the order is total and stable.

@@ -95,6 +95,7 @@ Setting `backstage.base_url` (or its variable) turns catalog enrichment on.
 | `mcp.enabled` | `SIGNALMAN_MCP_ENABLED` | `true` | a kill switch: `signalman mcp` still has to be invoked, nothing auto-starts it, but a deployment can force it off |
 | `mcp.transport` | `SIGNALMAN_MCP_TRANSPORT` | `"stdio"` | `"stdio"` or `"http"`; only `"stdio"` is implemented today, `"http"` fails clearly at start-up |
 | `mcp.bind_address` | `SIGNALMAN_MCP_BIND_ADDRESS` | unset | listen address for the `"http"` transport; unused by `"stdio"` |
+| `mcp.allow_write` | `SIGNALMAN_MCP_ALLOW_WRITE` | `false` | registers the `apply_qualification` write tool; an MCP client that can call it can write alert tags, a qualification note, and an incident attachment (never create an incident, decision 0001); off by default |
 
 ### `[policy]`, file only
 

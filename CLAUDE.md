@@ -48,9 +48,11 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   shape is a schema change: regenerate the file, update the doc example, and
   bump `schema_version` only for a breaking change. Every MCP tool wraps a
   function the CLI already calls (`Triager`'s own fields and methods cover
-  all five) — never reimplement decision logic in `src/mcp.rs`, and never
-  add a write there: that is `mcp.allow_write` (signalman-4gp.6), a separate
-  bead, off by default.
+  all six) — never reimplement decision logic in `src/mcp.rs`. The one write
+  tool, `apply_qualification`, is registered only when `mcp.allow_write` is
+  true (default off); it re-derives every write from the caller's own
+  `Outcome` document (`validate`, `decision`, `answers`, `expected_tags`) —
+  never add a second write path that trusts free-form input instead.
 - Tests never call a real API: wiremock for both clients, hand-built answers
   for policy. Nothing has been verified against a live account yet; say so
   in docs where it matters.

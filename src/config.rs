@@ -77,6 +77,7 @@ pub const ENV_VARS: &[(&str, &str)] = &[
     ("SIGNALMAN_MCP_ENABLED", "mcp.enabled"),
     ("SIGNALMAN_MCP_TRANSPORT", "mcp.transport"),
     ("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address"),
+    ("SIGNALMAN_MCP_ALLOW_WRITE", "mcp.allow_write"),
 ];
 
 /// Configuration failure. Every variant names what to fix.
@@ -208,10 +209,14 @@ pub struct McpFile {
     pub enabled: Option<bool>,
     /// How to serve. Only `"stdio"` is implemented; `"http"` is accepted so
     /// the setting exists ahead of the Streamable HTTP transport
-    /// (`signalman-4gp.5`'s follow-up) and fails clearly at start-up.
+    /// (`signalman-4gp.7`) and fails clearly at start-up.
     pub transport: Option<McpTransport>,
     /// Listen address for the `"http"` transport. Unused by `"stdio"`.
     pub bind_address: Option<SocketAddr>,
+    /// Register `apply_qualification`, the write tool. Off by default: an
+    /// MCP client that can call it can write tags, a note and an incident
+    /// attachment (never create an incident, decision 0001).
+    pub allow_write: Option<bool>,
 }
 
 /// `mcp.transport`.
@@ -470,6 +475,8 @@ pub struct Mcp {
     pub transport: McpTransport,
     /// Listen address for the `"http"` transport.
     pub bind_address: Option<SocketAddr>,
+    /// Whether `apply_qualification` is registered.
+    pub allow_write: bool,
 }
 
 /// Effective `[flow]`.
@@ -636,6 +643,9 @@ impl Config {
                 .unwrap_or_default(),
             bind_address: env_parsed("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address")?
                 .or(file.mcp.bind_address),
+            allow_write: env_parsed("SIGNALMAN_MCP_ALLOW_WRITE", "mcp.allow_write")?
+                .or(file.mcp.allow_write)
+                .unwrap_or(false),
         };
         let policy = file.policy.clone().unwrap_or_default();
         policy.validate().map_err(Error::Invalid)?;
@@ -762,6 +772,7 @@ mod tests {
         assert!(c.mcp.enabled);
         assert_eq!(c.mcp.transport, McpTransport::Stdio);
         assert_eq!(c.mcp.bind_address, None);
+        assert!(!c.mcp.allow_write);
         assert_eq!(c.policy, Policy::default());
         assert_eq!(c.triage.teams, crate::triage::default_teams());
         assert_eq!(c.triage.text, Texts::default());
@@ -770,7 +781,7 @@ mod tests {
     #[test]
     fn mcp_table_is_file_then_env_then_validated() {
         let s = Settings::parse(
-            "[mcp]\nenabled = false\ntransport = \"http\"\nbind_address = \"0.0.0.0:8081\"\n",
+            "[mcp]\nenabled = false\ntransport = \"http\"\nbind_address = \"0.0.0.0:8081\"\nallow_write = true\n",
             Path::new("t.toml"),
         )
         .unwrap();
@@ -778,6 +789,7 @@ mod tests {
         assert!(!c.mcp.enabled);
         assert_eq!(c.mcp.transport, McpTransport::Http);
         assert_eq!(c.mcp.bind_address.unwrap().to_string(), "0.0.0.0:8081");
+        assert!(c.mcp.allow_write);
 
         let err = Settings::parse(
             "[mcp]\ntransport = \"carrier-pigeon\"\n",

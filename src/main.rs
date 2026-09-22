@@ -760,9 +760,11 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
     Ok(())
 }
 
-/// Serve the MCP tools. Always dry run: [`signalman::mcp::Server::new`]
-/// forces it regardless of `cfg`, and this function never passes a
-/// `dry_run` flag to `triager` either, so the invariant holds twice over.
+/// Serve the MCP tools. `qualify_alert` is always dry run:
+/// [`signalman::mcp::Server::new`] forces it on the wrapped `Triager`
+/// regardless of `cfg`, and this function never passes a `dry_run` flag to
+/// `triager` either, so the invariant holds twice over.
+/// `apply_qualification` is gated separately by `cfg.mcp.allow_write`.
 async fn mcp_cmd(cfg: &Config) -> Result<(), AnyError> {
     if !cfg.mcp.enabled {
         return Err("mcp.enabled is false".into());
@@ -778,8 +780,11 @@ async fn mcp_cmd(cfg: &Config) -> Result<(), AnyError> {
         McpTransport::Stdio => {}
     }
     let triager = triager(cfg, incidentio_client(cfg)?, true)?;
-    tracing::info!("MCP server listening on stdio (read-only; decision 0008)");
-    let service = signalman::mcp::Server::new(triager)
+    tracing::info!(
+        allow_write = cfg.mcp.allow_write,
+        "MCP server listening on stdio (decision 0008)"
+    );
+    let service = signalman::mcp::Server::new(triager, cfg.mcp.allow_write)
         .serve(rmcp::transport::stdio())
         .await
         .inspect_err(|e| tracing::error!(error = %e, "MCP server failed to start"))?;

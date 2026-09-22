@@ -1,21 +1,28 @@
-//! The MCP server: signalman's typed capabilities as read-only tools.
+//! The MCP server: signalman's typed capabilities as tools.
 //!
-//! Decision 0008: signalman is a tool for agents, not an agent. Every tool
-//! here answers with the same judgments the CLI would print; nothing decides
-//! anything the CLI could not already decide, and nothing writes to
-//! incident.io or Backstage. [`Server`] wraps exactly one
-//! [`Triager`] — "cheap to clone; share one per
-//! process" — and forces it to [`WriteBack::DryRun`] in
-//! [`Server::new`] regardless of how the caller built it, so a
-//! misconfiguration elsewhere in the process cannot turn a read tool into a
-//! write. Every tool is a thin wrapper over a function the CLI subcommands
-//! already call (`Triager::triage_alert_by_id`, `related_from`, `tags_for`,
-//! `Enricher::enrich`, `IncidentIo::list_open_incidents`), so there is
-//! exactly one implementation of each capability.
+//! Decision 0008: signalman is a tool for agents, not an agent. Five tools
+//! are always present and read-only: each answers with the same judgments
+//! the CLI would print, deciding nothing the CLI could not already decide.
+//! A sixth, `apply_qualification`, writes — but only what an already-decided
+//! [`Outcome`] document implies, re-derived from its typed judgments via
+//! [`Outcome::validate`], [`Outcome::decision`], [`Outcome::answers`] and
+//! [`Outcome::expected_tags`], never from free parameters. It exists only
+//! when the caller passed `allow_write: true` to [`Server::new`]
+//! (`mcp.allow_write`, off by default). [`Server`] wraps exactly one
+//! [`Triager`] — "cheap to clone; share one per process" — forced to
+//! [`WriteBack::DryRun`] in [`Server::new`] so a misconfiguration elsewhere
+//! cannot turn `qualify_alert` into a write; that flag has no bearing on
+//! `apply_qualification`, which is gated by `allow_write` alone and writes
+//! through the incident.io client directly. Every tool is a thin wrapper
+//! over a function the CLI subcommands already call (`Triager`'s own
+//! methods, `related_from`, `tags_for`, `Enricher::enrich`,
+//! `IncidentIo::list_open_incidents`, `Triager::write_note`), so there is
+//! exactly one implementation of each capability. No tool creates an
+//! incident (decision 0001).
 //!
 //! `signalman mcp` (`src/main.rs`) serves this over stdio. A future
-//! Streamable HTTP transport (`mcp.transport = "http"`) would mount the same
-//! [`Server`] on the axum router `serve` already runs.
+//! Streamable HTTP transport (`mcp.transport = "http"`, `signalman-4gp.7`)
+//! would mount the same [`Server`] on the axum router `serve` already runs.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -30,12 +37,18 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::backstage::enrich::hints_from_labels;
-use crate::incidentio::sync::{RELATED_PAGE, WriteBack, related_from, tags_for};
-use crate::incidentio::{Incident, Triager};
-use crate::outcome::{self, AlertRef, ChangeRef, ComponentRef, IncidentRef, Outcome};
-use crate::triage::{Alert, ComponentContext, Decision, TriageQuestions, decide};
+use crate::incidentio::note::{self, Links, NoteInput};
+use crate::incidentio::sync::{AttachedIncident, RELATED_PAGE, WriteBack, related_from, tags_for};
+use crate::incidentio::{Alert as IoAlert, Incident, Triager};
+use crate::outcome::{
+    self, AlertRef, ChangeRef, ComponentRef, IncidentRef, NoteStatus, NoteWrite, Outcome,
+    WriteMode, Writes,
+};
+use crate::triage::{Alert, ComponentContext, Decision, RelatedAlert, TriageQuestions, decide};
 
-/// signalman's MCP server: five read-only tools over one dry-run [`Triager`].
+/// signalman's MCP server: five read-only tools over one dry-run [`Triager`],
+/// and a sixth, `apply_qualification`, registered only when `allow_write`
+/// was true at construction.
 #[derive(Clone)]
 pub struct Server {
     triager: Triager,
@@ -44,17 +57,27 @@ pub struct Server {
 
 impl Server {
     /// Wrap `triager`, forcing [`WriteBack::DryRun`] regardless of how the
-    /// caller configured it.
-    pub fn new(mut triager: Triager) -> Self {
+    /// caller configured it: `write_back` only ever governs
+    /// `Triager::triage_alert_by_id` (`qualify_alert`'s `alert_id` path),
+    /// never `apply_qualification`, which writes through the incident.io
+    /// client directly and is gated by `allow_write` alone.
+    ///
+    /// `allow_write` registers `apply_qualification` (`mcp.allow_write`,
+    /// default off). Checked once, here: the tool is either in the router
+    /// or it is not, for the life of this `Server`.
+    pub fn new(mut triager: Triager, allow_write: bool) -> Self {
         triager.write_back = WriteBack::DryRun;
         // Each capability below is its own `#[tool_router]` block (its own
         // generated router-building method), merged into one router here so
         // the tools stay grouped with the request/response types they use.
-        let tool_router = Self::tool_router()
+        let mut tool_router = Self::tool_router()
             + Self::related_alerts_router()
             + Self::recent_changes_router()
             + Self::lookup_owner_router()
             + Self::open_incidents_router();
+        if allow_write {
+            tool_router += Self::apply_qualification_router();
+        }
         Self {
             triager,
             tool_router,
@@ -699,6 +722,23 @@ fn component_ref(c: &ComponentContext, url: Option<String>) -> ComponentRef {
     }
 }
 
+/// The inverse of [`component_ref`], for `apply_qualification`'s note:
+/// `description`, `owner_description` and `tags` are not on the wire (the
+/// contract never carried them), so they are left at their defaults;
+/// `note::render` does not read them.
+fn component_context(c: &ComponentRef) -> ComponentContext {
+    ComponentContext {
+        name: c.name.clone(),
+        component_type: c.component_type.clone(),
+        lifecycle: c.lifecycle.clone(),
+        system: c.system.clone(),
+        owner: c.catalog_owner.clone(),
+        depends_on: c.depends_on.clone(),
+        dependents: c.dependents.clone(),
+        ..ComponentContext::default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // open_incidents
 // ---------------------------------------------------------------------------
@@ -764,6 +804,236 @@ impl Server {
 }
 
 // ---------------------------------------------------------------------------
+// apply_qualification (write; registered only when allow_write is true)
+// ---------------------------------------------------------------------------
+
+/// Input for `apply_qualification`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ApplyQualificationRequest {
+    /// The incident.io alert id this outcome was decided for. Must equal
+    /// `outcome.alert.id`; signalman never guesses which alert a document
+    /// belongs to.
+    pub alert_id: String,
+    /// The exact document a prior `qualify_alert(alert_id)` call returned.
+    /// Every write is re-derived from its typed judgments; nothing here is
+    /// read as a free-form instruction.
+    pub outcome: Outcome,
+}
+
+#[tool_router(router = apply_qualification_router)]
+impl Server {
+    #[tool(
+        name = "apply_qualification",
+        description = "Apply a qualify_alert result: write the tags, rewrite the qualification note in place, and attach the alert to the incident when the decision says so. Give the exact `alert_id` and `outcome` a prior qualify_alert(alert_id) call returned — this tool only accepts an outcome whose alert.id matches alert_id, which rules out qualify_alert's standalone `alert` form (it never has one). Every write is re-derived from the outcome's own typed judgments (the tags, the attach target, the note), so it cannot be used to write anything the outcome does not itself already say. A document that fails validation, or names a different alert, is refused. Never creates an incident. Calling this twice with the same outcome is safe: the tags and the attachment are idempotent on incident.io's side, and the note is replaced in place rather than stacked.",
+        annotations(
+            title = "Apply a qualification",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn apply_qualification(
+        &self,
+        Parameters(req): Parameters<ApplyQualificationRequest>,
+        ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        if req.outcome.alert.id.as_deref() != Some(req.alert_id.as_str()) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "alert_id {:?} does not match outcome.alert.id {:?}: apply_qualification \
+                     only accepts an outcome qualify_alert(alert_id) returned for this alert",
+                    req.alert_id, req.outcome.alert.id
+                ),
+                None,
+            ));
+        }
+        if let Err(e) = req.outcome.validate() {
+            return Err(McpError::invalid_params(
+                format!("outcome does not validate: {e}"),
+                None,
+            ));
+        }
+        let decision = req.outcome.decision().map_err(|e| {
+            McpError::invalid_params(format!("outcome.decision does not rebuild: {e}"), None)
+        })?;
+
+        // "the agent's name and the MCP client id are recorded in the
+        // outcome log, never in the note" — read once at `initialize`
+        // (there is exactly one client per stdio connection).
+        let mcp_client = ctx
+            .peer
+            .peer_info()
+            .map(|i| format!("{} {}", i.client_info.name, i.client_info.version));
+        tracing::info!(
+            alert_id = %req.alert_id,
+            decision = req.outcome.decision.key(),
+            mcp_client = mcp_client.as_deref().unwrap_or("unknown"),
+            "applying qualification"
+        );
+
+        let io_alert = match self.triager.incidentio.get_alert(&req.alert_id).await {
+            Ok(a) => a,
+            Err(e) => return Ok(tool_failed("apply_qualification", &e)),
+        };
+
+        let tags = req.outcome.expected_tags();
+        if let Err(e) = self
+            .triager
+            .incidentio
+            .add_alert_tags(&req.alert_id, &tags)
+            .await
+        {
+            return Ok(tool_failed("apply_qualification", &e));
+        }
+
+        let attached = if matches!(decision, Decision::AttachToIncident { .. }) {
+            match self.attach(&req.alert_id, &req.outcome).await {
+                Ok(incident) => Some(incident),
+                Err(Failed::Params(msg)) => return Err(McpError::invalid_params(msg, None)),
+                Err(Failed::Upstream(msg)) => {
+                    return Ok(tool_failed("apply_qualification", &msg));
+                }
+            }
+        } else {
+            None
+        };
+
+        let note = if self.triager.note {
+            match self
+                .apply_note(&io_alert, &req.outcome, &decision, attached.as_ref(), &tags)
+                .await
+            {
+                Ok((id, status)) => NoteWrite {
+                    status,
+                    id: Some(id),
+                    error: None,
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, "qualification note failed");
+                    NoteWrite {
+                        status: NoteStatus::Failed,
+                        id: None,
+                        error: Some(e.to_string()),
+                    }
+                }
+            }
+        } else {
+            NoteWrite {
+                status: NoteStatus::Disabled,
+                id: None,
+                error: None,
+            }
+        };
+
+        let writes = Writes {
+            mode: WriteMode::Applied,
+            tags_applied: true,
+            attached: attached.is_some(),
+            note,
+            notified: None,
+            forwarded: None,
+        };
+        structured(&writes, apply_summary(&writes))
+    }
+}
+
+impl Server {
+    /// Attach the alert to the incident the outcome names, and hand back
+    /// the reference for the note. Requires `outcome.incident.id`: it is
+    /// always set by `qualify_alert(alert_id)` (the only source
+    /// `apply_qualification` accepts, per the `alert_id` check above), so
+    /// its absence means the document was tampered with.
+    async fn attach(&self, alert_id: &str, outcome: &Outcome) -> Result<IncidentRef, Failed> {
+        let incident = outcome
+            .incident
+            .as_ref()
+            .ok_or_else(|| Failed::Params("attach_to_incident without outcome.incident".into()))?;
+        let incident_id = incident.id.as_deref().ok_or_else(|| {
+            Failed::Params(
+                "outcome.incident.id is null; qualify_alert(alert_id) always resolves it".into(),
+            )
+        })?;
+        self.triager
+            .incidentio
+            .attach_alert_to_incident(alert_id, incident_id)
+            .await
+            .map_err(|e| Failed::Upstream(e.to_string()))?;
+        Ok(incident.clone())
+    }
+
+    /// Render and write the qualification note from the outcome's own
+    /// judgments — the same template [`note::render`] always uses, rebuilt
+    /// through [`Outcome::answers`] rather than a fresh model call.
+    async fn apply_note(
+        &self,
+        io_alert: &IoAlert,
+        outcome: &Outcome,
+        decision: &Decision,
+        attached: Option<&IncidentRef>,
+        tags: &[String],
+    ) -> crate::incidentio::error::Result<(String, NoteStatus)> {
+        let answers = outcome.answers();
+        let attached_domain = attached.map(|a| AttachedIncident {
+            id: a.id.clone().unwrap_or_default(),
+            reference: a.reference.clone(),
+            confidence: outcome
+                .judgments
+                .duplicate_of
+                .as_ref()
+                .map_or(0.0, |d| f64::from(d.confidence)),
+            permalink: a.url.clone(),
+        });
+        let component = outcome.component.as_ref().map(component_context);
+        let links = Links {
+            component: outcome.component.as_ref().and_then(|c| c.url.clone()),
+            owner: outcome.owner.as_ref().and_then(|o| o.url.clone()),
+            runbook: outcome.runbook_url.clone(),
+        };
+        let related: Vec<RelatedAlert> = outcome
+            .related_alerts
+            .iter()
+            .map(|r| RelatedAlert {
+                title: r.title.clone(),
+                age_minutes: r.age_minutes,
+                component: r.component.clone(),
+            })
+            .collect();
+        let changes: Vec<String> = outcome
+            .recent_changes
+            .iter()
+            .map(|c| c.summary.clone())
+            .collect();
+        let related_window = Duration::from_secs(outcome.windows.related_seconds.unwrap_or(0));
+        let time_to_qualify = outcome.time_to_qualify_seconds.map(Duration::from_secs_f64);
+
+        let content = note::render(&NoteInput {
+            alert: io_alert,
+            answers: &answers,
+            decision,
+            attached: attached_domain.as_ref(),
+            component: component.as_ref(),
+            links: &links,
+            related: &related,
+            related_window,
+            changes: &changes,
+            tags,
+            time_to_qualify,
+        });
+        self.triager.write_note(&io_alert.id, &content).await
+    }
+}
+
+/// A short text fallback for `apply_qualification`'s result.
+fn apply_summary(w: &Writes) -> String {
+    format!(
+        "tags applied{}; note {:?}",
+        if w.attached { ", attached" } else { "" },
+        w.note.status
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Result helpers
 // ---------------------------------------------------------------------------
 
@@ -797,16 +1067,33 @@ impl ServerHandler for Server {
         // build, always "rmcp". `env!` here, in signalman's own source,
         // resolves to signalman's own name and version.
         let server_info = Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        let write = if self.tool_router.has_route("apply_qualification") {
+            "apply_qualification is also available: give it the exact outcome qualify_alert \
+             returned to write its tags, note and attachment, never an arbitrary write."
+        } else {
+            "This server is read-only: no tool writes to incident.io or Backstage."
+        };
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server_info)
-            .with_instructions(
-                "signalman's typed alert-triage judgments, read-only. qualify_alert answers \
-                 with the same outcome contract the CLI and the webhook receiver produce; \
-                 related_alerts, recent_changes, lookup_owner and open_incidents each answer \
-                 one piece of that context on their own. Nothing here writes to incident.io \
-                 or Backstage, and nothing here creates an incident: signalman is a tool for \
-                 agents, not an agent (decision 0008).",
-            )
+            .with_instructions(format!(
+                "signalman's typed alert-triage judgments. qualify_alert answers with the same \
+                 outcome contract the CLI and the webhook receiver produce; related_alerts, \
+                 recent_changes, lookup_owner and open_incidents each answer one piece of that \
+                 context on their own. {write} Nothing here creates an incident: signalman is a \
+                 tool for agents, not an agent (decision 0008)."
+            ))
+    }
+
+    /// The default `initialize` negotiates the protocol version but does not
+    /// remember who connected; `apply_qualification` records the caller's
+    /// name in the log line for every write, which needs this stored.
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ServerConfig, McpError> {
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
     }
 }
 
