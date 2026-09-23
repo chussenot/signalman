@@ -83,7 +83,7 @@ trigger.on-deployed: |
     send: [signalman-deployed]
 ```
 
-Subscribe applications with the annotation `notifications.argoproj.io/subscribe.on-deployed.signalman: ""`, or the default subscription in the ConfigMap. Only the fields signalman reads are modelled (`metadata.name`, `spec.destination.namespace`, `spec.project`, `status.history`, `status.operationState`, `status.sync.revision`, `status.summary.images`); the rest of the Application is ignored, so Argo CD upgrades do not break the contract. A body whose `operationState.phase` is not `Succeeded` is ignored. [`examples/changes/argocd-application.json`](https://github.com/chussenot/rustsafe/blob/main/examples/changes/argocd-application.json) is the fixture the tests use.
+Subscribe applications with the annotation `notifications.argoproj.io/subscribe.on-deployed.signalman: ""`, or the default subscription in the ConfigMap. Only the fields signalman reads are modelled (`metadata.name`, `spec.destination.namespace`, `spec.project`, `status.history`, `status.operationState`, `status.sync.revision`, `status.summary.images`); the rest of the Application is ignored, so Argo CD upgrades do not break the contract. A body whose `operationState.phase` is not `Succeeded` is ignored. [`examples/changes/argocd-application.json`](https://github.com/chussenot/signalman/blob/main/examples/changes/argocd-application.json) is the fixture the tests use.
 
 ### GitLab, `POST /changes/gitlab`
 
