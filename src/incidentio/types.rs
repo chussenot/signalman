@@ -10,6 +10,9 @@ use std::fmt::Write;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Longest incident summary offered to the model as a dedup candidate.
+pub const CANDIDATE_SUMMARY_CHARS: usize = 280;
+
 /// Lifecycle category of an incident status (API names; "live" shows as
 /// "Active" in the app, "learning" as "Post-incident").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -132,7 +135,23 @@ impl Incident {
             .filter(|x| !x.is_empty())
         {
             s.push_str(": ");
-            s.push_str(sum);
+            // Live summaries are whole markdown bodies; forty of them would
+            // dominate the request. The first line or so is what identifies
+            // an incident. ponytail: fixed cut, make it a setting if it bites.
+            let cut = sum
+                .char_indices()
+                .nth(CANDIDATE_SUMMARY_CHARS)
+                .map_or(sum.len(), |(i, _)| i);
+            s.push_str(
+                sum[..cut]
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .as_str(),
+            );
+            if cut < sum.len() {
+                s.push('…');
+            }
         }
         s
     }
@@ -389,11 +408,24 @@ mod tests {
             "mode": "standard", "visibility": "public", "workload_minutes_total": 60.7,
             "custom_field_entries": [], "team_ids": ["t1"]
         });
-        let inc: Incident = serde_json::from_value(v).unwrap();
+        let mut inc: Incident = serde_json::from_value(v).unwrap();
         assert!(inc.is_open_and_real());
         assert_eq!(
             inc.candidate_summary(),
             "Our database is sad [Minor]: really sad"
+        );
+        // A live summary is a markdown body: one line, cut, marked as cut.
+        inc.summary = Some(format!(
+            "**Alert:** first\n\n**Context:** {}",
+            "x ".repeat(300)
+        ));
+        let s = inc.candidate_summary();
+        assert!(s.starts_with("Our database is sad [Minor]: **Alert:** first **Context:** x x"));
+        assert!(s.ends_with('…'), "{s}");
+        assert!(
+            s.chars().count() < CANDIDATE_SUMMARY_CHARS + 40,
+            "{}",
+            s.len()
         );
         let unknown: StatusCategory = serde_json::from_value(json!("brand_new")).unwrap();
         assert_eq!(unknown, StatusCategory::Unknown);

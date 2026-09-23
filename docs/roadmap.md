@@ -12,11 +12,10 @@ The backlog is tracked in beads (`bd ready`). This page is the narrative index; 
 
 ## Unverified
 
-Nothing has run against a live incident.io account. TypeSafe has answered once (`signalman-b11.1`, 2026-09-23: `jev-latest` resolved to `jev-1.13.0`, the three example alerts decided as labelled, the raw responses kept under `examples/eval/runs/jev-1.13.0` for replay), and the Backstage catalog calls have, once (`signalman-b11.5`); the rest of the Backstage integration has not. Wire shapes follow the documented examples and OpenAPI specifications. Epic `signalman-b11` covers live verification:
+No write has reached a live incident.io alert yet; the reads have (`signalman-b11.2`, `.3`, 2026-09-23: `whoami`, the incidents list with its repeated-key filter, alerts, alert notes, and the three write endpoints answering validation errors rather than `403` to an empty body). TypeSafe has answered once (`signalman-b11.1`, 2026-09-23: `jev-latest` resolved to `jev-1.13.0`, the three example alerts decided as labelled, the raw responses kept under `examples/eval/runs/jev-1.13.0` for replay), and the Backstage catalog calls have, once (`signalman-b11.5`); the rest of the Backstage integration has not. Wire shapes follow the documented examples and OpenAPI specifications. Epic `signalman-b11` covers live verification:
 
 - TypeSafe: done. Every answer parsed without a `Decode` error; owner, actionability, duplicate and change judgments matched the labels, impact did on two of three (the `dns` case scored `major` where the label says `outage`, `signalman-ufg.7` follows up).
-- `incidentio whoami` to confirm key scopes.
-- The repeated-key form of `status_category[one_of]` on the incidents list, the likeliest drift point.
+- incident.io reads: done. The key's roles are listed by `whoami`; the repeated-key form of `status_category[one_of]` is honoured (`closed` alone returns only closed incidents, `triage` plus `live` only those two).
 - A signed webhook end to end through Svix Play or ngrok.
 - A real Backstage: the catalog is done (`relations` do come back when `fields` narrows them; groups there were `spec.type: squad`, which is why `backstage.group_types` exists). Still open, blocked on a token allowed on those plugins: the TechDocs search index on your storage backend and the Notifications endpoint with `accessRestrictions`.
 

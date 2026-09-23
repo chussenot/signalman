@@ -43,7 +43,7 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 - It does not generate text. No summaries, no explanations; only judgments a policy can threshold. The note is a fixed template filled with those judgments.
 - It does not talk to the observability platform. Tsuga alerts reach it as incident.io alerts, through Tsuga's own integration.
 - It is not itself an agent. No generative model runs in the triage path; the MCP server exposes typed judgments to agents that call it, and does nothing on its own.
-- It has run once against a live TypeSafe model (`jev-1.13.0`, the three example alerts, every decision as labelled) and a live Backstage catalog; it has not yet run against a live incident.io account, nor against TechDocs or Notifications. Every other wire shape is asserted against the published documentation and OpenAPI specification, not observed traffic. See [the roadmap](docs/roadmap.md).
+- It has run once against a live TypeSafe model (`jev-1.13.0`, the three example alerts, every decision as labelled) a live Backstage catalog and, read-only, a live incident.io account (`whoami`, incidents, alerts, alert notes); it has not yet written a tag, an attachment or a note to a live alert, nor reached TechDocs or Notifications. Every other wire shape is asserted against the published documentation and OpenAPI specification, not observed traffic. See [the roadmap](docs/roadmap.md).
 
 ## Quick start
 
