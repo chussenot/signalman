@@ -1,6 +1,6 @@
 ---
 title: Operations
-description: Running the webhook receiver, its endpoints and manual commands, the upstream limits that bound throughput, what the logs contain, and how each failure shows up.
+description: Running the webhook receiver, its endpoints and manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
 status: current
 last_reviewed: 2026-09-23
 tags: [operations]
@@ -103,6 +103,10 @@ spec:
           env:
             - name: SIGNALMAN_RELATED_WINDOW_MINUTES   # a per-environment override, above the file
               value: "15"
+            - name: HOST_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT        # collector DaemonSet on the node; or a cluster Service URL; omit to export nothing
+              value: "http://$(HOST_IP):4318"
           ports:
             - containerPort: 8080
           volumeMounts:
@@ -145,11 +149,13 @@ Each triage runs under `server.triage_timeout_seconds`. The clients' own timeout
 
 ## Logs
 
-`tracing` to stderr, filtered by `RUST_LOG` (default `info`). One line per triage, `alert triaged`, carries seven flat fields for grepping and reading: `alert_id`, `title`, `decision`, `impact`, `time_to_qualify_seconds`, `applied` and `model`. `time_to_qualify_seconds` is a number, and is absent when the alert carried no creation time to measure from.
+Logs are one of three signals. Spans over each triage and metrics for the product and its upstreams are exported over OpenTelemetry when a collector endpoint is configured; [Observability](observability.md) covers both. The log is per replica and stays on stderr for the platform's log shipper; nothing below is exported by signalman.
+
+`tracing` to stderr, filtered by `RUST_LOG` (default `info`). Every line carries the prefixes of the spans it was emitted in, `triage{alert_id=al-1}:triage.flow{alert_id=al-1}:` for a line from the flow, so the same names appear in the log and in a trace. One line per triage, `alert triaged`, carries seven flat fields for grepping and reading: `alert_id`, `title`, `decision`, `impact`, `time_to_qualify_seconds`, `applied` and `model`. `time_to_qualify_seconds` is a number, and is absent when the alert carried no creation time to measure from.
 
 The same line carries `outcome`: [the outcome contract](triage.md#the-outcome-contract) compacted onto one line of JSON. Everything the line used to spell out separately is inside it, addressable by a documented path: the resolved component is `outcome.component`, the attachment is `outcome.writes.attached`, the notification recipient is `outcome.writes.notified`, the note is `outcome.writes.note`, and the counts that were logged are the lengths of `outcome.related_alerts` and `outcome.recent_changes`. A log pipeline can index every field of every decision without parsing prose.
 
-signalman installs one subscriber, the human-readable `tracing` text formatter; there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
+signalman installs one subscriber with the human-readable `tracing` text formatter (and, when an OTLP endpoint is set, the OpenTelemetry layer beside it, which changes nothing in the log); there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
 
 Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
 

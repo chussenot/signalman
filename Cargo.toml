@@ -34,6 +34,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", 
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# OpenTelemetry (signalman-m28.2): spans over the triage flow and metrics for
+# the receiver, exported over OTLP/HTTP (protobuf) through the reqwest this
+# crate already ships, only when an endpoint is configured. No gRPC stack and
+# no OTel logs signal: `tracing` text logs stay on stderr. tracing-opentelemetry
+# numbers its releases one ahead of the opentelemetry crates it depends on.
+opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "internal-logs"] }
+tracing-opentelemetry = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 http-body-util = "0.1"

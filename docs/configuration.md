@@ -32,6 +32,7 @@ Secrets are environment only. The file schema has no key for them; `api_key = â€
 | `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 | `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
+| `OTEL_EXPORTER_OTLP_HEADERS` | the OTLP exporter, when the collector needs a token or key ([Observability](observability.md#configuration)) | `key=value,key2=value2`, for example `authorization=Bearer â€¦`; read by the exporter itself, never by `src/config.rs`; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way |
 
 Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 
@@ -98,6 +99,16 @@ signalman serves its typed capabilities over the Model Context Protocol ([MCP](m
 | `mcp.bind_address` | `SIGNALMAN_MCP_BIND_ADDRESS` | unset | listen address for `signalman mcp` with `"http"`; required there, start-up fails naming it when unset; unused by `"stdio"` and by `serve`, which uses `server.addr` |
 | `mcp.allowed_hosts` | `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) | empty | hostnames or `host:port` the `/mcp` endpoint answers to, checked on the `Host` header (rmcp's DNS-rebinding guard); empty disables the check, because the bearer token already defeats that attack |
 | `mcp.allow_write` | `SIGNALMAN_MCP_ALLOW_WRITE` | `false` | registers the `apply_qualification` write tool; an MCP client that can call it can write alert tags, a qualification note, and an incident attachment (never create an incident, decision 0001); off by default |
+
+### `[telemetry]`
+
+Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export on; without it the text log on stderr is the only signal ([Observability](observability.md)). The two `OTEL_*` variables are read here, like every other non-secret variable, and the endpoint is handed to the SDK programmatically; the SDK's own per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`) are not honoured. `OTEL_EXPORTER_OTLP_HEADERS` is a secret and sits in the table above.
+
+| File key | Environment | Default | Meaning |
+|---|---|---|---|
+| `telemetry.otlp_endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP base URL of a collector, for example `http://otel-collector.observability.svc:4318`; `/v1/traces` and `/v1/metrics` are appended; unset or empty exports nothing |
+| `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
+| `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | how often metrics are exported; at least 1 |
 
 ### `[policy]`, file only
 

@@ -192,6 +192,11 @@ impl Client {
     }
 
     /// Evaluate a fully specified request.
+    #[tracing::instrument(
+        name = "typesafe.evaluate",
+        skip_all,
+        fields(model = request.model, input_tokens = tracing::field::Empty)
+    )]
     pub async fn evaluate<S: Serialize + Sync>(
         &self,
         request: &Request<'_, S>,
@@ -201,10 +206,18 @@ impl Client {
         let text = self
             .send_with_retries(|| self.http.post(url.clone()).body(body.clone()))
             .await?;
-        Ok(serde_json::from_str(&text)?)
+        let response: Response = serde_json::from_str(&text)?;
+        tracing::Span::current().record("input_tokens", response.usage.input_tokens);
+        crate::telemetry::record_typesafe_usage(
+            &response.model,
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+        );
+        Ok(response)
     }
 
     /// List the model names this account may send.
+    #[tracing::instrument(name = "typesafe.list_models", skip_all)]
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let url = self.url("v1/models")?;
         let text = self
@@ -224,7 +237,7 @@ impl Client {
         &self,
         make: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<String> {
-        match http::send_with_retries(&self.retry, make).await {
+        match http::send_with_retries(&self.retry, "typesafe", make).await {
             Ok(Completed { status, body, .. }) if status.is_success() => Ok(body),
             Ok(Completed {
                 status,

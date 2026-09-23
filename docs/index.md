@@ -16,6 +16,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 |---|---|
 | What signalman talks to and why | [C4 context](c4/context.md) |
 | What runs where | [C4 containers](c4/container.md), [Operations](operations.md) |
+| How to see it run: traces, metrics, logs | [Observability](observability.md) |
 | How the modules fit together | [C4 components](c4/component.md), [Architecture](architecture.md) |
 | What the model is asked and how the answer becomes an action | [Triage](triage.md) |
 | What one triage emits, and the JSON contract a script or an agent reads | [The outcome contract](triage.md#the-outcome-contract), [schema v1](schema/outcome.v1.json) |

@@ -126,6 +126,7 @@ impl Enricher {
     /// finds components mentioned by name. Never fails on a missing entity;
     /// only transport and auth errors propagate.
     #[allow(clippy::too_many_lines)] // one pass over the graph; splitting hides the data flow
+    #[tracing::instrument(name = "backstage.enrich", skip_all, fields(hints = ?hints))]
     pub async fn enrich(&self, hints: &[String], alert_text: &str) -> Result<Enrichment> {
         let (component, matched_by) = self.resolve_component(hints).await?;
 
@@ -390,6 +391,7 @@ impl Enricher {
 
     /// Tell the owning group what was decided. Only for decisions that need
     /// a person; suppressions and attachments stay silent.
+    #[tracing::instrument(name = "backstage.notify_owner", skip_all, fields(owner = %owner.key))]
     pub async fn notify_owner(
         &self,
         owner: &OwnerCandidate,

@@ -99,8 +99,12 @@ pub struct Exhausted {
 ///
 /// Successful and non-retryable statuses return `Ok(Completed)` so the caller
 /// maps them; transport errors after the last retry return `Err(Exhausted)`.
+/// `service` labels every failed attempt in `signalman.upstream.errors`
+/// (`typesafe`, `incidentio`, `backstage`); the loop is the one place all
+/// three clients pass through, so it is where the count lives.
 pub async fn send_with_retries(
     policy: &RetryPolicy,
+    service: &'static str,
     make: impl Fn() -> reqwest::RequestBuilder,
 ) -> Result<Completed, Exhausted> {
     let mut attempt: u32 = 0;
@@ -111,9 +115,13 @@ pub async fn send_with_retries(
                 let status = resp.status();
                 let headers = resp.headers().clone();
                 let retry_after = parse_retry_after(&headers);
+                if !status.is_success() {
+                    crate::telemetry::record_upstream_error(service, status.as_str());
+                }
                 let body = match resp.text().await {
                     Ok(b) => b,
                     Err(source) => {
+                        crate::telemetry::record_upstream_error(service, "transport");
                         if attempt <= policy.max_retries {
                             let delay = policy.delay(attempt, None);
                             tracing::warn!(attempt, ?delay, error = %source, "body read failed; retrying");
@@ -146,6 +154,7 @@ pub async fn send_with_retries(
                 });
             }
             Err(source) => {
+                crate::telemetry::record_upstream_error(service, "transport");
                 if attempt <= policy.max_retries {
                     let delay = policy.delay(attempt, None);
                     tracing::warn!(attempt, ?delay, error = %source, "transport error; retrying");

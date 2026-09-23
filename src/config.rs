@@ -79,6 +79,12 @@ pub const ENV_VARS: &[(&str, &str)] = &[
     ("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address"),
     ("SIGNALMAN_MCP_ALLOWED_HOSTS", "mcp.allowed_hosts"),
     ("SIGNALMAN_MCP_ALLOW_WRITE", "mcp.allow_write"),
+    ("OTEL_EXPORTER_OTLP_ENDPOINT", "telemetry.otlp_endpoint"),
+    ("OTEL_SERVICE_NAME", "telemetry.service_name"),
+    (
+        "SIGNALMAN_METRICS_INTERVAL_SECONDS",
+        "telemetry.metrics_interval_seconds",
+    ),
 ];
 
 /// Configuration failure. Every variant names what to fix.
@@ -143,6 +149,8 @@ pub struct Settings {
     pub flow: FlowFile,
     /// `[mcp]`
     pub mcp: McpFile,
+    /// `[telemetry]`
+    pub telemetry: TelemetryFile,
     /// `[policy]`: routing thresholds, file only.
     pub policy: Option<Policy>,
     /// `[triage]`: rubric text and the fallback team list, file only.
@@ -224,6 +232,19 @@ pub struct McpFile {
     /// MCP client that can call it can write tags, a note and an incident
     /// attachment (never create an incident, decision 0001).
     pub allow_write: Option<bool>,
+}
+
+/// `[telemetry]`
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetryFile {
+    /// OTLP/HTTP base endpoint of a collector, e.g. `http://otel-collector:4318`.
+    /// Unset exports nothing; the text log on stderr is always there.
+    pub otlp_endpoint: Option<String>,
+    /// `service.name` on every span and metric.
+    pub service_name: Option<String>,
+    /// How often metrics are exported; at least 1.
+    pub metrics_interval_seconds: Option<u64>,
 }
 
 /// `mcp.transport`.
@@ -404,6 +425,8 @@ pub struct Config {
     pub flow: Flow,
     /// `[mcp]`
     pub mcp: Mcp,
+    /// `[telemetry]`
+    pub telemetry: Telemetry,
     /// `[policy]`
     pub policy: Policy,
     /// `[triage]`
@@ -485,6 +508,28 @@ pub struct Mcp {
     pub allowed_hosts: Vec<String>,
     /// Whether `apply_qualification` is registered.
     pub allow_write: bool,
+}
+
+/// Effective `[telemetry]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Telemetry {
+    /// OTLP/HTTP base endpoint; `None` exports nothing.
+    pub otlp_endpoint: Option<String>,
+    /// `service.name` on every span and metric.
+    pub service_name: String,
+    /// Metrics export interval in seconds.
+    pub metrics_interval_seconds: u64,
+}
+
+impl Telemetry {
+    /// What [`crate::telemetry::Providers::init`] takes.
+    pub fn settings(&self) -> crate::telemetry::Settings {
+        crate::telemetry::Settings {
+            otlp_endpoint: self.otlp_endpoint.clone(),
+            service_name: self.service_name.clone(),
+            metrics_interval: Duration::from_secs(self.metrics_interval_seconds),
+        }
+    }
 }
 
 /// Effective `[flow]`.
@@ -658,6 +703,26 @@ impl Config {
                 .or(file.mcp.allow_write)
                 .unwrap_or(false),
         };
+        let telemetry = Telemetry {
+            otlp_endpoint: env_string("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .or_else(|| file.telemetry.otlp_endpoint.clone())
+                .map(|e| e.trim().to_owned())
+                .filter(|e| !e.is_empty()),
+            service_name: env_string("OTEL_SERVICE_NAME")
+                .or_else(|| file.telemetry.service_name.clone())
+                .unwrap_or_else(|| crate::telemetry::DEFAULT_SERVICE_NAME.to_owned()),
+            metrics_interval_seconds: env_parsed(
+                "SIGNALMAN_METRICS_INTERVAL_SECONDS",
+                "telemetry.metrics_interval_seconds",
+            )?
+            .or(file.telemetry.metrics_interval_seconds)
+            .unwrap_or(crate::telemetry::DEFAULT_METRICS_INTERVAL.as_secs()),
+        };
+        if telemetry.metrics_interval_seconds == 0 {
+            return Err(Error::Invalid(
+                "telemetry.metrics_interval_seconds must be at least 1".into(),
+            ));
+        }
         let policy = file.policy.clone().unwrap_or_default();
         policy.validate().map_err(Error::Invalid)?;
         let text = file
@@ -680,6 +745,7 @@ impl Config {
             backstage,
             flow,
             mcp,
+            telemetry,
             policy,
             triage: Triage { text, teams },
         })
@@ -785,6 +851,9 @@ mod tests {
         assert_eq!(c.mcp.bind_address, None);
         assert!(c.mcp.allowed_hosts.is_empty());
         assert!(!c.mcp.allow_write);
+        assert_eq!(c.telemetry.otlp_endpoint, None);
+        assert_eq!(c.telemetry.service_name, "signalman");
+        assert_eq!(c.telemetry.metrics_interval_seconds, 60);
         assert_eq!(c.policy, Policy::default());
         assert_eq!(c.triage.teams, crate::triage::default_teams());
         assert_eq!(c.triage.text, Texts::default());
@@ -814,6 +883,46 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("transport"), "{err}");
+    }
+
+    #[test]
+    fn telemetry_table_is_file_then_validated() {
+        let s = Settings::parse(
+            "[telemetry]\notlp_endpoint = \" http://otel-collector:4318/ \"\nservice_name = \"signalman-eu\"\nmetrics_interval_seconds = 15\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        assert_eq!(
+            c.telemetry.otlp_endpoint.as_deref(),
+            Some("http://otel-collector:4318/")
+        );
+        assert_eq!(c.telemetry.service_name, "signalman-eu");
+        assert_eq!(c.telemetry.metrics_interval_seconds, 15);
+        let settings = c.telemetry.settings();
+        assert_eq!(settings.metrics_interval, Duration::from_secs(15));
+
+        // An empty endpoint in the file means "not configured", as an empty
+        // variable does.
+        let s =
+            Settings::parse("[telemetry]\notlp_endpoint = \"\"\n", Path::new("t.toml")).unwrap();
+        assert_eq!(
+            Config::resolve(&s, &Overrides::default())
+                .unwrap()
+                .telemetry
+                .otlp_endpoint,
+            None
+        );
+
+        let s = Settings::parse(
+            "[telemetry]\nmetrics_interval_seconds = 0\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let err = Config::resolve(&s, &Overrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("metrics_interval_seconds"), "{err}");
     }
 
     #[test]

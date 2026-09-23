@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,9 +30,9 @@ use signalman::incidentio::{self, Triager, WriteBack};
 use signalman::mcp::http::McpToken;
 use signalman::outcome::{self, AlertRef, IncidentRef, Outcome};
 use signalman::serve::{AppState, Limits, router};
+use signalman::telemetry::Providers;
 use signalman::triage::{Alert, Decision, OpenIncident, TriageAnswers, TriageQuestions, decide};
 use signalman::{Client, Request, Response};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -226,14 +226,34 @@ enum ConfigCommand {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    let cli = Cli::parse();
+    // Answered before the configuration is resolved: `mise run schema`
+    // regenerates the committed contract, and an unrelated configuration
+    // error must not be able to fail it.
+    if let Command::Schema(cmd) = &cli.command {
+        return exit(schema_cmd(cmd));
+    }
+    let (cfg, file) = match Config::load(cli.config.as_deref(), &overrides(&cli.command)) {
+        Ok(loaded) => loaded,
+        Err(err) => return exit(Err(err.into())),
+    };
+    // Logging and, when an endpoint is configured, OTLP export: installed
+    // once the configuration says how, before the first span.
+    let providers = match Providers::init(&cfg.telemetry.settings()) {
+        Ok(p) => p,
+        Err(err) => return exit(Err(err.into())),
+    };
+    tracing::debug!(file = ?file, "configuration resolved");
 
-    match run(Cli::parse()).await {
+    let result = run(cli.command, &cfg, file.as_deref()).await;
+    // Flush the last spans and measurements before the process ends, or a
+    // one-shot `triage` run exports nothing. Blocking, so off the runtime.
+    let _ = tokio::task::spawn_blocking(move || providers.shutdown()).await;
+    exit(result)
+}
+
+fn exit(result: Result<(), AnyError>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
@@ -291,21 +311,12 @@ fn schema_cmd(cmd: &SchemaCommand) -> Result<(), AnyError> {
     }
 }
 
-async fn run(cli: Cli) -> Result<(), AnyError> {
-    // Answered before the configuration is resolved: `mise run schema`
-    // regenerates the committed contract, and an unrelated configuration
-    // error must not be able to fail it.
-    if let Command::Schema(cmd) = &cli.command {
-        return schema_cmd(cmd);
-    }
-
-    let (cfg, file) = Config::load(cli.config.as_deref(), &overrides(&cli.command))?;
-    tracing::debug!(file = ?file, "configuration resolved");
-    match cli.command {
-        Command::Triage(args) => triage(&cfg, args).await,
-        Command::Eval(args) => evaluate(&cfg, args).await,
+async fn run(command: Command, cfg: &Config, file: Option<&Path>) -> Result<(), AnyError> {
+    match command {
+        Command::Triage(args) => triage(cfg, args).await,
+        Command::Eval(args) => evaluate(cfg, args).await,
         Command::Models => {
-            let client = typesafe_client(&cfg)?;
+            let client = typesafe_client(cfg)?;
             for m in client.list_models().await? {
                 println!("{:<16} {:<12} {}", m.name, m.release_date, m.description);
             }
@@ -315,16 +326,17 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             insecure_skip_verify,
             dry_run,
             ..
-        } => serve(&cfg, insecure_skip_verify, dry_run).await,
-        Command::Mcp => mcp_cmd(&cfg).await,
-        Command::Incidentio(cmd) => incidentio_cmd(&cfg, cmd).await,
-        Command::Backstage(cmd) => backstage_cmd(&cfg, cmd).await,
-        // Unreachable: answered above. Dispatched through the same
-        // function anyway, so this arm cannot drift from that one.
+        } => serve(cfg, insecure_skip_verify, dry_run).await,
+        Command::Mcp => mcp_cmd(cfg).await,
+        Command::Incidentio(cmd) => incidentio_cmd(cfg, cmd).await,
+        Command::Backstage(cmd) => backstage_cmd(cfg, cmd).await,
+        // Unreachable: `main` answers it before resolving a configuration.
+        // Dispatched through the same function anyway, so this arm cannot
+        // drift from that one.
         Command::Schema(cmd) => schema_cmd(&cmd),
         Command::Config(ConfigCommand::Show) => {
             println!("# signalman effective configuration");
-            match &file {
+            match file {
                 Some(p) => println!("# file: {}", p.display()),
                 None => println!("# file: none (defaults, environment and flags only)"),
             }
@@ -336,7 +348,7 @@ async fn run(cli: Cli) -> Result<(), AnyError> {
             }
             println!("# secrets are read from the environment and never shown here");
             println!();
-            print!("{}", toml::to_string_pretty(&cfg)?);
+            print!("{}", toml::to_string_pretty(cfg)?);
             Ok(())
         }
     }

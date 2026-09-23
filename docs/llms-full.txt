@@ -18,6 +18,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 |---|---|
 | What signalman talks to and why | [C4 context](c4/context.md) |
 | What runs where | [C4 containers](c4/container.md), [Operations](operations.md) |
+| How to see it run: traces, metrics, logs | [Observability](observability.md) |
 | How the modules fit together | [C4 components](c4/component.md), [Architecture](architecture.md) |
 | What the model is asked and how the answer becomes an action | [Triage](triage.md) |
 | What one triage emits, and the JSON contract a script or an agent reads | [The outcome contract](triage.md#the-outcome-contract), [schema v1](schema/outcome.v1.json) |
@@ -1293,6 +1294,7 @@ Secrets are environment only. The file schema has no key for them; `api_key = �
 | `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 | `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
+| `OTEL_EXPORTER_OTLP_HEADERS` | the OTLP exporter, when the collector needs a token or key ([Observability](observability.md#configuration)) | `key=value,key2=value2`, for example `authorization=Bearer …`; read by the exporter itself, never by `src/config.rs`; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way |
 
 Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 
@@ -1359,6 +1361,16 @@ signalman serves its typed capabilities over the Model Context Protocol ([MCP](m
 | `mcp.bind_address` | `SIGNALMAN_MCP_BIND_ADDRESS` | unset | listen address for `signalman mcp` with `"http"`; required there, start-up fails naming it when unset; unused by `"stdio"` and by `serve`, which uses `server.addr` |
 | `mcp.allowed_hosts` | `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) | empty | hostnames or `host:port` the `/mcp` endpoint answers to, checked on the `Host` header (rmcp's DNS-rebinding guard); empty disables the check, because the bearer token already defeats that attack |
 | `mcp.allow_write` | `SIGNALMAN_MCP_ALLOW_WRITE` | `false` | registers the `apply_qualification` write tool; an MCP client that can call it can write alert tags, a qualification note, and an incident attachment (never create an incident, decision 0001); off by default |
+
+### `[telemetry]`
+
+Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export on; without it the text log on stderr is the only signal ([Observability](observability.md)). The two `OTEL_*` variables are read here, like every other non-secret variable, and the endpoint is handed to the SDK programmatically; the SDK's own per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`) are not honoured. `OTEL_EXPORTER_OTLP_HEADERS` is a secret and sits in the table above.
+
+| File key | Environment | Default | Meaning |
+|---|---|---|---|
+| `telemetry.otlp_endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP base URL of a collector, for example `http://otel-collector.observability.svc:4318`; `/v1/traces` and `/v1/metrics` are appended; unset or empty exports nothing |
+| `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
+| `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | how often metrics are exported; at least 1 |
 
 ### `[policy]`, file only
 
@@ -1497,6 +1509,10 @@ spec:
           env:
             - name: SIGNALMAN_RELATED_WINDOW_MINUTES   # a per-environment override, above the file
               value: "15"
+            - name: HOST_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT        # collector DaemonSet on the node; or a cluster Service URL; omit to export nothing
+              value: "http://$(HOST_IP):4318"
           ports:
             - containerPort: 8080
           volumeMounts:
@@ -1539,11 +1555,13 @@ Each triage runs under `server.triage_timeout_seconds`. The clients' own timeout
 
 ## Logs
 
-`tracing` to stderr, filtered by `RUST_LOG` (default `info`). One line per triage, `alert triaged`, carries seven flat fields for grepping and reading: `alert_id`, `title`, `decision`, `impact`, `time_to_qualify_seconds`, `applied` and `model`. `time_to_qualify_seconds` is a number, and is absent when the alert carried no creation time to measure from.
+Logs are one of three signals. Spans over each triage and metrics for the product and its upstreams are exported over OpenTelemetry when a collector endpoint is configured; [Observability](observability.md) covers both. The log is per replica and stays on stderr for the platform's log shipper; nothing below is exported by signalman.
+
+`tracing` to stderr, filtered by `RUST_LOG` (default `info`). Every line carries the prefixes of the spans it was emitted in, `triage{alert_id=al-1}:triage.flow{alert_id=al-1}:` for a line from the flow, so the same names appear in the log and in a trace. One line per triage, `alert triaged`, carries seven flat fields for grepping and reading: `alert_id`, `title`, `decision`, `impact`, `time_to_qualify_seconds`, `applied` and `model`. `time_to_qualify_seconds` is a number, and is absent when the alert carried no creation time to measure from.
 
 The same line carries `outcome`: [the outcome contract](triage.md#the-outcome-contract) compacted onto one line of JSON. Everything the line used to spell out separately is inside it, addressable by a documented path: the resolved component is `outcome.component`, the attachment is `outcome.writes.attached`, the notification recipient is `outcome.writes.notified`, the note is `outcome.writes.note`, and the counts that were logged are the lengths of `outcome.related_alerts` and `outcome.recent_changes`. A log pipeline can index every field of every decision without parsing prose.
 
-signalman installs one subscriber, the human-readable `tracing` text formatter; there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
+signalman installs one subscriber with the human-readable `tracing` text formatter (and, when an OTLP endpoint is set, the OpenTelemetry layer beside it, which changes nothing in the log); there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
 
 Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
 
@@ -1559,6 +1577,133 @@ Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status a
 | TypeSafe or incident.io error in the flow | logged at `error`; alert stays untagged; no retry because the delivery was already acknowledged |
 | Notification fails | logged at `warn`; tags and attachment stay |
 | Process restart | the in-memory `webhook-id` set is lost; a resend within the window is processed again; tag adds are idempotent |
+
+
+<!-- source: docs/observability.md -->
+
+
+# Observability
+
+signalman emits three signals: a text log on stderr, spans over each triage and its upstream calls, and metrics for the product and its upstreams. The log is always on. Spans and metrics are exported only when an OTLP endpoint is configured. Nothing here has been checked against a real collector or backend yet; the export is proven against a mock collector in the test suite ([Verifying locally](#verifying-locally)).
+
+## What is exported and when
+
+`telemetry.otlp_endpoint` (`OTEL_EXPORTER_OTLP_ENDPOINT`) is the gate. Unset or empty, the process installs only the text log: no exporter, no SDK thread, and every span and measurement below is a no-op. An existing deployment that does not set it sees no change.
+
+With an endpoint, start-up installs a `tracing-opentelemetry` layer next to the text log and a global OpenTelemetry meter provider, and logs one `info` line, `OpenTelemetry export enabled (OTLP/HTTP)`, with the endpoint, the service name and the metrics interval. An endpoint that is not a URI fails start-up with a message naming the signal and the endpoint.
+
+| Aspect | Behaviour |
+|---|---|
+| Protocol | OTLP/HTTP with protobuf bodies, sent by a blocking `reqwest` client on the SDK's own thread; no gRPC stack |
+| Paths | `/v1/traces` and `/v1/metrics` appended to the configured base (a trailing slash is trimmed), as the OpenTelemetry specification does for the generic endpoint variable |
+| Traces | batch span processor; every span is sampled, since the volume is one trace per alert |
+| Metrics | cumulative temporality, the Prometheus-friendly default; exported every `telemetry.metrics_interval_seconds` (default 60) and once more at shutdown |
+| Resource | `service.name` (configurable) and `service.version` (the crate version) on every span and metric |
+| Flush | `main` shuts the providers down after every command, blocking until the last batch is sent or the SDK gives up. A one-shot run such as `signalman triage` or `signalman incidentio triage-alert` therefore exports its spans before exiting, not only `serve` |
+
+A collector that is down or slow costs the triage nothing: spans and measurements are handed to the SDK and sent from its thread, so a failed export surfaces as the SDK's own warning in the log and never as a failed or delayed triage. A flush that does not complete at shutdown logs `metrics export did not flush cleanly` or `trace export did not flush cleanly` at `warn` and the process exits anyway.
+
+## Configuration
+
+The `[telemetry]` table follows the same layers as everything else, default, then file, then environment variable; there are no flags ([Configuration](configuration.md#telemetry)).
+
+| File key | Environment | Default | Meaning |
+|---|---|---|---|
+| `telemetry.otlp_endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP base URL of a collector, for example `http://otel-collector.observability.svc:4318`; unset or empty exports nothing |
+| `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
+| `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | metrics export interval; at least 1 |
+
+Two points where signalman departs from what an OpenTelemetry SDK does on its own:
+
+- Per [decision 0006](decisions/0006-layered-configuration.md), `src/config.rs` reads the two `OTEL_*` variables above and hands the endpoint to the SDK programmatically. The signal-specific variables `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, and `OTEL_EXPORTER_OTLP_PROTOCOL`, are not honoured: one base endpoint, always HTTP/protobuf.
+- `OTEL_EXPORTER_OTLP_HEADERS` is honoured. The exporter itself reads it, as `key=value,key2=value2`, so a hosted collector's `authorization=Bearer …` goes there; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way. It is a secret: environment only, never a file key, listed with the other secrets in [Configuration](configuration.md#secrets).
+
+## Spans
+
+Spans come from `#[tracing::instrument]` on the flow and the client methods, so they exist whether or not an exporter is installed, and the text log shows them as prefixes on every line (`triage{alert_id=al-1}:triage.flow{alert_id=al-1}:`). With an exporter they reach the collector through `tracing-opentelemetry`. An error recorded on a span becomes an OpenTelemetry exception event on it.
+
+| Span | Where | Fields |
+|---|---|---|
+| `webhook.receive` | one per incident.io delivery, in the receiver | `webhook_id`, `event_type`, `result`: `accepted`, `duplicate`, `ignored`, `rejected`, `invalid` or `refused` |
+| `triage.background` | the triage spawned after the `202` | `alert_id`, `webhook_id` |
+| `triage` | `Triager::triage_alert_by_id`: fetch the alert, then the flow | `alert_id` |
+| `triage.flow` | `Triager::triage_alert`: enrich, ask, decide, write back | `alert_id`, `decision` (recorded at the end) |
+| `incidentio.write_back` | the tags, attachment, note and notification writes; absent on a dry run | `tags` (count), `attach`, `note` (booleans) |
+| `incidentio.get_alert`, `incidentio.list_incidents`, `incidentio.list_firing_alerts`, `incidentio.add_alert_tags`, `incidentio.attach_alert`, `incidentio.list_alert_notes`, `incidentio.create_alert_note`, `incidentio.update_alert_note`, `incidentio.send_alert_event`, `incidentio.identity` | one per incident.io call | the call's identifiers (`alert_id`, `max`, and so on); never the body |
+| `typesafe.evaluate`, `typesafe.list_models` | one per TypeSafe call | `model`, `input_tokens` (recorded from the response) |
+| `backstage.enrich`, `backstage.notify_owner` | catalog resolution and the owner notification | `hints`; `owner` |
+
+`triage` and `triage.flow` sit on every path that qualifies an alert: the webhook, `signalman incidentio triage-alert`, and the MCP tool `qualify_alert` with an alert id. `signalman triage <file>` and `signalman eval` call the model directly, outside the `Triager`: they produce `typesafe.evaluate` (and `backstage.enrich` when a catalog is configured) but no `triage` or `triage.flow` span.
+
+`triage.background` is not a child of `webhook.receive`. The receiver answers `202` and the request span ends, while the triage runs on for seconds. The triage span therefore *follows from* the request span, which OpenTelemetry renders as a span link: the trace of a delivery links to the trace of its triage, and a backend that shows links lets you cross from one to the other. The two are separate traces.
+
+Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly.
+
+## Metrics
+
+Names are OpenTelemetry dotted names with a unit. A Prometheus exporter renders them with underscores and unit suffixes: `signalman.triage.count` becomes `signalman_triage_count_total`, `signalman.triage.duration` becomes `signalman_triage_duration_seconds` with its `_bucket`, `_sum` and `_count` series.
+
+| Instrument | Kind | Unit | Attributes | Meaning |
+|---|---|---|---|---|
+| `signalman.triage.count` | counter | `{triage}` | `decision`, `team`, `mode` (`applied` or `dry_run`) | triages decided |
+| `signalman.triage.duration` | histogram | `s` | `decision` | from the start of the triage to its decision and write-back done |
+| `signalman.alert.time_to_qualify` | histogram | `s` | `decision` | from the alert's creation in incident.io to signalman's decision; recorded only when the alert carried `created_at` |
+| `signalman.typesafe.tokens` | counter | `{token}` | `model`, `direction` (`input`, which is billed, or `output`) | TypeSafe token usage |
+| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, or `transport`) | every failed attempt, retried or not, counted in the shared retry loop |
+| `signalman.webhook.deliveries` | counter | `{delivery}` | `result` (the `webhook.receive` values) | what the receiver did with each delivery |
+| `signalman.triage.inflight` | observable gauge | `{triage}` | `state` (`running` or `queued`) | this replica's in-flight triages, read at each export; registered by `serve` only |
+
+`team` is the owner key the decision chose, or `none` for a decision without an owner (suppress, attach). The three `signalman.triage.*` instruments and `signalman.alert.time_to_qualify` are recorded by the `Triager` flow only, the same paths as the `triage.flow` span; `signalman triage <file>` and `signalman eval` record `signalman.typesafe.tokens` and `signalman.upstream.errors` and nothing else. Every metric is one process's: sum counters and merge histograms across replicas in the backend, and sum the gauge for the fleet's queue depth. `signalman.triage.duration` measures signalman's own work; `signalman.alert.time_to_qualify` adds everything before it, incident.io's delivery delay and time spent waiting for a slot, which is why the two differ under load.
+
+`signalman.alert.time_to_qualify` is the product metric: how long an alert waited before someone, or something, knew who owns it and what to do. Watch its p50 and p95 by `decision`, and set the objective on p95 (for example, 95% of alerts qualified within 60 seconds of creation). A rising p95 with a flat `signalman.triage.duration` points at delivery or queueing; a rising `signalman.triage.duration` points at an upstream, and `signalman.upstream.errors` by `service` says which. `signalman.typesafe.tokens` with `direction=input` is the billed volume.
+
+## Logs
+
+The text log on stderr is unchanged: `tracing`, filtered by `RUST_LOG` (default `info`), one `alert triaged` line per triage carrying the whole outcome document ([Operations](operations.md#logs)). Every line now carries its span prefixes, so `grep triage.flow` finds the flow's lines and `alert_id=` inside a prefix ties them to one alert. The log is per process and is not exported by signalman: metrics and spans are what leave the replica. There is no JSON log format yet (`signalman-m28.5`, open); there is no OpenTelemetry logs signal either.
+
+## Verifying locally
+
+The natural first check is the OpenTelemetry Collector with its debug exporter, which prints every span and metric it receives. This recipe follows the collector's documentation and has not been run here.
+
+```yaml
+# otel-collector.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+```sh
+otelcol --config otel-collector.yaml &
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+signalman triage examples/alerts/dns.json                 # one typesafe.evaluate span, the token counter
+signalman incidentio triage-alert <alert id> --dry-run    # the whole flow: triage, triage.flow, the client spans, the triage metrics
+```
+
+Both commands need their API keys, which is why this has not been run here. The first should print a `typesafe.evaluate` span and, at exit, one export of `signalman.typesafe.tokens`. The second should print `triage.flow` inside `triage` with the incident.io and TypeSafe spans below them, no `incidentio.write_back` since it is a dry run, and an export of `signalman.triage.count` with `mode=dry_run`, `signalman.triage.duration` and, when the alert carries `created_at`, `signalman.alert.time_to_qualify`. With `serve` and a delivered webhook, `webhook.receive` and `triage.background` appear as two traces linked to each other, and `signalman.triage.inflight` is exported at every interval.
+
+What the test suite proves: `tests/telemetry.rs` starts a `wiremock` server standing in for an OTLP/HTTP collector, runs a real triage against mock TypeSafe and incident.io with the endpoint pointed at it, shuts the providers down, and asserts that the protobuf `POST /v1/traces` and `POST /v1/metrics` bodies name the spans, the instruments and the attribute values above. It also asserts that a second `Providers::init` in the same process is refused. It does not decode the protobuf or exercise a real collector, so header handling, batching under load and how a backend renders the follows-from link remain unverified.
+
+## What is not here
+
+- No gRPC transport, and no `OTEL_EXPORTER_OTLP_PROTOCOL`: OTLP/HTTP with protobuf bodies only.
+- No OpenTelemetry logs signal: the log stays on stderr, for the platform's log shipper.
+- No trace-context propagation into or out of HTTP requests. incident.io does not send `traceparent` on its webhooks, and the three clients do not inject one, so a signalman trace begins at the delivery and does not continue into TypeSafe, incident.io or Backstage.
+- No per-signal endpoints: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` are ignored.
+- No sampling knob: every span is exported. Volume is bounded by the alert rate, one trace per alert.
+- No metrics without an endpoint: there is no Prometheus scrape endpoint on the process. Point the collector's Prometheus exporter at the OTLP metrics instead.
 
 
 <!-- source: docs/development.md -->
@@ -1641,6 +1786,7 @@ src/
   serve.rs         axum webhook receiver
   outcome.rs       the outcome contract: wire types, builder, schema
   config.rs        configuration layers: file schema, env, flags, resolve
+  telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs
 examples/          sample alerts and a sample webhook delivery
@@ -1701,7 +1847,7 @@ Nothing has run against a live TypeSafe, incident.io or Backstage instance. Wire
 
 ## Hardening the receiver (`signalman-m28`)
 
-Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). Open: OpenTelemetry tracing and metrics for the flow, so time to qualify and the queue depth are exported rather than logged; a readiness endpoint that checks upstream reachability; a container image and the CI job that builds it.
+Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). OpenTelemetry tracing and metrics are delivered (`signalman-m28.2`, [Observability](observability.md)): spans over the delivery, the triage and every upstream call, and metrics that export time to qualify and the queue depth rather than logging them, over OTLP/HTTP when a collector endpoint is set. Verified against a mock collector only, never a real one. Open: a readiness endpoint that checks upstream reachability; a container image and the CI job that builds it; a JSON log format (`signalman-m28.5`).
 
 ## Triage quality (`signalman-ufg`)
 
@@ -1785,7 +1931,8 @@ flowchart LR
 | TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs` | Wire contract, typed handles, validated probabilities |
 | incident.io client | `src/incidentio/client.rs`, `types.rs` | Incidents, alerts, tags, attachments, alert-source events |
 | Backstage client | `src/backstage/client.rs`, `types.rs` | Catalog queries, TechDocs search index, notifications |
-| Shared HTTP | `src/http.rs` | One retry loop for all three clients |
+| Shared HTTP | `src/http.rs` | One retry loop for all three clients; counts every failed attempt |
+| Telemetry | `src/telemetry.rs` | The `tracing` subscriber, OTLP/HTTP export of spans and metrics when an endpoint is set, and the one place that names an instrument ([Observability](observability.md)) |
 | CLI | `src/main.rs` | `triage`, `eval`, `serve`, `mcp`, `models`, `incidentio`, `backstage`, `config`, `schema` |
 
 Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. No other module reads the environment except the three clients for their own key or token ([Configuration](configuration.md)).
@@ -1854,6 +2001,7 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
+| OTLP collector down or slow | OpenTelemetry SDK, on its own thread | The SDK logs a warning; no triage waits on export or fails because of it |
 
 The receiver acknowledges before the flow runs, so an upstream failure never causes incident.io to redeliver. That is deliberate: a redelivery would re-run the model on the same alert. The cost is that a failed triage needs the `incidentio triage-alert` command to retry by hand.
 

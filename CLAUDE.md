@@ -40,6 +40,15 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   Secrets are never accepted from the file.
 - Wire types under `src/incidentio/types.rs` ignore unknown fields and
   default optional ones.
+- Telemetry (`src/telemetry.rs`, `docs/observability.md`): the one module
+  that names an instrument; add a metric there, never inline. Spans are
+  `#[tracing::instrument]` on client methods and the flow, named
+  `service.operation`; never put a note body, a request body or a secret in
+  a span field. Every upstream call goes through `http::send_with_retries`
+  with its service label, which is where upstream errors are counted.
+  `Providers::init` runs once in `main` before any span; export happens
+  only when `telemetry.otlp_endpoint` is set, and `shutdown` must run on
+  the way out or a CLI run exports nothing.
 - Agents (decision 0008): signalman is a tool for agents, not an agent. No
   generative-model SDK in the triage path; agents consume the outcome
   contract (`src/outcome.rs`, schema committed at

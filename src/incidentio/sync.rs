@@ -134,6 +134,7 @@ impl Triager {
     }
 
     /// Triage an alert by id: fetch, enrich, judge, decide, write back.
+    #[tracing::instrument(name = "triage", skip(self))]
     pub async fn triage_alert_by_id(&self, alert_id: &str) -> Result<Outcome, FlowError> {
         let alert = self.incidentio.get_alert(alert_id).await?;
         self.triage_alert(alert).await
@@ -142,7 +143,13 @@ impl Triager {
     /// Triage an already fetched alert. Prefer [`Self::triage_alert_by_id`]
     /// from a webhook so the state is current.
     #[allow(clippy::too_many_lines)] // one linear flow reads better than fragments
+    #[tracing::instrument(
+        name = "triage.flow",
+        skip_all,
+        fields(alert_id = %io_alert.id, decision = tracing::field::Empty)
+    )]
     pub async fn triage_alert(&self, io_alert: IoAlert) -> Result<Outcome, FlowError> {
+        let started = std::time::Instant::now();
         let candidates = self
             .incidentio
             .list_open_incidents(self.max_candidates)
@@ -267,72 +274,85 @@ impl Triager {
         let mut notified = None;
         let mut note_write = NoteWrite::skipped();
         if applied {
-            self.incidentio.add_alert_tags(&io_alert.id, &tags).await?;
-            if let Some(a) = &attached_to {
-                self.incidentio
-                    .attach_alert_to_incident(&io_alert.id, &a.id)
-                    .await?;
-            }
-            if self.note {
-                let content = note::render(&NoteInput {
-                    alert: &io_alert,
-                    answers: &answers,
-                    decision: &decision,
-                    attached: attached_to.as_ref(),
-                    component: alert.component.as_ref(),
-                    links: &links,
-                    related: &alert.related_alerts,
-                    related_window: self.related_window,
-                    changes: &alert.recent_changes,
-                    tags: &tags,
-                    time_to_qualify,
-                });
-                // The note is a convenience on top of the tags; its failure
-                // must not undo what was already written.
-                match self.write_note(&io_alert.id, &content).await {
-                    Ok((id, status)) => {
+            let write_back = tracing::info_span!(
+                "incidentio.write_back",
+                tags = tags.len(),
+                attach = attached_to.is_some(),
+                note = self.note
+            );
+            tracing::Instrument::instrument(
+                async {
+                    self.incidentio.add_alert_tags(&io_alert.id, &tags).await?;
+                    if let Some(a) = &attached_to {
+                        self.incidentio
+                            .attach_alert_to_incident(&io_alert.id, &a.id)
+                            .await?;
+                    }
+                    if self.note {
+                        let content = note::render(&NoteInput {
+                            alert: &io_alert,
+                            answers: &answers,
+                            decision: &decision,
+                            attached: attached_to.as_ref(),
+                            component: alert.component.as_ref(),
+                            links: &links,
+                            related: &alert.related_alerts,
+                            related_window: self.related_window,
+                            changes: &alert.recent_changes,
+                            tags: &tags,
+                            time_to_qualify,
+                        });
+                        // The note is a convenience on top of the tags; its failure
+                        // must not undo what was already written.
+                        match self.write_note(&io_alert.id, &content).await {
+                            Ok((id, status)) => {
+                                note_write = NoteWrite {
+                                    status,
+                                    id: Some(id),
+                                    error: None,
+                                };
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "qualification note failed");
+                                note_write = NoteWrite {
+                                    status: NoteStatus::Failed,
+                                    id: None,
+                                    error: Some(e.to_string()),
+                                };
+                            }
+                        }
+                    } else {
                         note_write = NoteWrite {
-                            status,
-                            id: Some(id),
+                            status: NoteStatus::Disabled,
+                            id: None,
                             error: None,
                         };
                     }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "qualification note failed");
-                        note_write = NoteWrite {
-                            status: NoteStatus::Failed,
-                            id: None,
-                            error: Some(e.to_string()),
-                        };
+                    if self.notify_owner
+                        && let Some(enricher) = &self.backstage
+                        && let Some(owner) = decision.owner()
+                        && let Some(candidate) = answers.candidates.get(&owner.key)
+                    {
+                        match enricher
+                            .notify_owner(
+                                candidate,
+                                &io_alert.title,
+                                &decision,
+                                io_alert.source_url.clone(),
+                            )
+                            .await
+                        {
+                            Ok(true) => notified.clone_from(&candidate.entity_ref),
+                            Ok(false) => {}
+                            // A failed notification must not undo the tags already written.
+                            Err(e) => tracing::warn!(error = %e, "owner notification failed"),
+                        }
                     }
-                }
-            } else {
-                note_write = NoteWrite {
-                    status: NoteStatus::Disabled,
-                    id: None,
-                    error: None,
-                };
-            }
-            if self.notify_owner
-                && let Some(enricher) = &self.backstage
-                && let Some(owner) = decision.owner()
-                && let Some(candidate) = answers.candidates.get(&owner.key)
-            {
-                match enricher
-                    .notify_owner(
-                        candidate,
-                        &io_alert.title,
-                        &decision,
-                        io_alert.source_url.clone(),
-                    )
-                    .await
-                {
-                    Ok(true) => notified = candidate.entity_ref.clone(),
-                    Ok(false) => {}
-                    // A failed notification must not undo the tags already written.
-                    Err(e) => tracing::warn!(error = %e, "owner notification failed"),
-                }
-            }
+                    Ok::<(), FlowError>(())
+                },
+                write_back,
+            )
+            .await?;
         }
 
         let candidate_incidents: Vec<IncidentRef> = candidates
@@ -399,6 +419,15 @@ impl Triager {
                 forwarded: None,
             },
         });
+
+        tracing::Span::current().record("decision", outcome.decision.key());
+        crate::telemetry::record_triage(
+            outcome.decision.key(),
+            decision.owner().map(|o| o.key.as_str()),
+            if applied { "applied" } else { "dry_run" },
+            started.elapsed(),
+            time_to_qualify,
+        );
 
         // A handful of flat fields stay indexable on their own; everything
         // else that used to be dumped here is inside `outcome`, which is the
