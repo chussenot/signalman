@@ -2,15 +2,13 @@
 # https://mise.jdx.dev — run `mise install` once, then `mise run <task>` (or `mise tasks`).
 
 [tools]
-# Toolchain version comes from rust-toolchain.toml (mise reads it as an idiomatic version file).
+# Keep in step with rust-toolchain.toml, which rustup and CI read. mise must not read that
+# file itself: its parser keeps the TOML quotes and rejects the version (mise 2026.9.12).
 rust = { version = "1.94.1", components = "rustfmt,clippy" }
 prek = "latest"
 # bd (beads) is installed once, system-wide: `brew install beads` or `npm install -g @beads/bd`.
 # It is not pinned here because its npm package downloads a platform binary in a postinstall
 # step, which fails behind some proxies and would break `mise install` for everyone.
-
-[settings]
-idiomatic_version_file_enable_tools = ["rust"]
 
 [env]
 RUST_BACKTRACE = "1"
