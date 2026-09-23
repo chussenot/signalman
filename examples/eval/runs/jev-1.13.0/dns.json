@@ -1,0 +1,52 @@
+{
+  "case": "dns",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "actionable": {
+        "type": "noul",
+        "noul": 0.94
+      },
+      "caused_by_change": {
+        "type": "noul",
+        "noul": 0.89
+      },
+      "impact": {
+        "type": "score",
+        "score": 2.23,
+        "legend": {
+          "0": "No user-facing impact: internal, informational, or affects only non-production",
+          "1": "Degraded experience for a small subset of users or one non-critical feature",
+          "2": "Degraded or failing for most users, or a critical feature is unavailable",
+          "3": "Full outage: the product is unavailable or data integrity is at risk for everyone"
+        },
+        "probabilities": {
+          "0": 0.02,
+          "1": 0.0,
+          "2": 0.72,
+          "3": 0.26
+        },
+        "confidence": 0.7
+      },
+      "owner": {
+        "type": "choice",
+        "choice": "network",
+        "probabilities": {
+          "application": 0.0,
+          "database": 0.0,
+          "network": 1.0,
+          "none_of_these": 0.0,
+          "observability": 0.0,
+          "platform": 0.0,
+          "security": 0.0
+        },
+        "confidence": 1.0
+      }
+    },
+    "usage": {
+      "input_tokens": 881,
+      "output_tokens": 122
+    }
+  },
+  "elapsed_ms": 285
+}

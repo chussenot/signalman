@@ -55,6 +55,8 @@ signalman eval cases.jsonl --replay runs/jev-1.13.0            # re-grade under 
 signalman eval cases.jsonl --json > report.json                # the full report, every case included
 ```
 
+One recording is committed: `examples/eval/runs/jev-1.13.0` holds the raw `jev-1.13.0` answers to the three example cases from the first live run (2026-09-23), so `--replay examples/eval/runs/jev-1.13.0` grades a policy change with no key and no model call. A wording change invalidates it, as explained below.
+
 `--model`, the configuration file and the environment choose the model and the wording, exactly as for `serve` ([Configuration](configuration.md)). The harness uses the fallback team list as owner candidates: no catalog lookup, so a case is reproducible from the file alone. Put the resolved `component` into the alert JSON if the catalog context should be part of the state.
 
 ## The report

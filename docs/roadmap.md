@@ -12,9 +12,9 @@ The backlog is tracked in beads (`bd ready`). This page is the narrative index; 
 
 ## Unverified
 
-Nothing has run against a live TypeSafe or incident.io instance; the Backstage catalog calls have, once (`signalman-b11.5`, 2026-09-23), and the rest of the Backstage integration has not. Wire shapes follow the documented examples and OpenAPI specifications. Epic `signalman-b11` covers live verification:
+Nothing has run against a live incident.io account. TypeSafe has answered once (`signalman-b11.1`, 2026-09-23: `jev-latest` resolved to `jev-1.13.0`, the three example alerts decided as labelled, the raw responses kept under `examples/eval/runs/jev-1.13.0` for replay), and the Backstage catalog calls have, once (`signalman-b11.5`); the rest of the Backstage integration has not. Wire shapes follow the documented examples and OpenAPI specifications. Epic `signalman-b11` covers live verification:
 
-- A real TypeSafe call over the example alerts, recording the versioned model and the distributions.
+- TypeSafe: done. Every answer parsed without a `Decode` error; owner, actionability, duplicate and change judgments matched the labels, impact did on two of three (the `dns` case scored `major` where the label says `outage`, `signalman-ufg.7` follows up).
 - `incidentio whoami` to confirm key scopes.
 - The repeated-key form of `status_category[one_of]` on the incidents list, the likeliest drift point.
 - A signed webhook end to end through Svix Play or ngrok.

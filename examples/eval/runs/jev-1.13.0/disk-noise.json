@@ -1,0 +1,48 @@
+{
+  "case": "disk-noise",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "actionable": {
+        "type": "noul",
+        "noul": 0.18
+      },
+      "impact": {
+        "type": "score",
+        "score": 0.0,
+        "legend": {
+          "0": "No user-facing impact: internal, informational, or affects only non-production",
+          "1": "Degraded experience for a small subset of users or one non-critical feature",
+          "2": "Degraded or failing for most users, or a critical feature is unavailable",
+          "3": "Full outage: the product is unavailable or data integrity is at risk for everyone"
+        },
+        "probabilities": {
+          "0": 1.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.0
+        },
+        "confidence": 1.0
+      },
+      "owner": {
+        "type": "choice",
+        "choice": "platform",
+        "probabilities": {
+          "application": 0.0,
+          "database": 0.0,
+          "network": 0.0,
+          "none_of_these": 0.0,
+          "observability": 0.0,
+          "platform": 1.0,
+          "security": 0.0
+        },
+        "confidence": 1.0
+      }
+    },
+    "usage": {
+      "input_tokens": 830,
+      "output_tokens": 103
+    }
+  },
+  "elapsed_ms": 308
+}
