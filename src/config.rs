@@ -53,6 +53,14 @@ pub const ENV_VARS: &[(&str, &str)] = &[
         "SIGNALMAN_TRIAGE_TIMEOUT_SECONDS",
         "server.triage_timeout_seconds",
     ),
+    (
+        "SIGNALMAN_READINESS_CACHE_SECONDS",
+        "server.readiness_cache_seconds",
+    ),
+    (
+        "SIGNALMAN_READINESS_TIMEOUT_SECONDS",
+        "server.readiness_timeout_seconds",
+    ),
     ("TYPESAFE_BASE_URL", "typesafe.base_url"),
     ("TYPESAFE_DEFAULT_MODEL", "typesafe.model"),
     ("TYPESAFE_TIMEOUT_SECONDS", "typesafe.timeout_seconds"),
@@ -169,6 +177,11 @@ pub struct ServerFile {
     pub max_queued_triages: Option<usize>,
     /// Deadline for one triage, all upstream calls included.
     pub triage_timeout_seconds: Option<u64>,
+    /// How long `GET /readyz` reuses its last upstream check; `0` checks on
+    /// every request.
+    pub readiness_cache_seconds: Option<u64>,
+    /// Per-upstream deadline for one readiness check; at least 1.
+    pub readiness_timeout_seconds: Option<u64>,
 }
 
 /// `[typesafe]`
@@ -444,12 +457,24 @@ pub struct Server {
     pub max_queued_triages: usize,
     /// Deadline for one triage in seconds.
     pub triage_timeout_seconds: u64,
+    /// How long `GET /readyz` reuses its last upstream check, in seconds.
+    pub readiness_cache_seconds: u64,
+    /// Per-upstream deadline for one readiness check, in seconds.
+    pub readiness_timeout_seconds: u64,
 }
 
 impl Server {
     /// The triage deadline as a duration.
     pub fn triage_timeout(&self) -> Duration {
         Duration::from_secs(self.triage_timeout_seconds)
+    }
+
+    /// What the readiness probe takes.
+    pub fn readiness(&self) -> crate::readiness::Settings {
+        crate::readiness::Settings {
+            cache: Duration::from_secs(self.readiness_cache_seconds),
+            timeout: Duration::from_secs(self.readiness_timeout_seconds),
+        }
     }
 }
 
@@ -609,6 +634,18 @@ impl Config {
             )?
             .or(file.server.triage_timeout_seconds)
             .unwrap_or(crate::serve::DEFAULT_TRIAGE_TIMEOUT.as_secs()),
+            readiness_cache_seconds: env_parsed(
+                "SIGNALMAN_READINESS_CACHE_SECONDS",
+                "server.readiness_cache_seconds",
+            )?
+            .or(file.server.readiness_cache_seconds)
+            .unwrap_or(crate::readiness::DEFAULT_CACHE.as_secs()),
+            readiness_timeout_seconds: env_parsed(
+                "SIGNALMAN_READINESS_TIMEOUT_SECONDS",
+                "server.readiness_timeout_seconds",
+            )?
+            .or(file.server.readiness_timeout_seconds)
+            .unwrap_or(crate::readiness::DEFAULT_TIMEOUT.as_secs()),
         };
         if server.max_concurrent_triages == 0 {
             return Err(Error::Invalid(
@@ -618,6 +655,11 @@ impl Config {
         if server.triage_timeout_seconds == 0 {
             return Err(Error::Invalid(
                 "server.triage_timeout_seconds must be at least 1".into(),
+            ));
+        }
+        if server.readiness_timeout_seconds == 0 {
+            return Err(Error::Invalid(
+                "server.readiness_timeout_seconds must be at least 1".into(),
             ));
         }
         let typesafe = Typesafe {
@@ -840,6 +882,8 @@ mod tests {
         assert_eq!(c.server.max_concurrent_triages, 8);
         assert_eq!(c.server.max_queued_triages, 64);
         assert_eq!(c.server.triage_timeout_seconds, 60);
+        assert_eq!(c.server.readiness_cache_seconds, 30);
+        assert_eq!(c.server.readiness_timeout_seconds, 3);
         assert_eq!(c.typesafe.model, crate::client::DEFAULT_MODEL);
         assert!(c.flow.note);
         assert_eq!(c.flow.related_window_minutes, 30);
@@ -883,6 +927,29 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("transport"), "{err}");
+    }
+
+    #[test]
+    fn readiness_settings_are_file_then_validated() {
+        let s = Settings::parse(
+            "[server]\nreadiness_cache_seconds = 0\nreadiness_timeout_seconds = 5\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        let r = c.server.readiness();
+        assert_eq!(r.cache, Duration::ZERO);
+        assert_eq!(r.timeout, Duration::from_secs(5));
+
+        let s = Settings::parse(
+            "[server]\nreadiness_timeout_seconds = 0\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let err = Config::resolve(&s, &Overrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("readiness_timeout_seconds"), "{err}");
     }
 
     #[test]

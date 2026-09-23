@@ -81,6 +81,7 @@ src/
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
+  readiness.rs     GET /readyz: upstream checks, deadline, cached report
   outcome.rs       the outcome contract: wire types, builder, schema
   config.rs        configuration layers: file schema, env, flags, resolve
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument

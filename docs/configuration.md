@@ -50,6 +50,8 @@ TOML, every key optional, unknown keys rejected. Location, first match wins: `--
 | `server.max_concurrent_triages` | `SIGNALMAN_MAX_CONCURRENT_TRIAGES` | | `8` | triages running at once; at least 1 |
 | `server.max_queued_triages` | `SIGNALMAN_MAX_QUEUED_TRIAGES` | | `64` | triages waiting for a slot; a delivery beyond that is refused with `503` and `Retry-After` so incident.io retries it |
 | `server.triage_timeout_seconds` | `SIGNALMAN_TRIAGE_TIMEOUT_SECONDS` | | `60` | deadline for one triage, every upstream call and retry included; at least 1 |
+| `server.readiness_cache_seconds` | `SIGNALMAN_READINESS_CACHE_SECONDS` | | `30` | how long `GET /readyz` reuses its last upstream check; `0` checks on every request ([Operations](operations.md#readiness)) |
+| `server.readiness_timeout_seconds` | `SIGNALMAN_READINESS_TIMEOUT_SECONDS` | | `3` | per-upstream deadline for one readiness check; at least 1 |
 
 ### `[typesafe]`
 

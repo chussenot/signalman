@@ -74,7 +74,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [MCP server](docs/mcp.md) | The tools an agent calls, stdio and Streamable HTTP, connecting a client, what still writes nothing |
 | [Backstage bridge](docs/backstage.md) | Catalog ownership, TechDocs runbooks, notifications, registering signalman |
 | [Configuration](docs/configuration.md) | The four layers, every setting, Kubernetes |
-| [Operations](docs/operations.md) | Running, health, limits, failure modes |
+| [Operations](docs/operations.md) | Running, health and readiness, limits, failure modes |
 | [Observability](docs/observability.md) | Spans, metrics, OTLP export, what to alert on |
 | [Development](docs/development.md) | Tools, tasks, gates, layout, planning, agent harness |
 | [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |

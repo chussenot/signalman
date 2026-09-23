@@ -29,6 +29,7 @@ use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
 use signalman::mcp::http::McpToken;
 use signalman::outcome::{self, AlertRef, IncidentRef, Outcome};
+use signalman::readiness::Probe;
 use signalman::serve::{AppState, Limits, router};
 use signalman::telemetry::Providers;
 use signalman::triage::{Alert, Decision, OpenIncident, TriageAnswers, TriageQuestions, decide};
@@ -773,6 +774,7 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
     let mcp_triager = triager.clone();
     let mut state = AppState::with_limits(secret, triager, limits);
     state.changes_token = changes_token;
+    state.readiness = Probe::new(&state.triager, cfg.server.readiness());
     let mut app = router(Arc::new(state));
     match (cfg.mcp.enabled, McpToken::from_env()) {
         (true, Some(token)) => {
@@ -792,7 +794,7 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
         (false, _) => tracing::info!("MCP over HTTP not mounted: mcp.enabled is false"),
     }
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, max_concurrent = limits.max_concurrent, max_queued = limits.max_queued, timeout_seconds = limits.timeout.as_secs(), "listening for incident.io webhooks at /webhooks/incidentio");
+    tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, max_concurrent = limits.max_concurrent, max_queued = limits.max_queued, timeout_seconds = limits.timeout.as_secs(), readiness_cache_seconds = cfg.server.readiness_cache_seconds, "listening for incident.io webhooks at /webhooks/incidentio; /healthz and /readyz");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

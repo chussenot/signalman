@@ -1,6 +1,6 @@
 ---
 title: Operations
-description: Running the webhook receiver, its endpoints and manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
+description: Running the webhook receiver, its endpoints including liveness and readiness, its manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
 status: current
 last_reviewed: 2026-09-23
 tags: [operations]
@@ -26,11 +26,36 @@ Startup fails fast on a missing secret, an unknown key in the configuration file
 |---|---|
 | `POST /webhooks/incidentio` | delivery endpoint |
 | `GET /healthz` | liveness; returns `ok` |
+| `GET /readyz` | readiness; 200 when incident.io, TypeSafe and (when configured) Backstage answer with the configured credentials, 503 with a JSON body naming the failing upstream; cached 30 s |
 | `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
 | `POST /changes/argocd`, `POST /changes/gitlab` | native adapters: Argo CD `Application` (bearer) and GitLab webhooks (`X-Gitlab-Token`) |
 | `POST /mcp` | the [MCP server](mcp.md#transports) over Streamable HTTP; mounted only when `SIGNALMAN_MCP_TOKEN` is set; bearer token; stateless, no session id, so replicas need no session affinity |
 
-There is no readiness endpoint yet; upstream reachability is only known when a flow runs.
+## Readiness
+
+`GET /healthz` says the process runs. `GET /readyz` says the upstreams this replica needs answer with the credentials it holds. Each check is the cheapest authenticated call the upstream offers: incident.io `GET /v1/identity`, TypeSafe `GET /v1/models`, and, only when `backstage.base_url` is set, one catalog `by-query` for a single component. The body has two entries, or three with Backstage. A wrong or revoked API key therefore shows as not ready at rollout, not at the first alert.
+
+The response is `200` when every upstream answered and `503` otherwise, with the same JSON body either way and `Cache-Control: no-store`:
+
+```json
+{
+  "ready": false,
+  "checked_at": "2026-09-23T03:31:28.749886571Z",
+  "cached": false,
+  "upstreams": [
+    { "service": "typesafe", "ok": true, "latency_ms": 1 },
+    { "service": "incidentio", "ok": false, "latency_ms": 1, "error": "incident.io rejected the credentials (401) [request_id r]" }
+  ]
+}
+```
+
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended.
+
+The checks run concurrently, each under its own deadline, `server.readiness_timeout_seconds` (default `3`, at least 1). The report is cached for `server.readiness_cache_seconds` (default `30`; `0` checks on every request), failures included, so probe storms and many replicas do not turn readiness into load on the upstreams; incident.io rate-limits the API key. Concurrent probes while a check is in flight wait for that one check rather than each running their own. `cached: true` marks a reused report. Both settings follow the usual layers ([Configuration](configuration.md#server)); there are no flags. The MCP-only process (`signalman mcp --transport http`) serves `/healthz` only.
+
+The trade-off is an operational decision. With upstream checks in the readiness probe, an incident.io or TypeSafe outage marks every replica unready, so the Kubernetes Service stops routing deliveries to signalman. Those are deliveries it could not process anyway. incident.io retries non-2xx responses and connection failures for 24 hours, so nothing is lost, and the deployment recovers by itself when the upstream does. The price is that during such an outage the receiver cannot acknowledge or deduplicate either. That is accepted: a triage it cannot complete has no value, and the retry is free. Probe settings should tolerate a blip: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure. With the 30 s cache a probe sees a stale answer for up to 30 s, which is fine for readiness; it is meant to be slow-moving.
+
+Each uncached check runs inside a `readiness.check` span; the upstream calls it makes are the already instrumented ones, so a failed probe also counts in `signalman.upstream.errors` ([Observability](observability.md#spans)). A failed check logs one `warn` line naming the service and the error. Like the rest of the receiver, the endpoint is tested against wiremock only, never a live account.
 
 ## Manual commands
 
@@ -116,7 +141,10 @@ spec:
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
           readinessProbe:
-            httpGet: { path: /healthz, port: 8080 }   # no upstream check yet (roadmap)
+            httpGet: { path: /readyz, port: 8080 }    # upstream checks; see Readiness above
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
       volumes:
         - name: config
           configMap: { name: signalman-config }
