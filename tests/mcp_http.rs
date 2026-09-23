@@ -162,6 +162,24 @@ async fn an_authenticated_client_lists_the_tools_and_calls_one_over_http() {
     assert_eq!(body["changes"], json!([]));
 }
 
+/// Stateless by construction: there is no standalone SSE stream to `GET`
+/// and no session to `DELETE`, so both answer 405 with the token presented,
+/// and the token check still comes first without it.
+#[tokio::test]
+async fn get_and_delete_answer_405_because_there_is_no_session() {
+    let app = mcp_router(Server::new(triager(), false), mcp_token(), &[]);
+    let addr = listen(app).await;
+    let http = reqwest::Client::new();
+    let url = format!("http://{addr}{PATH}");
+
+    for req in [http.get(&url), http.delete(&url)] {
+        let res = req.bearer_auth(MCP_TOKEN).send().await.unwrap();
+        assert_eq!(res.status(), 405, "{}", res.url());
+    }
+    let res = http.get(&url).send().await.unwrap();
+    assert_eq!(res.status(), 401, "the token is checked before the method");
+}
+
 /// `allow_write` is honoured over HTTP exactly as over stdio.
 #[tokio::test]
 async fn allow_write_registers_the_write_tool_over_http_too() {
