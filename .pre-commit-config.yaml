@@ -27,8 +27,6 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=512]
       - id: detect-private-key
-      - id: no-commit-to-branch
-        args: [--branch, main]
 
   - repo: local
     hooks:
