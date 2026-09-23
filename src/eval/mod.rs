@@ -305,7 +305,8 @@ pub async fn run(
                 context: path.display().to_string(),
                 source,
             })?;
-            std::fs::write(&path, text).map_err(|source| Error::Io {
+            // Committed recordings end with a newline like any text file.
+            std::fs::write(&path, text + "\n").map_err(|source| Error::Io {
                 path: path.display().to_string(),
                 source,
             })?;
