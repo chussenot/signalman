@@ -1834,7 +1834,7 @@ What the test suite proves: `tests/telemetry.rs` starts a `wiremock` server stan
 
 ## Tools
 
-[mise](https://mise.jdx.dev) pins every tool in `mise.toml`: the Rust toolchain (the same version as `rust-toolchain.toml`, which rustup and CI read) and [prek](https://prek.j178.dev) for git hooks. The beads CLI `bd` is a one-time global install (`brew install beads` or `npm install -g @beads/bd`); it is not pinned because its npm package downloads a platform binary in a postinstall step that fails behind some proxies.
+[mise](https://mise.jdx.dev) pins every tool in `mise.toml`: the Rust toolchain (the same version as `rust-toolchain.toml`, which rustup and CI read) and [prek](https://prek.j178.dev) for git hooks. The beads CLI `bd` comes from the GitHub release binary rather than the npm package, whose postinstall step downloads a platform binary and fails behind some proxies.
 
 ```sh
 mise install        # tools
