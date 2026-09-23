@@ -2104,7 +2104,7 @@ C4Container
     Person(oncall, "On-call engineer")
     Person(operator, "Platform engineer")
     System_Boundary(sm, "signalman") {
-        Container(serve, "Webhook receiver", "Rust, axum, tokio", "POST /webhooks/incidentio: verifies, deduplicates, acknowledges, runs the triage in the background. GET /healthz.")
+        Container(serve, "Webhook receiver", "Rust, axum, tokio", "POST /webhooks/incidentio: verifies, deduplicates, acknowledges, runs the triage in the background. GET /healthz for liveness, GET /readyz for readiness against the upstreams.")
         Container(cli, "CLI", "Rust, clap", "triage, incidentio, backstage and models commands for operators and evaluation")
         Container(lib, "Triage library", "Rust crate", "Typed TypeSafe client, triage questions and policy, incident.io and Backstage bridges, shared retry loop")
     }
