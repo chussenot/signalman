@@ -2,7 +2,7 @@
 title: Evaluation harness
 description: How to replay labelled alerts through the triage questions, what the report measures (accuracy, Brier, calibration error, decision agreement, latency), how recording and replay separate inference from policy tuning, and how to use it to compare models.
 status: current
-last_reviewed: 2026-09-21
+last_reviewed: 2026-09-23
 tags: [evaluation, triage, tuning, typesafe]
 ---
 
@@ -121,4 +121,4 @@ Any endpoint that speaks the System One shape can be evaluated by pointing `type
 
 - Grading is argmax against one label. Alerts with two acceptable owners, or an impact between two levels, count as wrong unless the label says otherwise; the JSON report's `p_expected` shows how much probability the model gave the label.
 - The harness does not consult Backstage; catalog candidates can be reproduced by writing the `component` and the owner list into the case.
-- The example file's labels are the maintainers' reading of three synthetic alerts. Nothing here has been run against a real model yet ([roadmap](roadmap.md)).
+- The example file's labels are the maintainers' reading of three synthetic alerts. The harness has run against Laya through a local shim, which is the report above; it has not yet been run against Jev, TypeSafe's hosted model, nor against real alert history ([roadmap](roadmap.md)). The numbers above say how the harness reads, not how Jev performs.

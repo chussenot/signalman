@@ -2,7 +2,7 @@
 title: Triage
 description: The state signalman builds for an alert, the questions it asks in one request, the policy that turns the answers into a decision, the outcome contract every triage emits, what of it is configuration and what is code, and how to tune it.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [triage, typesafe, policy]
 ---
 
@@ -12,13 +12,13 @@ Triage is one request to the model and one pass through a policy. The request as
 
 ## State
 
-The `state` is `{ "alert": Alert }`. Every field either answers a question or is left out; each one costs input tokens and dilutes attention.
+The model can only judge what it is shown, and everything it is shown costs input tokens and dilutes attention across the questions. The `state` is therefore `{ "alert": Alert }` with every field either answering a question or left out.
 
 | Field | Source | Read by |
 |---|---|---|
 | `source`, `title`, `description`, `labels` | the alert | every question |
 | `runbook` | the alert, or TechDocs when Backstage is configured | owner, actionable |
-| `open_incidents` | live incidents from incident.io, capped at 40 | `duplicate_of` |
+| `open_incidents` | open incidents from incident.io, [capped at 40](incidentio.md#candidate-incidents) | `duplicate_of` |
 | `recent_changes` | the alert file, or the [change feed](changes.md): deploys and changes posted by delivery tools that touched the component or the platform in the last two hours | `caused_by_change` |
 | `component` | the Backstage catalog: owner, lifecycle, system, dependencies, dependents, tags, links | owner, impact |
 | `related_alerts` | alerts firing in incident.io in the recent window (default 30 minutes, at most 20): title, age in minutes, component label | impact |
@@ -61,7 +61,7 @@ Owner candidates are data, not a type. With Backstage configured they are catalo
 
 ## The decision
 
-`decide` in `src/triage/policy.rs` is pure code over typed answers.
+Five judgments have to become one action, and a decision that pages someone at 03:00 must be traceable to a number and a threshold rather than to prose ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)). `decide` in `src/triage/policy.rs` is therefore pure code over typed answers: no model call, no text, one decision.
 
 ```mermaid
 flowchart TD
@@ -80,16 +80,18 @@ flowchart TD
 
 Order is priority. Suppression wins over everything: a non-actionable alert is dropped even if it looks like a duplicate. Deduplication wins over routing: attaching to the incident that already has responders beats paging a second team. Only then does ownership matter, and only a confident owner gets an automatic route.
 
-| Threshold | Default | Meaning |
-|---|---|---|
-| `suppress_below` | 0.25 | below this probability of being actionable, suppress |
-| `attach_confidence` | 0.75 | dedup confidence needed to attach |
-| `human_below_confidence` | 0.40 | owner confidence below which a person triages |
-| `auto_route_confidence` | 0.70 | owner confidence below which the route is marked for confirmation |
-| `page_at` | `Major` | impact level at or above which the owner is paged rather than ticketed |
-| `flag_change_above` | 0.65 | probability above which a recent change is flagged as suspected cause |
+Each threshold trades one failure against another: the cost of a needless page against the cost of a missed one, or a needless human hand-off against a wrong automatic route. The table says what goes wrong at each extreme.
 
-These are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the evaluation work in the [roadmap](roadmap.md).
+| Threshold | Default | Meaning | Set too low | Set too high |
+|---|---|---|---|---|
+| `suppress_below` | 0.25 | below this probability of being actionable, suppress | noise reaches a team and costs pages | a real alert the model was unsure about is dropped silently; the costliest error, which is why the default sits low |
+| `attach_confidence` | 0.75 | dedup confidence needed to attach | an alert on a separate problem is buried under an unrelated incident | duplicates open second incidents and page a second team |
+| `human_below_confidence` | 0.40 | owner confidence below which a person triages | weak guesses route automatically to the wrong team | most alerts land in the triage channel and the tool saves no time |
+| `auto_route_confidence` | 0.70 | owner confidence below which the route is marked for confirmation | uncertain routes carry no prompt to check ownership | every route is marked and the prompt stops meaning anything; it changes the note and `owner.status`, never the route |
+| `page_at` | `Major` | impact level at or above which the owner is paged rather than ticketed | minor impact wakes people | a major waits for business hours in a ticket |
+| `flag_change_above` | 0.65 | probability above which a recent change is flagged as suspected cause | every deploy in the window is blamed | the likely cause goes unmentioned; it affects a tag and a note line, never the route |
+
+`human_below_confidence` must not exceed `auto_route_confidence`, or no confidence could route automatically; the configuration is rejected when it does. The defaults are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the [evaluation harness](evaluation.md) to have labelled history to measure them against ([roadmap](roadmap.md)); its `conf|right` and `conf|wrong` columns are what a threshold is chosen from.
 
 ## The outcome contract
 
@@ -337,6 +339,8 @@ Every enumeration is `snake_case` on the wire.
 
 Tags are what incident.io routes on, so they stay lowercase and hyphenated as they were deployed. Every one of them is derivable from the document, which is what makes them a lossy view of it rather than a second source of truth. `Outcome::validate` rejects a document carrying an `ai-*` tag its own fields do not imply.
 
+That guarantee holds because the tag strings have one source. `src/outcome.rs` owns the tag builder, the `ai-action-*` values and the `ai-impact-*` keys; the flow's `tags_for` in `src/incidentio/sync.rs` and the document's own `expected_tags` both call it, so a new action or impact level is named once. `ai-suspected-change` is taken from the decision's `suspected_change` flag, not recomputed from the `caused_by_change` probability, so the `flag_change_above` threshold lives in one place, the policy, and a tag can never disagree with the decision written next to it.
+
 | Tag | Derived from |
 |---|---|
 | `ai-team-<key>` | `judgments.owner.chosen`, lowercased with underscores turned into hyphens, so `none_of_these` becomes `ai-team-none-of-these` |
@@ -394,7 +398,7 @@ Every decision carries its typed judgments in [the outcome contract](#the-outcom
 4. `signalman eval cases.jsonl --replay runs/<model>` to see the decisions under the new thresholds, without calling the model.
 5. Pin `typesafe.model` to the version recorded against in the same file and re-evaluate before moving to a new one.
 
-`flag_change_above` now governs the `ai-suspected-change` tag in full. The tag used to be recomputed from a hardcoded `caused_by_change` probability of 0.65 at the moment the tags were built, which ignored the configured threshold. It is taken from the decision's own `suspected_change` flag instead, so it honours `flag_change_above` and appears only on a `page` or a `ticket`.
+Every threshold, `flag_change_above` included, acts through the decision, and the tags are derived from the decision ([Tags are a view of the document](#tags-are-a-view-of-the-document)), so a replay under new thresholds shows the tags that would have been written as well as the action.
 
 ## Testing
 
