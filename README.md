@@ -48,13 +48,13 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 ## Quick start
 
 ```sh
-mise install            # toolchain, prek, bd
+mise install            # toolchain and prek; bd is a one-time global install
 mise run setup          # git hooks
 mise run check          # all quality gates
 cp .env.example .env    # secrets only; never committed
 cp examples/config/signalman.toml signalman.toml   # the deployment's shape; edit, then
 mise run config:show    # see the effective configuration after file, env and flags
-mise run serve          # webhook receiver on 127.0.0.1:8080
+mise run serve          # webhook receiver on 0.0.0.0:8080, the example file's address; the built-in default is 127.0.0.1:8080
 ```
 
 Configuration is layered, lowest to highest: built-in default, TOML file, environment variable, flag. Secrets are environment only. [Configuration](docs/configuration.md) lists every setting.
@@ -64,7 +64,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | Page | Contents |
 |---|---|
 | [Architecture](docs/architecture.md) | Components, the path of one alert, boundaries, failure containment |
-| [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams |
+| [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams; the container and component pages are reached from the context page |
 | [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |

@@ -8,11 +8,13 @@ tags: [mcp, agents, decisions]
 
 # MCP server
 
-signalman serves six tools over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP): the same typed judgments the CLI and the webhook receiver produce, callable from an agent. `signalman mcp` serves them alone, over stdio or Streamable HTTP; `signalman serve` also mounts them at `/mcp` next to the webhook receiver (see [Transports](#transports)). Five are always registered and read-only. A sixth, `apply_qualification`, writes to incident.io and is registered only when `mcp.allow_write` is turned on (default off; see [Writing](#writing)). [Decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md) is why this exists and why it stops here: signalman is a tool for agents, not an agent. No tool creates an incident, and none runs a generative model. Every tool is a thin wrapper over a function the CLI subcommands already call, so there is exactly one implementation of each capability.
+An agent investigating an alert needs signalman's judgments (who owns this, how bad is it, is it a duplicate) without parsing a log line or shelling out to the CLI. This page describes how those judgments are served over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP): six tools, the same typed judgments the CLI and the webhook receiver produce. `signalman mcp` serves them alone, over stdio or Streamable HTTP; `signalman serve` also mounts them at `/mcp` next to the webhook receiver (see [Transports](#transports)). Five are always registered and read-only. A sixth, `apply_qualification`, writes to incident.io and is registered only when `mcp.allow_write` is turned on (default off; see [Writing](#writing)). Why the server exists and why it stops at these six is [decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md): signalman is a tool for agents, not an agent. Every tool wraps a function the CLI subcommands already call, so there is one implementation of each capability.
 
 Contract source: the official Rust SDK, [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (`modelcontextprotocol/rust-sdk`), with its server, stdio transport and Streamable HTTP server features (`transport-streamable-http-server`). The binary carries no MCP client and no OAuth feature.
 
 ## Tools
+
+Each tool answers one question an agent asks during an investigation, and each maps to a CLI subcommand or an outcome field so that what the agent sees is what an operator would see.
 
 | Tool | Answers | Mirrors |
 |---|---|---|
@@ -26,11 +28,11 @@ Every tool in this table has `read_only_hint: true`. Every result carries the va
 
 ## Writing
 
-`apply_qualification` is a sixth tool, registered only when `mcp.allow_write` is `true` (default `false`; see [Configuration](#configuration)). It applies a `qualify_alert` result: it writes the tags, rewrites the qualification note in place, and attaches the alert to an incident when the decision says so.
+An agent that has reviewed a `qualify_alert` result needs a way to apply it, and a tool that took free-form tags or note text would let a model write whatever it composed. `apply_qualification` is a sixth tool, registered only when `mcp.allow_write` is `true` (default `false`; see [Configuration](#configuration)). It applies a `qualify_alert` result: it writes the tags, rewrites the qualification note in place, and attaches the alert to an incident when the decision says so.
 
 Input is `{ "alert_id": string, "outcome": <Outcome> }`, where `outcome` must be the exact [outcome document](triage.md#the-outcome-contract) a prior `qualify_alert(alert_id)` call returned for that same alert. The tool checks `outcome.alert.id == alert_id` and refuses (a protocol-level `invalid_params` error) if they differ, which also rules out `qualify_alert`'s standalone `alert` form: that form never has an alert id to match. It then revalidates the document (`Outcome::validate`) and rebuilds the decision from it; either failing is also `invalid_params`. Every write is re-derived from the document's own typed judgments — the tags, the attach target, the note content — so the tool cannot be used to write anything the outcome does not already say, and it never accepts a free-form instruction about what to write. It never creates an incident ([decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md) still holds).
 
-Output is a `Writes` object: `mode: "applied"`, `tags_applied` and `attached` booleans, and a `note` object (`status` of `created`, `updated`, `disabled` or `failed`, an optional note `id`, an optional `error`). The `notified` and `forwarded` fields are always absent from this tool's result; they belong to a different write path and this tool does not send notifications.
+Output is a `Writes` object: `mode: "applied"`, `tags_applied` and `attached` booleans, and a `note` object (`status` of `created`, `replaced`, `failed`, `disabled` or `skipped`, an optional note `id`, an optional `error`; `replaced` is an earlier pass's note rewritten in place, `skipped` is a dry run or a path that never attempts a note). The `notified` and `forwarded` fields are always absent from this tool's result; they belong to a different write path and this tool does not send notifications.
 
 Calling `apply_qualification` twice with the same outcome is safe: the tags and the attachment are idempotent on incident.io's side, and the note is replaced in place using the same marker-line template and "never stacked" behavior as the rest of the triage flow (`src/incidentio/note.rs`), never a second note. Its annotations reflect this: `read_only_hint: false`, `destructive_hint: false`, `idempotent_hint: true`, `open_world_hint: true`.
 
@@ -57,7 +59,7 @@ allow_write = false # registers apply_qualification when true; off by default
 
 ## Transports
 
-The same `Server` (`src/mcp.rs`) is reachable two ways. Over **stdio**, `signalman mcp` speaks newline-delimited JSON-RPC on stdin and stdout, one client per process, trusted by the process boundary; the client launches it. Over **Streamable HTTP** (`src/mcp/http.rs`), the server is mounted at `POST /mcp` on an axum router behind a bearer token, and any number of clients reach it over the network. The tool list is identical: `qualify_alert` is a forced dry run over HTTP exactly as over stdio, and `apply_qualification` is registered over HTTP if and only if `mcp.allow_write` is true.
+Two transports exist because agents run in two places: on an engineer's machine, where a client can launch a process and own it, and in a platform, where many clients reach one deployment over the network and a process-per-client is not an option. The same `Server` (`src/mcp.rs`) is reachable two ways. Over **stdio**, `signalman mcp` speaks newline-delimited JSON-RPC on stdin and stdout, one client per process, trusted by the process boundary; the client launches it. Over **Streamable HTTP** (`src/mcp/http.rs`), the server is mounted at `POST /mcp` on an axum router behind a bearer token, and any number of clients reach it over the network. The tool list is identical: `qualify_alert` is a forced dry run over HTTP exactly as over stdio, and `apply_qualification` is registered over HTTP if and only if `mcp.allow_write` is true.
 
 HTTP is served in two configurations:
 
@@ -68,7 +70,7 @@ HTTP is served in two configurations:
 
 `serve` logs at start-up whether `/mcp` was mounted and, if not, why (`SIGNALMAN_MCP_TOKEN` unset, or `mcp.enabled = false`). The MCP-only HTTP process deliberately has no `/changes` route of its own: a process that needs a live feed runs `serve`, which hosts `/mcp` next to `POST /changes`. One place to post changes, one place to be reached.
 
-**Stateless by construction.** The endpoint runs rmcp's `StreamableHttpService` with legacy session mode off, JSON responses on and a session manager that never creates a session. There is no `Mcp-Session-Id`; each `POST /mcp` is one JSON-RPC request answered by one JSON response. rmcp falls back to an SSE stream for a request only if the handler emits a notification before its result, which no signalman tool does. The consequences: two replicas behind one Kubernetes Service need no session affinity; a graceful shutdown has no long-lived streams to drain; `GET /mcp` and `DELETE /mcp` answer `405`, since there is no standalone SSE stream to open and no session to delete. The MCP specification allows a session-less server; Claude Code and rmcp clients handle it.
+**Stateless by construction.** A session per client would force replicas behind one Service to share session state or pin clients to a replica, and would give a graceful shutdown streams to drain. Nothing a signalman tool does needs a session: every call is one request with one typed answer. So the endpoint runs rmcp's `StreamableHttpService` with legacy session mode off, JSON responses on and a session manager that never creates a session. There is no `Mcp-Session-Id`; each `POST /mcp` is one JSON-RPC request answered by one JSON response. rmcp falls back to an SSE stream for a request only if the handler emits a notification before its result, which no signalman tool does. The consequences: two replicas behind one Kubernetes Service need no session affinity, and a graceful shutdown has no long-lived streams to drain. `GET /mcp` and `DELETE /mcp` answer `405` for the same reason: in the Streamable HTTP protocol `GET` opens a standalone server-to-client stream and `DELETE` ends a session, and a stateless server has neither to offer (`tests/mcp_http.rs` asserts both). The MCP specification allows a session-less server; Claude Code and rmcp clients handle it.
 
 **The token.** `SIGNALMAN_MCP_TOKEN` is environment only, like every other secret ([decision 0006](decisions/0006-layered-configuration.md)). A token-checking layer sits in front of rmcp's service, so a request without `Authorization: Bearer <token>` (compared in constant time) never reaches the protocol handler; it is refused with `401` and `WWW-Authenticate: Bearer`. It is a separate secret from `INCIDENTIO_WEBHOOK_SECRET` (incident.io authenticating to signalman) and from `SIGNALMAN_CHANGES_TOKEN` (delivery tooling authenticating to signalman): an agent is a third party with its own credential, revocable on its own. A test proves the feed token does not open `/mcp` and the MCP token does not open `/changes`.
 
@@ -98,7 +100,7 @@ Over stdio, add to `.mcp.json` in the repository, or the equivalent user-level c
 }
 ```
 
-`BACKSTAGE_TOKEN` is only needed when the catalog backend requires authentication. `SIGNALMAN_CONFIG` (or `--config` is not available for an MCP-launched process; use the environment variable) points at the same configuration file `serve` uses, so the two share one reviewed set of thresholds and wording.
+`BACKSTAGE_TOKEN` is only needed when the catalog backend requires authentication. The server should read the same configuration file `serve` uses, so that the agent and the webhook receiver share one reviewed set of thresholds and wording. Either way of naming it works for a launched process: `--config` is a global flag, so `"args": ["mcp", "--config", "/etc/signalman/config.toml"]`, or `SIGNALMAN_CONFIG` in the `env` block; without both, `./signalman.toml` and then `/etc/signalman/config.toml` are tried ([Configuration](configuration.md#the-file)).
 
 Over HTTP, point at a running `serve` or `signalman mcp` and send the token:
 
@@ -151,6 +153,6 @@ For interactive exploration, the [MCP Inspector](https://modelcontextprotocol.io
 
 ## What is not here
 
-- **Writing, beyond `apply_qualification`.** No tool notifies an owner, and no tool other than `apply_qualification` tags an alert, writes a note or attaches an incident. `apply_qualification` itself is gated behind `mcp.allow_write` (default off) and documented above under [Writing](#writing).
-- **OAuth or OIDC in front of `/mcp`.** The endpoint checks one bearer token and nothing else. Put an ingress or gateway in front of it for anything more, such as per-agent identities, TLS termination or rate limits.
-- **Investigation or remediation.** A tool answers one typed question; it does not decide what to do next, retry, or chain calls. That is the calling agent's job, which is the point of [decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
+- **Writing, beyond `apply_qualification`.** No tool notifies an owner; no other tool tags, writes a note or attaches an incident.
+- **OAuth or OIDC in front of `/mcp`.** The endpoint checks one bearer token and nothing else. Put an ingress or gateway in front of it for per-agent identities, TLS termination or rate limits.
+- **Investigation or remediation.** A tool answers one typed question and does not chain calls or choose the next step; that is the calling agent's job ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)).

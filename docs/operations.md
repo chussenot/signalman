@@ -8,6 +8,8 @@ tags: [operations]
 
 # Operations
 
+This page is for whoever runs the webhook receiver: what to start, what to probe, what bounds the load it can take, and how each failure shows up. The design constraints behind those answers live in the [decision records](decisions/README.md); this page states their conclusions and links them.
+
 ## Running
 
 ```sh
@@ -18,22 +20,24 @@ signalman serve --insecure-skip-verify               # local only; logs a warnin
 signalman serve --config /etc/signalman/config.toml  # explicit file; see Configuration for the search order
 ```
 
-Startup fails fast on a missing secret, an unknown key in the configuration file or an unparsable environment value. The process exits cleanly on SIGTERM or Ctrl-C. Backstage enrichment is on whenever `backstage.base_url` is set, in the file or through `BACKSTAGE_BASE_URL`.
+Startup fails fast on a missing secret, an unknown key in the configuration file or an unparsable environment value, so a misconfiguration stops the rollout instead of silently keeping a default ([decision 0006](decisions/0006-layered-configuration.md)). The process exits cleanly on SIGTERM or Ctrl-C. Backstage enrichment is on whenever `backstage.base_url` is set, in the file or through `BACKSTAGE_BASE_URL`.
 
 ## Endpoints
+
+Every route exists for a different caller with a different credential: incident.io delivers alerts, the kubelet probes, delivery tooling posts changes, agents call tools. Keeping them apart means each credential can be rotated or revoked without touching the others, and a route that is not configured is not mounted rather than mounted and refusing.
 
 | Path | Purpose |
 |---|---|
 | `POST /webhooks/incidentio` | delivery endpoint |
 | `GET /healthz` | liveness; returns `ok` |
-| `GET /readyz` | readiness; 200 when incident.io, TypeSafe and (when configured) Backstage answer with the configured credentials, 503 with a JSON body naming the failing upstream; cached 30 s |
+| `GET /readyz` | readiness; 200 when incident.io, TypeSafe and (when configured) Backstage answer with the configured credentials, 503 with a JSON body naming the failing upstream; cached 30 s ([decision 0009](decisions/0009-readiness-depends-on-the-upstreams.md)) |
 | `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
 | `POST /changes/argocd`, `POST /changes/gitlab` | native adapters: Argo CD `Application` (bearer) and GitLab webhooks (`X-Gitlab-Token`) |
 | `POST /mcp` | the [MCP server](mcp.md#transports) over Streamable HTTP; mounted only when `SIGNALMAN_MCP_TOKEN` is set; bearer token; stateless, no session id, so replicas need no session affinity |
 
 ## Readiness
 
-`GET /healthz` says the process runs. `GET /readyz` says the upstreams this replica needs answer with the credentials it holds. Each check is the cheapest authenticated call the upstream offers: incident.io `GET /v1/identity`, TypeSafe `GET /v1/models`, and, only when `backstage.base_url` is set, one catalog `by-query` for a single component. The body has two entries, or three with Backstage. A wrong or revoked API key therefore shows as not ready at rollout, not at the first alert.
+The receiver acknowledges a delivery with `202` before it calls any upstream, so a replica with a revoked key or no route to TypeSafe would accept alerts it cannot triage and leave them untagged. [Decision 0009](decisions/0009-readiness-depends-on-the-upstreams.md) therefore makes readiness depend on the upstreams: `GET /healthz` says the process runs, `GET /readyz` says the upstreams this replica needs answer with the credentials it holds, and the probe fails when one does not. Each check is the cheapest authenticated call the upstream offers: incident.io `GET /v1/identity`, TypeSafe `GET /v1/models`, and, only when `backstage.base_url` is set, one catalog `by-query` for a single component. A wrong or revoked API key shows as not ready at rollout, not at the first alert.
 
 The response is `200` when every upstream answered and `503` otherwise, with the same JSON body either way and `Cache-Control: no-store`:
 
@@ -49,15 +53,22 @@ The response is `200` when every upstream answered and `503` otherwise, with the
 }
 ```
 
-`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended.
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
 
-The checks run concurrently, each under its own deadline, `server.readiness_timeout_seconds` (default `3`, at least 1). The report is cached for `server.readiness_cache_seconds` (default `30`; `0` checks on every request), failures included, so probe storms and many replicas do not turn readiness into load on the upstreams; incident.io rate-limits the API key. Concurrent probes while a check is in flight wait for that one check rather than each running their own. `cached: true` marks a reused report. Both settings follow the usual layers ([Configuration](configuration.md#server)); there are no flags. The MCP-only process (`signalman mcp --transport http`) serves `/healthz` only.
+Two settings shape the probe, both under `[server]` with the usual layers and no flags ([Configuration](configuration.md#server)):
 
-The trade-off is an operational decision. With upstream checks in the readiness probe, an incident.io or TypeSafe outage marks every replica unready, so the Kubernetes Service stops routing deliveries to signalman. Those are deliveries it could not process anyway. incident.io retries non-2xx responses and connection failures for 24 hours, so nothing is lost, and the deployment recovers by itself when the upstream does. The price is that during such an outage the receiver cannot acknowledge or deduplicate either. That is accepted: a triage it cannot complete has no value, and the retry is free. Probe settings should tolerate a blip: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure. With the 30 s cache a probe sees a stale answer for up to 30 s, which is fine for readiness; it is meant to be slow-moving.
+| Setting | Default | Too low | Too high |
+|---|---|---|---|
+| `server.readiness_timeout_seconds` | `3` (at least 1) | shorter than a client's retry backoff, so a struggling upstream reports `timed out` instead of the transport error its last attempt saw | the probe answers late and the kubelet's own `timeoutSeconds` fires first, hiding which upstream was slow |
+| `server.readiness_cache_seconds` | `30` (`0` checks on every request) | probe storms across replicas become load on rate-limited APIs, which is what the cache exists to prevent | a replica stays marked ready, or unready, for that long after the upstream changed state |
+
+The checks run concurrently, each under its own deadline. The report is cached, failures included, and concurrent probes while a check is in flight wait for that one check rather than each running their own; `cached: true` marks a reused report. The trade-off the record accepts: during an incident.io or TypeSafe outage every replica goes unready, the Service stops routing deliveries signalman could not process anyway, and incident.io redelivers for 24 hours, at the price of no acknowledgement or deduplication until the upstream returns. Probe settings should tolerate a blip: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure. The MCP-only process (`signalman mcp` with `mcp.transport = "http"`) serves `/healthz` only.
 
 Each uncached check runs inside a `readiness.check` span; the upstream calls it makes are the already instrumented ones, so a failed probe also counts in `signalman.upstream.errors` ([Observability](observability.md#spans)). A failed check logs one `warn` line naming the service and the error. Like the rest of the receiver, the endpoint is tested against wiremock only, never a live account.
 
 ## Manual commands
+
+Each command runs one step of the flow by hand, against the live upstreams, so an operator can see what the receiver would have seen without waiting for a webhook.
 
 ```sh
 signalman incidentio whoami                              # API key and roles
@@ -73,7 +84,7 @@ signalman eval examples/eval/cases.jsonl --record runs/x  # grade labelled alert
 
 ## Kubernetes
 
-The shape of a deployment is a `ConfigMap`; the secrets are a `Secret`; a change to either rolls the pods. Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
+A rollout is the unit of change: the shape of a deployment is a `ConfigMap`, the secrets are a `Secret`, and a change to either rolls the pods, so every configuration change is visible in the deployment history and there is nothing to hot-reload ([decision 0006](decisions/0006-layered-configuration.md)). Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
 
 ```yaml
 apiVersion: v1
@@ -141,7 +152,7 @@ spec:
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
           readinessProbe:
-            httpGet: { path: /readyz, port: 8080 }    # upstream checks; see Readiness above
+            httpGet: { path: /readyz, port: 8080 }    # upstream checks; see Readiness above and decision 0009
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -150,11 +161,13 @@ spec:
           configMap: { name: signalman-config }
 ```
 
-Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold. There is no hot reload by design: a rollout is the unit of change, visible in the deployment history.
+Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold.
 
 The two replicas share nothing. For `/mcp` that is fine: every `POST` is one request and one response with no session, so the `Service` needs no session affinity. For the change feed it means each replica holds its own window, as the limits table below notes.
 
 ## Limits that bound throughput
+
+Every number here is a ceiling something else imposes: an upstream's rate limit, a memory budget per replica, or a deadline chosen so that a stuck call cannot hold a slot. Knowing which one binds at a given alert volume says what to raise, and what cannot be raised from this side.
 
 | Limit | Value | Consequence |
 |---|---|---|
@@ -171,13 +184,13 @@ The two replicas share nothing. For `/mcp` that is fine: every `POST` is one req
 
 ## Backpressure
 
-A replica admits at most `server.max_concurrent_triages` running plus `server.max_queued_triages` waiting triages ([Configuration](configuration.md#server)). The next `alert_created` delivery is answered `503` with `Retry-After: 30` before it is marked seen, so incident.io's retry (up to 24 hours, with backoff) delivers it again when a slot is free. A refused delivery costs nothing but the retry; an alert storm therefore degrades to slower qualification, not to memory growth or a rate-limited incident.io key. The log line at `warn` carries the running and admitted counts.
+Without a bound, an alert storm would spawn one background triage per delivery until the replica ran out of memory or the incident.io key ran into its rate limit, and every triage would then fail. The bound turns a storm into slower qualification instead. A replica admits at most `server.max_concurrent_triages` running plus `server.max_queued_triages` waiting triages ([Configuration](configuration.md#server)). The next `alert_created` delivery is answered `503` with `Retry-After: 30` before it is marked seen, so incident.io's retry (up to 24 hours, with backoff) delivers it again when a slot is free. A refused delivery costs nothing but the retry; an alert storm therefore degrades to slower qualification, not to memory growth or a rate-limited incident.io key. The log line at `warn` carries the running and admitted counts.
 
 Each triage runs under `server.triage_timeout_seconds`. The clients' own timeouts and retries bound every call; the deadline bounds their sum, so a stuck upstream cannot hold a slot forever. A triage that overruns is dropped and reported as a failed outcome; whatever it had already written (tags, an attachment) stays, and `incidentio triage-alert` re-runs it by hand.
 
 ## Logs
 
-Logs are one of three signals. Spans over each triage and metrics for the product and its upstreams are exported over OpenTelemetry when a collector endpoint is configured; [Observability](observability.md) covers both. The log is per replica and stays on stderr for the platform's log shipper; nothing below is exported by signalman.
+The log exists so that one alert's decision can be found and read after the fact, on a replica that exports nothing, with `grep`. Logs are one of three signals. Spans over each triage and metrics for the product and its upstreams are exported over OpenTelemetry when a collector endpoint is configured; [Observability](observability.md) covers both. The log is per replica and stays on stderr for the platform's log shipper; nothing below is exported by signalman.
 
 `tracing` to stderr, filtered by `RUST_LOG` (default `info`). Every line carries the prefixes of the spans it was emitted in, `triage{alert_id=al-1}:triage.flow{alert_id=al-1}:` for a line from the flow, so the same names appear in the log and in a trace. One line per triage, `alert triaged`, carries seven flat fields for grepping and reading: `alert_id`, `title`, `decision`, `impact`, `time_to_qualify_seconds`, `applied` and `model`. `time_to_qualify_seconds` is a number, and is absent when the alert carried no creation time to measure from.
 
@@ -188,6 +201,8 @@ signalman installs one subscriber with the human-readable `tracing` text formatt
 Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
 
 ## Failure modes
+
+Each row says what the operator sees and whether the hub's retry, a manual re-run, or a fix on this side recovers it. The pattern behind the table: a delivery refused before acknowledgement is retried by incident.io for free; a triage that fails after acknowledgement is not retried automatically, because the hub already believes it was handled, and `incidentio triage-alert` re-runs it by hand.
 
 | Situation | Behaviour |
 |---|---|

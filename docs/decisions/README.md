@@ -2,7 +2,7 @@
 title: Decisions
 description: Architecture decision records for signalman in MADR form, the index of accepted decisions, and how to add one.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [decisions, adr, madr]
 ---
 
@@ -20,6 +20,15 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0006](0006-layered-configuration.md) | Layered configuration with secrets outside the file | accepted | `signalman-071.4` |
 | [0007](0007-changes-are-pushed-not-polled.md) | Changes are pushed to signalman, not polled from delivery tools | accepted | `signalman-ufg.3` |
 | [0008](0008-signalman-is-a-tool-for-agents.md) | signalman is a tool for agents, not an agent | accepted | `signalman-4gp.1` |
+| [0009](0009-readiness-depends-on-the-upstreams.md) | Readiness depends on the upstreams | accepted | `signalman-m28.3` |
+
+## Status notes
+
+Records are not edited after acceptance, so a fact that has moved since a record was written is noted here rather than in the record. Each note is checked against the code, not against the record.
+
+- 0006's confirmation counts four secret reads outside `src/config.rs`. There are now eight, in seven files: the TypeSafe, incident.io and Backstage clients read their API key or token, the webhook verifier reads the signing secret, `src/changes/mod.rs` reads `SIGNALMAN_CHANGES_TOKEN`, `src/mcp/http.rs` reads `SIGNALMAN_MCP_TOKEN`, and `src/main.rs` reads `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` and `INCIDENTIO_ALERT_SOURCE_TOKEN` for `triage --forward-to-incidentio`. Every one is a secret listed in [Configuration](../configuration.md#secrets); the rule the record states, that only `config.rs` reads a non-secret variable, still holds.
+- 0007's confirmation names `src/changes.rs`. The module is now the directory `src/changes/`: `mod.rs` holds the window and matching, `argocd.rs` and `gitlab.rs` the native adapters the record describes as translations of documented payloads.
+- 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record
 
