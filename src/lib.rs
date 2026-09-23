@@ -71,6 +71,7 @@ pub mod incidentio;
 pub mod mcp;
 pub mod outcome;
 pub mod question;
+pub mod readiness;
 pub mod serve;
 pub mod telemetry;
 pub mod triage;

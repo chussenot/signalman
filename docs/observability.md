@@ -56,6 +56,7 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 | `incidentio.get_alert`, `incidentio.list_incidents`, `incidentio.list_firing_alerts`, `incidentio.add_alert_tags`, `incidentio.attach_alert`, `incidentio.list_alert_notes`, `incidentio.create_alert_note`, `incidentio.update_alert_note`, `incidentio.send_alert_event`, `incidentio.identity` | one per incident.io call | the call's identifiers (`alert_id`, `max`, and so on); never the body |
 | `typesafe.evaluate`, `typesafe.list_models` | one per TypeSafe call | `model`, `input_tokens` (recorded from the response) |
 | `backstage.enrich`, `backstage.notify_owner` | catalog resolution and the owner notification | `hints`; `owner` |
+| `readiness.check` | one per uncached `GET /readyz`, wrapping the upstream calls (`typesafe.list_models`, `incidentio.identity`, the Backstage query) | none |
 
 `triage` and `triage.flow` sit on every path that qualifies an alert: the webhook, `signalman incidentio triage-alert`, and the MCP tool `qualify_alert` with an alert id. `signalman triage <file>` and `signalman eval` call the model directly, outside the `Triager`: they produce `typesafe.evaluate` (and `backstage.enrich` when a catalog is configured) but no `triage` or `triage.flow` span.
 

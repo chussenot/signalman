@@ -1312,6 +1312,8 @@ TOML, every key optional, unknown keys rejected. Location, first match wins: `--
 | `server.max_concurrent_triages` | `SIGNALMAN_MAX_CONCURRENT_TRIAGES` | | `8` | triages running at once; at least 1 |
 | `server.max_queued_triages` | `SIGNALMAN_MAX_QUEUED_TRIAGES` | | `64` | triages waiting for a slot; a delivery beyond that is refused with `503` and `Retry-After` so incident.io retries it |
 | `server.triage_timeout_seconds` | `SIGNALMAN_TRIAGE_TIMEOUT_SECONDS` | | `60` | deadline for one triage, every upstream call and retry included; at least 1 |
+| `server.readiness_cache_seconds` | `SIGNALMAN_READINESS_CACHE_SECONDS` | | `30` | how long `GET /readyz` reuses its last upstream check; `0` checks on every request ([Operations](operations.md#readiness)) |
+| `server.readiness_timeout_seconds` | `SIGNALMAN_READINESS_TIMEOUT_SECONDS` | | `3` | per-upstream deadline for one readiness check; at least 1 |
 
 ### `[typesafe]`
 
@@ -1432,11 +1434,36 @@ Startup fails fast on a missing secret, an unknown key in the configuration file
 |---|---|
 | `POST /webhooks/incidentio` | delivery endpoint |
 | `GET /healthz` | liveness; returns `ok` |
+| `GET /readyz` | readiness; 200 when incident.io, TypeSafe and (when configured) Backstage answer with the configured credentials, 503 with a JSON body naming the failing upstream; cached 30 s |
 | `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
 | `POST /changes/argocd`, `POST /changes/gitlab` | native adapters: Argo CD `Application` (bearer) and GitLab webhooks (`X-Gitlab-Token`) |
 | `POST /mcp` | the [MCP server](mcp.md#transports) over Streamable HTTP; mounted only when `SIGNALMAN_MCP_TOKEN` is set; bearer token; stateless, no session id, so replicas need no session affinity |
 
-There is no readiness endpoint yet; upstream reachability is only known when a flow runs.
+## Readiness
+
+`GET /healthz` says the process runs. `GET /readyz` says the upstreams this replica needs answer with the credentials it holds. Each check is the cheapest authenticated call the upstream offers: incident.io `GET /v1/identity`, TypeSafe `GET /v1/models`, and, only when `backstage.base_url` is set, one catalog `by-query` for a single component. The body has two entries, or three with Backstage. A wrong or revoked API key therefore shows as not ready at rollout, not at the first alert.
+
+The response is `200` when every upstream answered and `503` otherwise, with the same JSON body either way and `Cache-Control: no-store`:
+
+```json
+{
+  "ready": false,
+  "checked_at": "2026-09-23T03:31:28.749886571Z",
+  "cached": false,
+  "upstreams": [
+    { "service": "typesafe", "ok": true, "latency_ms": 1 },
+    { "service": "incidentio", "ok": false, "latency_ms": 1, "error": "incident.io rejected the credentials (401) [request_id r]" }
+  ]
+}
+```
+
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended.
+
+The checks run concurrently, each under its own deadline, `server.readiness_timeout_seconds` (default `3`, at least 1). The report is cached for `server.readiness_cache_seconds` (default `30`; `0` checks on every request), failures included, so probe storms and many replicas do not turn readiness into load on the upstreams; incident.io rate-limits the API key. Concurrent probes while a check is in flight wait for that one check rather than each running their own. `cached: true` marks a reused report. Both settings follow the usual layers ([Configuration](configuration.md#server)); there are no flags. The MCP-only process (`signalman mcp --transport http`) serves `/healthz` only.
+
+The trade-off is an operational decision. With upstream checks in the readiness probe, an incident.io or TypeSafe outage marks every replica unready, so the Kubernetes Service stops routing deliveries to signalman. Those are deliveries it could not process anyway. incident.io retries non-2xx responses and connection failures for 24 hours, so nothing is lost, and the deployment recovers by itself when the upstream does. The price is that during such an outage the receiver cannot acknowledge or deduplicate either. That is accepted: a triage it cannot complete has no value, and the retry is free. Probe settings should tolerate a blip: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure. With the 30 s cache a probe sees a stale answer for up to 30 s, which is fine for readiness; it is meant to be slow-moving.
+
+Each uncached check runs inside a `readiness.check` span; the upstream calls it makes are the already instrumented ones, so a failed probe also counts in `signalman.upstream.errors` ([Observability](observability.md#spans)). A failed check logs one `warn` line naming the service and the error. Like the rest of the receiver, the endpoint is tested against wiremock only, never a live account.
 
 ## Manual commands
 
@@ -1522,7 +1549,10 @@ spec:
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
           readinessProbe:
-            httpGet: { path: /healthz, port: 8080 }   # no upstream check yet (roadmap)
+            httpGet: { path: /readyz, port: 8080 }    # upstream checks; see Readiness above
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
       volumes:
         - name: config
           configMap: { name: signalman-config }
@@ -1632,6 +1662,7 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 | `incidentio.get_alert`, `incidentio.list_incidents`, `incidentio.list_firing_alerts`, `incidentio.add_alert_tags`, `incidentio.attach_alert`, `incidentio.list_alert_notes`, `incidentio.create_alert_note`, `incidentio.update_alert_note`, `incidentio.send_alert_event`, `incidentio.identity` | one per incident.io call | the call's identifiers (`alert_id`, `max`, and so on); never the body |
 | `typesafe.evaluate`, `typesafe.list_models` | one per TypeSafe call | `model`, `input_tokens` (recorded from the response) |
 | `backstage.enrich`, `backstage.notify_owner` | catalog resolution and the owner notification | `hints`; `owner` |
+| `readiness.check` | one per uncached `GET /readyz`, wrapping the upstream calls (`typesafe.list_models`, `incidentio.identity`, the Backstage query) | none |
 
 `triage` and `triage.flow` sit on every path that qualifies an alert: the webhook, `signalman incidentio triage-alert`, and the MCP tool `qualify_alert` with an alert id. `signalman triage <file>` and `signalman eval` call the model directly, outside the `Triager`: they produce `typesafe.evaluate` (and `backstage.enrich` when a catalog is configured) but no `triage` or `triage.flow` span.
 
@@ -1784,6 +1815,7 @@ src/
   incidentio/      client, types, webhook verification, sync flow, errors
   backstage/       catalog client, entity types, enrichment, notifications
   serve.rs         axum webhook receiver
+  readiness.rs     GET /readyz: upstream checks, deadline, cached report
   outcome.rs       the outcome contract: wire types, builder, schema
   config.rs        configuration layers: file schema, env, flags, resolve
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
@@ -1847,7 +1879,7 @@ Nothing has run against a live TypeSafe, incident.io or Backstage instance. Wire
 
 ## Hardening the receiver (`signalman-m28`)
 
-Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). OpenTelemetry tracing and metrics are delivered (`signalman-m28.2`, [Observability](observability.md)): spans over the delivery, the triage and every upstream call, and metrics that export time to qualify and the queue depth rather than logging them, over OTLP/HTTP when a collector endpoint is set. Verified against a mock collector only, never a real one. Open: a readiness endpoint that checks upstream reachability; a container image and the CI job that builds it; a JSON log format (`signalman-m28.5`).
+Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). OpenTelemetry tracing and metrics are delivered (`signalman-m28.2`, [Observability](observability.md)): spans over the delivery, the triage and every upstream call, and metrics that export time to qualify and the queue depth rather than logging them, over OTLP/HTTP when a collector endpoint is set. Verified against a mock collector only, never a real one. The readiness endpoint is delivered (`signalman-m28.3`, [Operations](operations.md#readiness)): `GET /readyz` checks incident.io, TypeSafe and, when configured, Backstage with the configured credentials, under a per-check deadline and a cached report. Open: a container image and the CI job that builds it (`signalman-m28.4`); a JSON log format (`signalman-m28.5`).
 
 ## Triage quality (`signalman-ufg`)
 
@@ -1922,6 +1954,7 @@ flowchart LR
 | Component | Module | Responsibility |
 |---|---|---|
 | Receiver | `src/serve.rs` | Verify the Svix signature, deduplicate deliveries, acknowledge, run the flow in the background |
+| Readiness probe | `src/readiness.rs` | `GET /readyz`: the cheapest authenticated call per upstream, run concurrently under a per-check deadline, with the report cached |
 | Sync flow | `src/incidentio/sync.rs` | Fetch fresh state, enrich, ask, decide, write back |
 | Enricher | `src/backstage/enrich.rs` | Resolve the component, assemble owner candidates, pick the runbook, notify the owner |
 | Questions | `src/triage/questions.rs` | Build the fan-out request with typed handles |
@@ -2071,7 +2104,7 @@ C4Container
     Person(oncall, "On-call engineer")
     Person(operator, "Platform engineer")
     System_Boundary(sm, "signalman") {
-        Container(serve, "Webhook receiver", "Rust, axum, tokio", "POST /webhooks/incidentio: verifies, deduplicates, acknowledges, runs the triage in the background. GET /healthz.")
+        Container(serve, "Webhook receiver", "Rust, axum, tokio", "POST /webhooks/incidentio: verifies, deduplicates, acknowledges, runs the triage in the background. GET /healthz for liveness, GET /readyz for readiness against the upstreams.")
         Container(cli, "CLI", "Rust, clap", "triage, incidentio, backstage and models commands for operators and evaluation")
         Container(lib, "Triage library", "Rust crate", "Typed TypeSafe client, triage questions and policy, incident.io and Backstage bridges, shared retry loop")
     }

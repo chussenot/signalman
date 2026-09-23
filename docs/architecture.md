@@ -45,6 +45,7 @@ flowchart LR
 | Component | Module | Responsibility |
 |---|---|---|
 | Receiver | `src/serve.rs` | Verify the Svix signature, deduplicate deliveries, acknowledge, run the flow in the background |
+| Readiness probe | `src/readiness.rs` | `GET /readyz`: the cheapest authenticated call per upstream, run concurrently under a per-check deadline, with the report cached |
 | Sync flow | `src/incidentio/sync.rs` | Fetch fresh state, enrich, ask, decide, write back |
 | Enricher | `src/backstage/enrich.rs` | Resolve the component, assemble owner candidates, pick the runbook, notify the owner |
 | Questions | `src/triage/questions.rs` | Build the fan-out request with typed handles |

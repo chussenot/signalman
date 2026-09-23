@@ -10,6 +10,8 @@
 
 [server]
 addr = "0.0.0.0:8080"                 # SIGNALMAN_ADDR, --addr
+readiness_cache_seconds = 30           # SIGNALMAN_READINESS_CACHE_SECONDS; how long GET /readyz reuses its last check, 0 checks every time
+readiness_timeout_seconds = 3          # SIGNALMAN_READINESS_TIMEOUT_SECONDS; per-upstream deadline of one check
 
 [typesafe]
 # base_url = "https://api.typesafe.ai" # TYPESAFE_BASE_URL

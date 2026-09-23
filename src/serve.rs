@@ -40,6 +40,7 @@ use crate::changes::gitlab::{self, Delivery};
 use crate::changes::{Change, ChangeLog, FeedToken, argocd};
 use crate::incidentio::webhook::{Event, SignatureHeaders, VerifyError, WebhookSecret, verify_now};
 use crate::incidentio::{Outcome, Triager};
+use crate::readiness::Probe;
 
 /// How many recent `webhook-id`s to remember for idempotency.
 const SEEN_CAPACITY: usize = 4096;
@@ -91,6 +92,8 @@ pub struct AppState {
     pub changes_token: Option<FeedToken>,
     /// The bounds in force.
     pub limits: Limits,
+    /// What `GET /readyz` answers with: the upstreams checked, cached.
+    pub readiness: Probe,
     seen: Mutex<Seen>,
     /// One permit per triage admitted (running or waiting).
     admission: Arc<Semaphore>,
@@ -128,12 +131,14 @@ impl AppState {
     /// Build state with explicit bounds.
     pub fn with_limits(secret: Option<WebhookSecret>, triager: Triager, limits: Limits) -> Self {
         let concurrent = limits.max_concurrent.max(1);
+        let readiness = Probe::new(&triager, crate::readiness::Settings::default());
         Self {
             secret,
             triager,
             on_outcome: None,
             changes_token: None,
             limits,
+            readiness,
             seen: Mutex::new(Seen {
                 set: HashSet::new(),
                 order: VecDeque::new(),
@@ -168,6 +173,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     }
     let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(readyz))
         .route("/webhooks/incidentio", post(receive));
     if state.changes_token.is_some() {
         if state.triager.changes.is_none() {
@@ -188,6 +194,25 @@ pub fn router(state: Arc<AppState>) -> Router {
 enum OneOrMany {
     One(Change),
     Many(Vec<Change>),
+}
+
+/// `GET /readyz`: 200 when every upstream answered, 503 with the same JSON
+/// body naming the one that did not. Cached per [`Probe`]'s settings, and
+/// marked `no-store` so nothing between the probe and the pod caches it
+/// again.
+async fn readyz(State(state): State<Arc<AppState>>) -> Response {
+    let report = state.readiness.report().await;
+    let status = if report.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::Json(report),
+    )
+        .into_response()
 }
 
 fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
