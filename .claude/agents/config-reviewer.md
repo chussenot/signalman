@@ -17,9 +17,11 @@ so far missed at least one of the others on the first pass.
   `Config::resolve` in `src/config.rs` is the only place that order exists.
 - `src/config.rs` is the only module that reads a non-secret environment
   variable. Secrets are read by the module that uses them and nowhere else
-  (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `INCIDENTIO_WEBHOOK_SECRET`,
-  `BACKSTAGE_TOKEN`, `SIGNALMAN_CHANGES_TOKEN`, `SIGNALMAN_MCP_TOKEN`,
-  `OTEL_EXPORTER_OTLP_HEADERS`). A secret is never accepted from the file:
+  (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `INCIDENTIO_ALERT_SOURCE_TOKEN`,
+  `INCIDENTIO_WEBHOOK_SECRET`, `BACKSTAGE_TOKEN`, `SIGNALMAN_CHANGES_TOKEN`,
+  `SIGNALMAN_MCP_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`). `Config::resolve_from`
+  takes the environment as a lookup, so unit tests pass a fixed one and a
+  developer's `.env` cannot change a test result. A secret is never accepted from the file:
   the file schema must have no field for it and `deny_unknown_fields` must
   reject one.
 - An empty string in the environment or the file means "unset" for an
