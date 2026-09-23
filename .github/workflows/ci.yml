@@ -46,6 +46,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: scripts/check-frontmatter.sh README.md docs
+      - run: scripts/gen-llms-txt.sh --check
 
   hooks:
     name: pre-commit hooks (prek)

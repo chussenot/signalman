@@ -23,7 +23,7 @@ Each record captures one architecturally significant decision: the problem, the 
 
 ## Writing a record
 
-1. Copy [template.md](template.md) to `NNNN-short-title.md` with the next number.
+1. Copy [template.md](template.md) to `NNNN-short-title.md` with the next number, and drop its `llms: false` line: that key keeps only the template itself out of [llms.txt](../llms.txt).
 2. Fill the frontmatter (`title`, `description`, `status`, `date`, `decision-makers`) and every section. Keep options concrete; a record with one option is a note, not a decision.
 3. Set `status` to `proposed` until agreed, then `accepted`. A superseded record keeps its text and gains `status: superseded by 000N`.
 4. Add the row above and, when a beads decision issue exists, its id.

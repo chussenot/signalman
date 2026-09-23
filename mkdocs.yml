@@ -2,7 +2,7 @@
 # The pages under docs/ carry YAML frontmatter; mkdocs reads it as page meta.
 site_name: signalman
 site_description: Alert triage with calibrated judgments, incident.io and the Backstage catalog.
-repo_url: https://github.com/chussenot/signalman
+repo_url: https://github.com/chussenot/rustsafe
 edit_uri: edit/main/docs/
 docs_dir: docs
 

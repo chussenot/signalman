@@ -52,6 +52,13 @@ repos:
         language: script
         files: ^(README\.md|docs/.*\.md)$
 
+      - id: llms-txt
+        name: docs/llms.txt matches the nav and frontmatter
+        entry: scripts/gen-llms-txt.sh --check
+        language: script
+        files: ^(README\.md|docs/.*\.md|docs/llms.*\.txt|mkdocs\.yml|scripts/gen-llms-txt\.sh)$
+        pass_filenames: false
+
       - id: no-dotenv
         name: never commit .env files
         entry: 'refusing to commit a .env file; keep secrets local (see .env.example)'

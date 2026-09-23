@@ -78,6 +78,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Development](docs/development.md) | Tools, tasks, gates, layout, planning, agent harness |
 | [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |
 | [Decisions](docs/decisions/README.md) | Architecture decision records in MADR form |
+| [llms.txt](docs/llms.txt) | The documentation index for agents and models; [llms-full.txt](docs/llms-full.txt) is every page in one file |
 
 ## License
 
