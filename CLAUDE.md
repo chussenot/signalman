@@ -33,8 +33,8 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   client until its spec is read with an operation API key.
 - Configuration (decision 0006): default < TOML file < env var < flag.
   `src/config.rs` is the only module that reads a non-secret env var; the
-  three clients and the change feed read their own key or token and nothing
-  else. A new setting
+  three clients, the change feed and the MCP HTTP endpoint read their own
+  key or token and nothing else. A new setting
   needs the `Settings` schema, `Config::resolve`, and a row in
   `docs/configuration.md` (a test checks the env-var table against the doc).
   Secrets are never accepted from the file.
@@ -44,7 +44,9 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   generative-model SDK in the triage path; agents consume the outcome
   contract (`src/outcome.rs`, schema committed at
   `docs/schema/outcome.v1.json`, drift-tested) and the MCP tools
-  (`src/mcp.rs`, `signalman mcp`, stdio only for now). A change to the wire
+  (`src/mcp.rs`; `signalman mcp` over stdio or Streamable HTTP, and `serve`
+  mounts `/mcp` when `SIGNALMAN_MCP_TOKEN` is set — `src/mcp/http.rs`,
+  stateless, bearer token checked before rmcp). A change to the wire
   shape is a schema change: regenerate the file, update the doc example, and
   bump `schema_version` only for a breaking change. Every MCP tool wraps a
   function the CLI already calls (`Triager`'s own fields and methods cover

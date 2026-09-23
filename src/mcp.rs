@@ -20,9 +20,13 @@
 //! exactly one implementation of each capability. No tool creates an
 //! incident (decision 0001).
 //!
-//! `signalman mcp` (`src/main.rs`) serves this over stdio. A future
-//! Streamable HTTP transport (`mcp.transport = "http"`, `signalman-4gp.7`)
-//! would mount the same [`Server`] on the axum router `serve` already runs.
+//! `signalman mcp` (`src/main.rs`) serves this over stdio, or over Streamable
+//! HTTP through [`http`] (`mcp.transport = "http"`). `signalman serve` mounts
+//! the same [`http::router`] at `/mcp` whenever `SIGNALMAN_MCP_TOKEN` is set,
+//! so an agent reaches the tools over the network and `recent_changes` shares
+//! that process's change feed.
+
+pub mod http;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -524,7 +528,7 @@ pub struct RecentChangesResult {
 impl Server {
     #[tool(
         name = "recent_changes",
-        description = "List deploys, configuration changes and feature-flag toggles recently posted to signalman's change feed (POST /changes, decision 0007): the same matches qualify_alert offers to the model as a possible cause. Give an optional `component` to match a specific service, or omit it to see platform-wide changes only. The feed is per-process, in-memory state: if this MCP server runs over stdio, separate from `signalman serve`, it never receives posts and the result is always empty here, with a note explaining why.",
+        description = "List deploys, configuration changes and feature-flag toggles recently posted to signalman's change feed (POST /changes, decision 0007): the same matches qualify_alert offers to the model as a possible cause. Give an optional `component` to match a specific service, or omit it to see platform-wide changes only. The feed is per-process, in-memory state: it is live when this MCP server is the /mcp endpoint `signalman serve` mounts, and always empty (with a note explaining why) when `signalman mcp` runs on its own, over stdio or HTTP.",
         annotations(
             title = "List recent changes",
             read_only_hint = true,
@@ -567,7 +571,7 @@ impl Server {
             })
             .collect();
         let note = if changes.is_empty() {
-            "no changes recorded in this process's window. The change feed is per-process, in-memory state (decision 0007): a stdio MCP server, separate from `signalman serve`, never receives POST /changes and is always empty here."
+            "no changes recorded in this process's window. The change feed is per-process, in-memory state (decision 0007): a standalone `signalman mcp` process, over stdio or HTTP, never receives POST /changes and is always empty here; the /mcp endpoint `signalman serve` mounts shares its feed."
                 .to_owned()
         } else {
             format!(

@@ -2,7 +2,7 @@
 title: Architecture
 description: The components of signalman, how an alert moves through them, where the boundaries between catalog, model and code lie, and how failures are contained.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [architecture]
 ---
 
@@ -50,7 +50,7 @@ flowchart LR
 | Questions | `src/triage/questions.rs` | Build the fan-out request with typed handles |
 | Policy | `src/triage/policy.rs` | Turn typed answers into one decision with risk-scaled thresholds |
 | Outcome contract | `src/outcome.rs` | The wire types of one triaged alert, the builder both emitters share, and the generated schema |
-| MCP server | `src/mcp.rs` | Five read-only tools over one dry-run `Triager`, wrapping the same functions the CLI calls |
+| MCP server | `src/mcp.rs`, `src/mcp/http.rs` | Five read-only tools plus the gated `apply_qualification`, over one dry-run `Triager`, wrapping the same functions the CLI calls; served over stdio or Streamable HTTP behind a bearer token |
 | TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs` | Wire contract, typed handles, validated probabilities |
 | incident.io client | `src/incidentio/client.rs`, `types.rs` | Incidents, alerts, tags, attachments, alert-source events |
 | Backstage client | `src/backstage/client.rs`, `types.rs` | Catalog queries, TechDocs search index, notifications |
@@ -108,7 +108,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **signalman versus incident.io.** signalman writes tags and attachments. incident.io owns incident creation, escalation and the human workflow. [ADR 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
 
-**signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and read-only tools over the [Model Context Protocol](mcp.md) (`signalman mcp`). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
+**signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
 A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
 
