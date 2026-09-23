@@ -18,7 +18,7 @@ pub enum Error {
         detail: String,
     },
     /// Rate limited (HTTP 429) and retries were exhausted.
-    #[error("rate limited (429) after {attempts} attempts{}", retry_after_suffix(*.retry_after))]
+    #[error("rate limited (429) after {attempts} attempts{}", crate::http::retry_after_suffix(*.retry_after))]
     RateLimited {
         /// Total attempts made, including the first.
         attempts: u32,
@@ -101,12 +101,6 @@ pub enum Error {
     /// Invalid base URL or path.
     #[error("invalid URL: {0}")]
     Url(String),
-}
-
-fn retry_after_suffix(retry_after: Option<Duration>) -> String {
-    retry_after
-        .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
-        .unwrap_or_default()
 }
 
 /// Convenience alias.

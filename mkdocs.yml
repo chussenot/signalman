@@ -36,6 +36,7 @@ nav:
       - 0006 Layered configuration with secrets outside the file: decisions/0006-layered-configuration.md
       - 0007 Changes are pushed, not polled: decisions/0007-changes-are-pushed-not-polled.md
       - 0008 signalman is a tool for agents, not an agent: decisions/0008-signalman-is-a-tool-for-agents.md
+      - 0009 Readiness depends on the upstreams: decisions/0009-readiness-depends-on-the-upstreams.md
       - Template: decisions/template.md
 
 plugins:

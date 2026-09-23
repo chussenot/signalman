@@ -5,17 +5,19 @@
 //! writes — proving `mcp::Server::new` forces dry run regardless.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
+mod common;
+
+use common::{DummyClient, call, committed_schema};
 use jiff::Timestamp;
-use rmcp::model::{CallToolRequestParams, ErrorCode};
+use rmcp::ServiceExt;
+use rmcp::model::ErrorCode;
 use rmcp::service::ServiceError;
-use rmcp::{ClientHandler, ServiceExt};
-use serde_json::{Value, json};
+use serde_json::json;
 use signalman::backstage::Enricher;
 use signalman::changes::{Change, ChangeLog};
 use signalman::incidentio::{Triager, WriteBack};
 use signalman::mcp;
 use signalman::outcome::Outcome;
-use signalman::{Client, RetryPolicy};
 use wiremock::matchers::{
     body_json, body_partial_json, body_string_contains, method, path, query_param,
 };
@@ -38,24 +40,6 @@ async fn serialized() -> tokio::sync::MutexGuard<'static, ()> {
         .await
 }
 
-/// The committed schema `qualify_alert` results must satisfy.
-const SCHEMA_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/schema/outcome.v1.json");
-
-fn committed_schema() -> Value {
-    let raw = std::fs::read_to_string(SCHEMA_PATH).unwrap_or_else(|e| {
-        panic!("{SCHEMA_PATH} is missing ({e}); run `mise run schema` to generate it")
-    });
-    serde_json::from_str(&raw).expect("the committed schema is valid JSON")
-}
-
-/// A client that answers nothing on its own: every test drives the
-/// connection by calling tools, never by receiving a server-initiated
-/// request.
-#[derive(Debug, Clone, Default)]
-struct DummyClient;
-
-impl ClientHandler for DummyClient {}
-
 /// Connect `server` and a fresh client over an in-process duplex pipe (no
 /// stdio, no process): the same wiring `signalman mcp` sets up over real
 /// stdin/stdout, minus the transport.
@@ -68,15 +52,6 @@ async fn connected(
         running.waiting().await.ok();
     });
     DummyClient.serve(client_io).await.expect("client connects")
-}
-
-fn call(name: &'static str, args: Value) -> CallToolRequestParams {
-    let object = match args {
-        Value::Object(o) => o,
-        Value::Null => serde_json::Map::new(),
-        other => panic!("tool arguments must be a JSON object, got {other}"),
-    };
-    CallToolRequestParams::new(name).with_arguments(object)
 }
 
 /// A malformed request was refused as a protocol-level error (never a
@@ -103,95 +78,11 @@ async fn triager(
 ) -> (Triager, MockServer, MockServer) {
     let incidentio_srv = MockServer::start().await;
     let typesafe_srv = MockServer::start().await;
+    common::mount_scene(&incidentio_srv).await;
+    common::SystemOne::default().mount(&typesafe_srv).await;
+    common::mount_no_writes(&incidentio_srv).await;
 
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts/al-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alert": {
-                "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                "description": "5xx ratio 12% for 10m", "status": "firing",
-                "created_at": "2026-09-20T11:58:00Z", "attributes": [], "tags": []
-            }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/incidents"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "incidents": [{
-                "id": "01INC4821", "reference": "INC-4821", "name": "Checkout 5xx spike",
-                "summary": "payments-gateway returning errors",
-                "permalink": "https://app.incident.io/org/incidents/4821",
-                "incident_status": { "id": "s", "name": "Active", "category": "live" },
-                "mode": "standard"
-            }],
-            "pagination_meta": { "page_size": 40 }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts"))
-        .and(query_param("status[one_of]", "firing"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alerts": [
-                { "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                  "status": "firing", "attributes": [], "tags": [], "created_at": "2026-09-20T11:58:00Z" },
-                { "id": "al-9", "alert_source_id": "src-dd", "title": "HighLatency payments-gateway",
-                  "status": "firing", "attributes": [], "tags": [], "created_at": "2026-09-20T11:55:00Z" }
-            ],
-            "pagination_meta": { "page_size": 50 }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "owner": { "type": "choice", "choice": "application",
-                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.75 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
-                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 0.9 },
-                "actionable": { "type": "noul", "noul": 0.95 },
-                "duplicate_of": { "type": "choice", "choice": "none",
-                                  "probabilities": { "INC-4821": 0.1, "none": 0.9 }, "confidence": 0.8 },
-                "caused_by_change": { "type": "noul", "noul": 0.2 }
-            },
-            "usage": { "input_tokens": 500, "output_tokens": 30 }
-        })))
-        .mount(&typesafe_srv)
-        .await;
-
-    // Every write endpoint is mounted and expected zero times: a call here
-    // fails the test with wiremock's own message naming which write leaked
-    // through, rather than a generic upstream error.
-    for (m, p) in [
-        ("POST", "/v2/alerts/al-1/actions/add_tags"),
-        ("POST", "/v2/incident_alerts"),
-        ("POST", "/v1/alert_notes"),
-        ("PUT", "/v1/alert_notes/note-1"),
-    ] {
-        Mock::given(method(m))
-            .and(path(p))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .expect(0)
-            .mount(&incidentio_srv)
-            .await;
-    }
-
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = signalman::incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let mut t = Triager::new(typesafe, io);
+    let mut t = common::triager(&typesafe_srv, &incidentio_srv);
     t.write_back = write_back;
     t.changes = changes;
     (t, incidentio_srv, typesafe_srv)
@@ -484,64 +375,17 @@ async fn open_incidents_lists_what_incident_io_has_open() {
 async fn write_scenario(duplicate_choice: &str) -> (Triager, MockServer, MockServer) {
     let incidentio_srv = MockServer::start().await;
     let typesafe_srv = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts/al-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alert": {
-                "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                "description": "5xx ratio 12% for 10m", "status": "firing",
-                "created_at": "2026-09-20T11:58:00Z", "attributes": [], "tags": []
-            }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/incidents"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "incidents": [{
-                "id": "01INC4821", "reference": "INC-4821", "name": "Checkout 5xx spike",
-                "summary": "payments-gateway returning errors",
-                "permalink": "https://app.incident.io/org/incidents/4821",
-                "incident_status": { "id": "s", "name": "Active", "category": "live" },
-                "mode": "standard"
-            }],
-            "pagination_meta": { "page_size": 40 }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts"))
-        .and(query_param("status[one_of]", "firing"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alerts": [
-                { "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                  "status": "firing", "attributes": [], "tags": [], "created_at": "2026-09-20T11:58:00Z" }
-            ],
-            "pagination_meta": { "page_size": 50 }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "owner": { "type": "choice", "choice": "application",
-                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.75 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
-                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 0.9 },
-                "actionable": { "type": "noul", "noul": 0.95 },
-                "duplicate_of": { "type": "choice", "choice": duplicate_choice,
-                                  "probabilities": { "INC-4821": if duplicate_choice == "INC-4821" { 0.9 } else { 0.1 },
-                                                      "none": if duplicate_choice == "none" { 0.9 } else { 0.1 } },
-                                  "confidence": 0.85 },
-                "caused_by_change": { "type": "noul", "noul": 0.2 }
-            },
-            "usage": { "input_tokens": 500, "output_tokens": 30 }
-        })))
-        .mount(&typesafe_srv)
-        .await;
+    common::mount_alert_al1(&incidentio_srv).await;
+    common::mount_open_incidents(&incidentio_srv, vec![common::incident_inc4821()]).await;
+    common::mount_firing_alerts(&incidentio_srv, vec![common::firing_al1()]).await;
+    let mut answers = common::SystemOne {
+        duplicate_confidence: 0.85,
+        ..common::SystemOne::default()
+    };
+    if duplicate_choice == common::INCIDENT_REF {
+        answers = answers.attaching();
+    }
+    answers.mount(&typesafe_srv).await;
 
     let mut expected_tags = vec!["ai-team-application", "ai-impact-major"];
     if duplicate_choice == "INC-4821" {
@@ -593,19 +437,11 @@ async fn write_scenario(duplicate_choice: &str) -> (Triager, MockServer, MockSer
         .mount(&incidentio_srv)
         .await;
 
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = signalman::incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    (Triager::new(typesafe, io), incidentio_srv, typesafe_srv)
+    (
+        common::triager(&typesafe_srv, &incidentio_srv),
+        incidentio_srv,
+        typesafe_srv,
+    )
 }
 
 /// Round-trip through the two tools an agent actually uses: qualify, then
@@ -682,49 +518,10 @@ async fn apply_qualification_twice_replaces_the_note_in_place_not_stacks_it() {
     let incidentio_srv = MockServer::start().await;
     let typesafe_srv = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts/al-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alert": { "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                       "status": "firing", "attributes": [], "tags": [] }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/incidents"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "incidents": [], "pagination_meta": { "page_size": 40 }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts"))
-        .and(query_param("status[one_of]", "firing"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alerts": [{ "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                        "status": "firing", "attributes": [], "tags": [], "created_at": "2026-09-20T11:58:00Z" }],
-            "pagination_meta": { "page_size": 50 }
-        })))
-        .mount(&incidentio_srv)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "owner": { "type": "choice", "choice": "application",
-                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.75 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
-                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 0.9 },
-                "actionable": { "type": "noul", "noul": 0.95 },
-                "duplicate_of": { "type": "choice", "choice": "none",
-                                  "probabilities": { "INC-4821": 0.1, "none": 0.9 }, "confidence": 0.8 },
-                "caused_by_change": { "type": "noul", "noul": 0.2 }
-            },
-            "usage": { "input_tokens": 500, "output_tokens": 30 }
-        })))
-        .mount(&typesafe_srv)
-        .await;
+    common::mount_alert_al1(&incidentio_srv).await;
+    common::mount_open_incidents(&incidentio_srv, vec![]).await;
+    common::mount_firing_alerts(&incidentio_srv, vec![common::firing_al1()]).await;
+    common::SystemOne::default().mount(&typesafe_srv).await;
 
     Mock::given(method("POST"))
         .and(path("/v2/alerts/al-1/actions/add_tags"))
@@ -777,18 +574,8 @@ async fn apply_qualification_twice_replaces_the_note_in_place_not_stacks_it() {
         .mount(&incidentio_srv)
         .await;
 
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = signalman::incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
+    let typesafe = common::typesafe_client(&typesafe_srv.uri());
+    let io = common::incidentio_client(&incidentio_srv.uri());
     let client = connected(mcp::Server::new(Triager::new(typesafe, io), true)).await;
 
     let qualified = client

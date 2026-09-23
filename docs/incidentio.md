@@ -2,7 +2,7 @@
 title: incident.io integration
 description: How signalman verifies and processes incident.io webhooks, what it reads and writes through the API including the qualification note, how to configure alert routes on the result, and how the CLI forwards enriched alerts.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [incidentio, webhooks]
 ---
 
@@ -56,7 +56,9 @@ Alerts from any source that notifies incident.io appear in that list. Tsuga, the
 
 Tag names are lowercase with hyphens and prefixed `ai-`, so alert routes can filter on them and humans can tell them from their own tags. `<key>` is the catalog group name when Backstage is configured, or the static team key otherwise. Existing tags are kept. `--dry-run` on `serve` and `incidentio triage-alert` computes everything and writes nothing.
 
-`ai-suspected-change` follows the `flag_change_above` threshold in the policy. It used to be recomputed from a hardcoded `caused_by_change` probability of 0.65, which could disagree with the decision the same run had already made; it is now read off the decision itself.
+The tag strings have one source, `src/outcome.rs`: the same functions produce the tags the flow writes and the tags the outcome document says it implies, so the two cannot drift and `Outcome::validate` can reject a tag the document does not explain. `ai-suspected-change` in particular is taken from the decision's own `suspected_change` flag, not recomputed from the `caused_by_change` probability, so the `flag_change_above` threshold lives in one place, the policy, and the tag remains derivable from the document. It therefore appears only on a `page` or a `ticket`, the two decisions that carry the flag.
+
+The writes happen in a fixed order inside one `incidentio.write_back` span (absent on a dry run; its fields are the tag count and whether an attachment and a note were attempted, never their content): tags, then the attachment, then the note, then the owner notification through Backstage when it is enabled. The tags are the handoff, so a failure to write them fails the triage. The note and the notification are conveniences on top of the tags, so their failures are logged and recorded in the document and do not undo what was already written.
 
 Every triage, applied or dry run, also returns [the outcome contract](triage.md#the-outcome-contract): one JSON document holding the judgments, the decision, the policy that produced it and what was written. `writes.mode` says `applied` or `dry_run`, `writes.note` says what became of the note, and `writes.attached` says whether the attachment happened. The tags are a lossy view of that document, and every one of them is derivable from it.
 
@@ -87,7 +89,17 @@ _Time to qualify: 42 s. Model jev-1.13.0. Tags: ai-team-payments, ai-impact-majo
 
 Every line is a judgment with its probability, a link, or a fact from the catalog or the hub. Alternatives are listed when they carry at least 0.05 probability, so a close call reads as one. The time to qualify is measured from the alert's `created_at` in incident.io to the decision and is also logged and returned in [the outcome contract](triage.md#the-outcome-contract) as `time_to_qualify_seconds`; it is the number this tool exists to lower.
 
-The note starts with a fixed marker line. Before writing, signalman lists the alert's notes and, when one of them starts with the marker, replaces that note instead of adding another; a human's notes are never touched. One alert therefore carries at most one signalman note, always the latest pass. Writing the note requires the manage alert notes scope. A failure to write it is logged and does not undo the tags or the attachment; the outcome document records it as `writes.note.status` `failed`, with the reason in `writes.note.error`.
+The note starts with a fixed marker line. Before writing, signalman lists the alert's notes and, when one of them starts with the marker, replaces that note instead of adding another; a human's notes are never touched. One alert therefore carries at most one signalman note, always the latest pass, and a responder never has to work out which of several notes is current. Writing the note requires the manage alert notes scope. A failure to write it is logged and does not undo the tags or the attachment.
+
+What became of the note is reported as `writes.note.status` in the outcome document:
+
+| Status | Meaning |
+|---|---|
+| `created` | a first pass added a new note |
+| `replaced` | the note signalman left on an earlier pass was rewritten in place; `writes.note.id` is its id |
+| `failed` | the write failed; the tags and the attachment were still written and `writes.note.error` says why |
+| `disabled` | the note is switched off (`--no-note`) |
+| `skipped` | no note was attempted: a dry run, or the file-based CLI with no alert to write to |
 
 ## Setup
 
@@ -119,7 +131,15 @@ That block is flat on purpose and is not the same shape as [the outcome contract
 
 ## Candidate incidents
 
-`GET /v2/incidents` with `status_category[one_of]` for each of `triage`, `live` and `paused` as repeated keys, paginated with the `after` cursor, filtered client-side to `mode: standard`, capped at 40. The multi-value filter form is inferred from single-value examples and is unverified; the fallback is one request per category. The list endpoint has its own limit of 60 requests per minute.
+The `duplicate_of` question can only choose among incidents it is offered, so which incidents are fetched decides which duplicates can ever be caught, and every incident offered is one more Choice option the model must weigh and pay tokens for. The list is therefore narrowed three ways before it becomes state.
+
+`GET /v2/incidents` with `status_category[one_of]` for each of `triage`, `live` and `paused` as repeated keys, paginated with the `after` cursor, filtered client-side to `mode: standard`, capped at 40 (`DEFAULT_CANDIDATES` in `src/incidentio/sync.rs`).
+
+- **Three status categories.** `triage`, `live` and `paused` are the categories in which responders are still working, or have deliberately paused; a new alert on the same problem belongs with them. `declined`, `merged`, `canceled`, `closed` and `learning` (post-incident) are finished work, and attaching a firing alert to one would bury it where nobody is looking.
+- **`mode: standard` only.** incident.io also carries `test`, `tutorial` and `retrospective` incidents; none is live work a duplicate could join, and a retrospective describes a problem that is already over. The filter is applied client-side after the fetch; an incident with no `mode` field is kept. Whether the endpoint's own `mode` filter would do the same has not been checked against a live account.
+- **At most 40.** Each candidate is one Choice option, and the Choice limit is 255, so the cap protects the request from an account with hundreds of open incidents; below the limit, each option still costs input tokens and dilutes the model's attention across more choices. Pagination stops as soon as 40 are collected, so the incidents offered are the first 40 the endpoint returns; the cap assumes that order is newest first, where a duplicate is most likely to be, and that assumption has not been checked against a live account. Forty is a default awaiting tuning on real alerts; the [roadmap](roadmap.md) lists candidate selection by team and recency as the next step, and the number was not measured.
+
+The multi-value filter form is inferred from single-value examples and is unverified; the fallback is one request per category. The list endpoint has its own limit of 60 requests per minute, which is why the candidates are fetched once per triage and never polled.
 
 ## Errors
 

@@ -37,7 +37,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 
 ## Conventions
 
-- Every page starts with YAML frontmatter. `title` and `description` are required and checked by `scripts/check-frontmatter.sh`; `status` is `current` or `draft`; `last_reviewed` is the date someone last confirmed the page against the code; `tags` help search.
+- Every page starts with YAML frontmatter. `title` and `description` are required and checked by `scripts/check-frontmatter.sh`; `status` is `current`, `draft` or `experiment` for a page (`experiment` marks a page about something run once and kept for its measurements, such as [Laya](laya.md); it is not a supported path and the page says so) and a [MADR](https://adr.github.io/madr/) status (`proposed`, `accepted`, `superseded by 000N`) for a decision record; `last_reviewed` is the date someone last confirmed the page against the code; `tags` help search.
 - `llms.txt` and `llms-full.txt` are generated from the `mkdocs.yml` nav and the frontmatter by `scripts/gen-llms-txt.sh` (`mise run docs:llms`), in nav order; a page opts out with `llms: false` (the decision template does). `mise run check` fails when they are stale. Never edit them by hand: change the page or the nav.
 - Diagrams are Mermaid, kept next to the prose they explain. GitHub renders them natively; TechDocs needs the Mermaid addon ([Development](development.md#techdocs)).
 - Decision records follow [MADR](https://adr.github.io/madr/) ([Decisions](decisions/README.md)).
@@ -50,6 +50,8 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 # Backstage bridge
 
 Without a catalog, signalman routes to a team list compiled into the binary: one organisation's snapshot of who owned what. The Backstage software catalog holds the current answer and more: dependencies, lifecycle, runbooks. The bridge turns that referential into triage inputs and turns the triage output into a message the owning group sees in the portal. The rule it follows is [ADR 0004](decisions/0004-catalog-is-the-ownership-source-of-truth.md): the catalog supplies facts and candidates; the model still judges.
+
+Everything below lives in `src/backstage/enrich.rs`. Several of its numbers (the candidate cap, the excerpt length, the word lengths, the runbook weights) are hand-tuned defaults with no measured basis yet: nothing has been run against a live catalog. Where a number has a reason, this page gives it; where it only has a trade-off, this page says which side it takes.
 
 Contract sources: the [catalog REST API](https://backstage.io/docs/features/software-catalog/software-catalog-api), the [descriptor format](https://backstage.io/docs/features/software-catalog/descriptor-format), [service-to-service auth](https://backstage.io/docs/auth/service-to-service-auth) and the [Notifications plugin](https://backstage.io/docs/notifications/).
 
@@ -66,13 +68,15 @@ Contract sources: the [catalog REST API](https://backstage.io/docs/features/soft
 
 ## Resolving the component
 
+The problem: an alert names its service the way the monitoring tool does, in a label whose key and spelling vary by source, and the catalog knows the component by `metadata.name` in a namespace. Resolution has to find the entity from that label without guessing, because a wrong component is worse than none: the model would reason about the wrong owner, neighbours and runbook, whereas no component leads to the honest fallback below.
+
 ```mermaid
 flowchart TD
-    H[hints from alert attributes or labels<br/>keys: SIGNALMAN_COMPONENT_KEYS] --> N{next hint?}
+    H[hints from alert attributes or labels<br/>keys: backstage.component_keys] --> N{next hint?}
     N -->|none left| NONE[no component]
     N -->|hint| F{contains ':' or '/'?}
     F -->|yes| REF[parse as entity ref] --> BN
-    F -->|no| BN1[by-name in BACKSTAGE_NAMESPACE]
+    F -->|no| BN1[by-name in backstage.namespace]
     BN1 -->|404 and namespace ≠ default| BN2[by-name in default]
     BN1 -->|found| C
     BN2 -->|found| C
@@ -83,9 +87,15 @@ flowchart TD
     BQ -->|empty| N
 ```
 
-Hints are the values of alert attributes (or CLI labels) whose names are in `SIGNALMAN_COMPONENT_KEYS`, case-insensitive, default `component, service, app, application`. The first hint that resolves wins.
+**Which labels are hints.** The values of alert attributes (or CLI labels) whose names are in `backstage.component_keys`, compared case-insensitively. The default list in the code is `component, service, app, application, Service, Component`; because the comparison ignores case, the capitalised pair matches nothing the lower-case pair does not, so there are four distinct keys. The list is ordered, and hints are collected in key order, so the operator's order is the priority order: with the default, a `component` attribute beats a `service` one. The first hint that resolves wins; the rest are never tried. Duplicated values are collapsed.
+
+**Why exact lookups in this order.** A hint containing `:` or `/` is treated as an entity reference and looked up once: someone supplied the exact identity, so nothing is guessed. A bare name is looked up by `metadata.name` in the configured namespace, then in `default` when that differs, then by `metadata.title` with a filter query. The order is from cheapest and least ambiguous to most: `by-name` is one GET on a unique key; the title query is a filter over the whole catalog and takes the first hit, so a duplicated title resolves arbitrarily. The title step exists because alert attributes often carry the human name a team gave its service, not the slug the catalog was registered under. The `default` retry exists because most catalogs register everything there, and a deployment that sets `backstage.namespace` for its own components still shares platform components in `default`. Its cost is one extra 404 round trip for every hint that does not resolve in the configured namespace.
+
+**What was rejected.** Fuzzy or full-text matching on the name. It would raise the hit rate and also the rate of confident wrong components, which the fallback cannot repair. If live use shows many alerts resolving nothing, the place to widen matching is the title step, and the signal to watch is how often `matched_by` is empty in the enrichment logs.
 
 ## Owner candidates
+
+The problem: the owner question is a Choice, so the model needs a closed set of options and can never invent a team ([ADR 0004](decisions/0004-catalog-is-the-ownership-source-of-truth.md)). Too few options and the right team is missing; too many and each is a rubric paragraph of input tokens per triage, and the model spreads probability across teams that were never plausible.
 
 ```mermaid
 flowchart TD
@@ -103,9 +113,21 @@ flowchart TD
     C -.->|no component matched| ALL[by-query kind=group,spec.type=team, cap 24] --> ADD
 ```
 
-If the component resolved but no group could be fetched, the all-teams fallback also applies. Without any Backstage configuration the fallback team list (`[[triage.teams]]`, or the built-in six) is used and this module is never called.
+**Who is a candidate.** The registered owner first, then the owners of the component's direct neighbours (what it depends on, what depends on it, the APIs it consumes and provides), then the owners of any component whose name appears in the alert text. Neighbours are there because alerts fire on symptoms: the cause is usually upstream and the blast radius downstream, so their teams are the plausible exceptions to the registered owner. Mentions are there because alert text often names the failing dependency outright. Everything else in the catalog is excluded, on purpose: the candidate set is the graph around the alert, not the organisation.
+
+**Why the order matters even though the list is sorted.** Group references are collected owner first, neighbours second, mentions third, and the cap is applied in that order, so the registered owner is never the one truncated. The surviving list is then sorted by key so that the order the model sees does not depend on the order the graph walk happened to produce, and the same alert yields the same request on every run, which is what makes recorded responses replayable in the evaluation harness.
+
+**Why mentions need four characters.** Alert text is split on non-word characters and every word of at least four characters that contains a letter is tried as `component:<namespace>/<word>`, at most 40 words, in one `by-refs` request. The four-character floor is a hand-tuned trade-off with no stated basis in the code: shorter tokens (`api`, `db`, `web`, `app`) are the names of many components and would pull in unrelated teams on nearly every alert, while any real component whose name is three characters is missed. The 40-word cap bounds the size of that one request. Mentions are matched by exact word against `metadata.name` in the configured namespace only; matching titles as well would cost one filter query per word instead of one request for all of them.
+
+**Why the rubric looks the way it does.** The model reads the rubric to choose, so each candidate is `display name: description. Owns: a, b, c`, with up to six owned components. The owned names make a group's remit concrete when its description is empty or generic, which is common in catalogs. Six is a hand-tuned token budget, not a measured one. The key is the group's `metadata.name`, so the `ai-team-<key>` tag written back to incident.io and the keys in a `[[triage.teams]]` fallback list share one identifier space.
+
+**Why 24.** The Choice primitive allows 255 options; the cap of 24 (`DEFAULT_MAX_CANDIDATES`) is a token budget, since every option costs input tokens on every triage. It is a public field on `Enricher` that the configuration layer does not set, so changing it is a code change today. Raise it if the logs show the registered owner's neighbourhood being truncated; lower it if the owner distribution is flat across many teams.
+
+**When no component resolves, or no group could be fetched.** Every catalog group of `spec.type: team` becomes a candidate, capped at 24 in whatever order the catalog returns them, then sorted. This is the honest fallback: the model is asked to pick from the real teams with no neighbourhood hint, and `HumanTriage` is the likely outcome. What was rejected is falling back to the compiled `[[triage.teams]]` list when a catalog is configured: that list is a snapshot and would silently diverge from the source of truth. The compiled list is used only when no catalog is configured at all; then this module is never called. The cost is that a catalog with more than 24 teams is truncated by an order this page cannot promise, since the catalog API does not document one; that is unverified.
 
 ## Runbook selection
+
+The problem: a runbook page tells the model what "normal" and "act now" mean for this service, but a TechDocs site has many pages and the model should read the one that applies, not the site. TechDocs publishes the mkdocs search index alongside the site, which is the plain text of every page and section; that makes it a better source than scraping HTML, and a missing site is not an error.
 
 ```mermaid
 flowchart TD
@@ -122,9 +144,19 @@ flowchart TD
     BEST -->|yes| EX["title (location): text", cut at 1800 chars]
 ```
 
-TechDocs publishes the mkdocs search index alongside the site; it is the plain-text form of every page, which makes it a better source than scraping HTML. A missing site is not an error.
+**The scoring.** Every index entry with text is scored against the alert's words (three characters or more, lower-cased; a different floor from the four used for mentions, because here a short word only adds a few points rather than fetching an entity). The weights are hand-tuned and the test pins the behaviour they produce, not the numbers:
+
+- `+10` when the location or title contains `runbook`. This dominates any number of word matches, so a runbook page that matches one alert word beats an overview page that matches three. The premise is that a page a team filed under runbooks is the page a responder should read, whatever it is called.
+- `+4` per alert word in the title, `+2` per word in the location. The title is written by a person to name the page; the location is derived from the file path and repeats the title's words in slug form, so it counts for half rather than doubling the same evidence.
+- `+1` for a top-level page over an anchored section, all else equal. The page holds the whole procedure; the anchored entries are fragments of it. Among equal scores the shorter location wins for the same reason: the parent page over a deeper one.
+
+**The cutoff.** A page must score more than 1 to be chosen. A score of exactly 1 is a top-level page that matched nothing about the alert and is not a runbook; below that floor, the result would be a random page, and no runbook is better than a wrong one. The test `runbook_prefers_runbook_pages_matching_the_alert` checks the floor with an unrelated ADR page.
+
+**The excerpt.** `Title (location): text`, cut at 1,800 characters on a character boundary (`DEFAULT_RUNBOOK_CHARS`, a public field the configuration layer does not set). The length is a token budget with no measured basis: long enough for a heading and the first steps, short enough that the runbook is not the largest part of the state. Multi-page runbooks are not stitched. The `runbook_url` points at the page, so the responder reads the rest there.
 
 ## Notification
+
+The problem: the tags route escalation in incident.io, and the note lives on the alert, but the owning team may work from the portal and never see either. The Notifications plugin puts one line in front of the group. The decision is to send it only when a person is expected to act.
 
 ```mermaid
 sequenceDiagram
@@ -133,7 +165,7 @@ sequenceDiagram
     participant E as Enricher
     participant BS as Backstage Notifications
     F->>IO: add tags (and attach if duplicate)
-    alt decision is Page, Ticket or HumanTriage and --notify-owners
+    alt decision is Page, Ticket or HumanTriage and backstage.notify
         F->>E: notify_owner(candidate, title, decision, alert link)
         E->>BS: POST /api/notifications/notifications<br/>recipients: entity group ref, severity from impact
         BS-->>E: 200
@@ -144,12 +176,18 @@ sequenceDiagram
     Note over F,BS: a failed notification is logged and the tags already written stay
 ```
 
+**Why only three decisions.** `Suppress` means the model is confident nobody needs to act, and a notification would undo the suppression. `AttachToIncident` means responders on the existing incident already know; a second channel to a different group is noise. `Page`, `Ticket` and `HumanTriage` each name a person who has not yet seen the alert.
+
 | Decision | Title | Severity |
 |---|---|---|
 | Page, impact Outage | `Page: <alert>` | critical |
-| Page, impact Major | `Page: <alert>` | high |
+| Page, any lower impact | `Page: <alert>` | high |
 | Ticket | `Ticket: <alert>` | normal |
 | HumanTriage | `Needs triage: <alert>` | normal |
+
+**Why that severity map.** A page is already urgent, so the notification's severity only distinguishes a full outage from everything else; a ticket or a request to triage wakes nobody, so it is `normal`. The description is a fixed sentence built from the typed decision (owner, impact, whether ownership needs confirming, whether a change is suspected), the same rule as the qualification note: the model judges, it does not write.
+
+**What it costs and what it needs.** `backstage.notify` (`BACKSTAGE_NOTIFY`, `serve --notify-owners`) is off by default because it needs a backend plugin the catalog does not, and because a notification per decision is a real interruption while the decisions are unverified against live alerts. Only candidates that carry an entity reference can be notified, so a team from the compiled fallback list is never notified. A failed notification is logged at `warn` and never undoes the tags: the tags are the contract, the notification is a convenience.
 
 ## Setup
 
@@ -179,15 +217,16 @@ sequenceDiagram
 
 ## Related plugins
 
-Among the community plugin workspaces, `firehydrant`, `ilert` and `healert` cover incident tooling, `grafana`, `sentry`, `newrelic`, `dynatrace` and `splunk` cover signals, and `github`, `argocd`, `flux` and `octopus-deploy` cover deployments. None is required. The deployment plugins are the natural source for `recent_changes` (roadmap). The incident.io Backstage plugin (`@incident-io/backstage`) shows incident.io incidents on a component page through a custom field mapped to the Backstage component catalog type, which pairs with the attributes signalman tags.
+Among the community plugin workspaces, `firehydrant`, `ilert` and `healert` cover incident tooling, `grafana`, `sentry`, `newrelic`, `dynatrace` and `splunk` cover signals, and `github`, `argocd`, `flux` and `octopus-deploy` cover deployments. None is required. The deployment plugins are not how `recent_changes` is filled: [decision 0007](decisions/0007-changes-are-pushed-not-polled.md) rejected polling them because their backend routes are internal to each plugin version, not a published contract, and the catalog would become a proxy for operational data it was not designed to serve. Delivery tools post to the [change feed](changes.md) instead. The incident.io Backstage plugin (`@incident-io/backstage`) shows incident.io incidents on a component page through a custom field mapped to the Backstage component catalog type, which pairs with the attributes signalman tags.
 
 ## Limits and unverified points
 
 - Not yet run against a real Backstage instance. Shapes follow the OpenAPI specification and TypeScript types; drift surfaces as a `Decode` error naming the field.
-- Owner candidates are capped at 24 per triage. Each is a Choice option and costs input tokens.
+- Owner candidates are capped at 24 per triage. Each is a Choice option and costs input tokens. The cap and the 1,800-character excerpt are compiled defaults, not settings.
 - Mentioned components are matched by exact word against `metadata.name` in the configured namespace only.
 - The runbook excerpt is one page, at most 1,800 characters. Multi-page runbooks are not stitched.
 - Notifications need the Notifications backend installed and the token allowed on the `notifications` plugin.
+- Which 24 teams survive the all-teams fallback depends on the catalog's return order, which its API does not document.
 
 
 <!-- source: docs/typesafe-client.md -->
@@ -254,8 +293,9 @@ What the handle rules out:
 |---|---|
 | Reading a Score where a Noul was asked | `Error::AnswerTypeMismatch` naming the id and both primitives |
 | An option string the enum does not know | `Error::UnknownOption`, never a silent default |
-| A probability or confidence outside `[0, 1]` | deserialisation fails; `Probability` and `Confidence` are distinct validated newtypes |
+| A probability or confidence outside `[0, 1]` | `Error::NotAProbability` at deserialisation; `Probability` and `Confidence` are distinct validated newtypes |
 | An answer missing from the response | `Error::MissingAnswer` |
+| An answer of the right primitive that does not fit its question, such as a Score on a scale the question never sent | `Error::InvalidAnswer` naming the id and the reason |
 
 The `options!` macro writes the `Options` implementation from one definition: the wire keys, the rubric text sent as `criteria`, and the reverse lookup. For option sets known only at runtime, `Questions::dynamic_choice` takes `(key, description)` pairs and returns `Handle<Choice<String>>`; the triage uses it for incident references and catalog groups.
 
@@ -265,7 +305,9 @@ The `options!` macro writes the `Options` implementation from one definition: th
 
 ## Retries
 
-All three clients share one loop in `src/http.rs`.
+A transient failure upstream (a timeout, a 429, a 5xx) must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The retry policy sits between those two costs.
+
+All three clients share one loop in `src/http.rs`, so the retry rules and the error counting are written once and every upstream behaves the same way under failure.
 
 ```mermaid
 flowchart TD
@@ -291,11 +333,19 @@ flowchart TD
 | Retry on | 408, 429, 5xx (including 529), transport errors | |
 | `Retry-After` | honoured up to 30 s, delay-seconds form only | `retry_after_max` |
 
+Why these values:
+
+- **Two retries** is the TypeSafe Python SDK's default, and the client mirrors the SDK so a failure looks the same from Rust and from Python. The cost is bounded: three attempts of at most 10 s each plus two backoffs is how long a dead upstream holds a triage before the error surfaces. More retries would hold a webhook slot longer ([Operations](operations.md#backpressure)); fewer would fail on a single dropped connection.
+- **`Retry-After` is honoured only up to 30 s.** The server knows better than the client how long to wait, so the header wins when it is present, but a hostile or misconfigured header must not stall a triage for minutes; above the cap the client's own backoff applies instead. Only the delay-seconds form is read. The HTTP-date form needs a clock comparison against a server whose clock may not match, and the backoff is a safe fallback, so the code ignores it rather than trust the arithmetic.
+- **Every failed attempt is counted**, retried or not, in `signalman.upstream.errors` with the service label. A retry that succeeds hides the failure from the caller, but the failed attempt was still load on the upstream and still a symptom, so the metric sees it ([Observability](observability.md#metrics)).
+
+`evaluate` runs inside a `typesafe.evaluate` span carrying the `model` requested and, once the response arrives, the `input_tokens` it reports; the same numbers feed the `signalman.typesafe.tokens` counter, where `input` is the billed direction. The state and the questions are never put in a span field ([Observability](observability.md)).
+
 The response's `model` field is the versioned id that answered (for example `jev-1.13.0`) even when an alias was requested. It is logged and returned in every outcome. Thresholds tuned against one version should pin that version.
 
 ## Errors
 
-`signalman::Error` distinguishes `MissingApiKey`, `Unauthorized` (401), `InvalidRequest` (422 with the body), `RateLimited` and `Overloaded` (429 and 529 after retries, with attempt counts), `Http`, `Transport` and `Decode`, plus the typed-layer errors above. The API key is marked sensitive and redacted from `Debug` output.
+A caller has to pick a remedy from the error alone, so `signalman::Error` separates failures by what fixes them rather than by status code. `MissingApiKey` and `Unauthorized` (401) mean the configuration is wrong. `InvalidRequest` (422, with the body) means the request is wrong and no retry will help; the body names the offending field. `RateLimited` (429) and `Overloaded` (TypeSafe's 529) are both returned only after the retries ran out and both carry the attempt count, but they are kept apart because the remedies differ: 429 is the account's rate limit, the remedy is to slow down, and the error carries the server's `Retry-After` when it sent one; 529 is TypeSafe's service being overloaded, there is no `Retry-After` to carry, and the remedy is to wait and try again later. `Http` (any other status, with the truncated body), `Transport` (network, TLS or timeout, after retries) and `Decode` (a body that is not the documented shape) cover the rest, plus the typed-layer errors above. The API key is marked sensitive and redacted from `Debug` output, so an error printed with `{:?}` cannot leak it.
 
 
 <!-- source: docs/laya.md -->
@@ -305,9 +355,11 @@ The response's `model` field is the versioned id that answered (for example `jev
 
 [Laya](https://huggingface.co/convaiinnovations/laya) (Convai Innovations, Apache 2.0) is an open-weights System One decision model: a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass. It takes the same request shape as TypeSafe's API, a `state` plus `noul`, `choice` and `score` questions with `instructions` and `criteria`, and returns the same answer shape with probabilities and confidence. It never generates text. Three checkpoints ship in one repository: English (root), multilingual (`mmBERT-base`, 322M) and `typed-decisions`, the English model fine-tuned on a four-workflow typed-decisions benchmark.
 
+This page is an experiment, not a supported configuration. Jev's per-token cost, its latency and the fact that alert text leaves the network are real costs, and an open-weights model that speaks the same wire shape is the obvious way to remove them; the question is whether its judgments are good enough to route on. Nothing in the binary knows about Laya, the only artefact in the repository is a shim under `examples/`, and the measurement below is three synthetic alerts. It becomes `current` when the [evaluation harness](evaluation.md) has compared both models on labelled alert history and Laya, fine-tuned, matches Jev's accuracy and calibration per question; at that point self-hosting becomes a documented `typesafe.model` option rather than a page. Until then the page records what was tried so nobody repeats it.
+
 ## It runs, and signalman needs no code change
 
-The [configuration layer](configuration.md) already makes the model endpoint a setting. `examples/laya/serve_laya.py` is a fifty-line HTTP shim that loads a checkpoint with the `laya` package and serves `POST /v1/systemone` and `GET /v1/models`:
+The [configuration layer](configuration.md) already makes the model endpoint a setting. `examples/laya/serve_laya.py` is a short HTTP shim that loads a checkpoint with the `laya` package and serves `POST /v1/systemone` and `GET /v1/models`:
 
 ```sh
 python -m venv .venv
@@ -355,13 +407,13 @@ Triage is one request to the model and one pass through a policy. The request as
 
 ## State
 
-The `state` is `{ "alert": Alert }`. Every field either answers a question or is left out; each one costs input tokens and dilutes attention.
+The model can only judge what it is shown, and everything it is shown costs input tokens and dilutes attention across the questions. The `state` is therefore `{ "alert": Alert }` with every field either answering a question or left out.
 
 | Field | Source | Read by |
 |---|---|---|
 | `source`, `title`, `description`, `labels` | the alert | every question |
 | `runbook` | the alert, or TechDocs when Backstage is configured | owner, actionable |
-| `open_incidents` | live incidents from incident.io, capped at 40 | `duplicate_of` |
+| `open_incidents` | open incidents from incident.io, [capped at 40](incidentio.md#candidate-incidents) | `duplicate_of` |
 | `recent_changes` | the alert file, or the [change feed](changes.md): deploys and changes posted by delivery tools that touched the component or the platform in the last two hours | `caused_by_change` |
 | `component` | the Backstage catalog: owner, lifecycle, system, dependencies, dependents, tags, links | owner, impact |
 | `related_alerts` | alerts firing in incident.io in the recent window (default 30 minutes, at most 20): title, age in minutes, component label | impact |
@@ -404,7 +456,7 @@ Owner candidates are data, not a type. With Backstage configured they are catalo
 
 ## The decision
 
-`decide` in `src/triage/policy.rs` is pure code over typed answers.
+Five judgments have to become one action, and a decision that pages someone at 03:00 must be traceable to a number and a threshold rather than to prose ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)). `decide` in `src/triage/policy.rs` is therefore pure code over typed answers: no model call, no text, one decision.
 
 ```mermaid
 flowchart TD
@@ -423,16 +475,18 @@ flowchart TD
 
 Order is priority. Suppression wins over everything: a non-actionable alert is dropped even if it looks like a duplicate. Deduplication wins over routing: attaching to the incident that already has responders beats paging a second team. Only then does ownership matter, and only a confident owner gets an automatic route.
 
-| Threshold | Default | Meaning |
-|---|---|---|
-| `suppress_below` | 0.25 | below this probability of being actionable, suppress |
-| `attach_confidence` | 0.75 | dedup confidence needed to attach |
-| `human_below_confidence` | 0.40 | owner confidence below which a person triages |
-| `auto_route_confidence` | 0.70 | owner confidence below which the route is marked for confirmation |
-| `page_at` | `Major` | impact level at or above which the owner is paged rather than ticketed |
-| `flag_change_above` | 0.65 | probability above which a recent change is flagged as suspected cause |
+Each threshold trades one failure against another: the cost of a needless page against the cost of a missed one, or a needless human hand-off against a wrong automatic route. The table says what goes wrong at each extreme.
 
-These are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the evaluation work in the [roadmap](roadmap.md).
+| Threshold | Default | Meaning | Set too low | Set too high |
+|---|---|---|---|---|
+| `suppress_below` | 0.25 | below this probability of being actionable, suppress | noise reaches a team and costs pages | a real alert the model was unsure about is dropped silently; the costliest error, which is why the default sits low |
+| `attach_confidence` | 0.75 | dedup confidence needed to attach | an alert on a separate problem is buried under an unrelated incident | duplicates open second incidents and page a second team |
+| `human_below_confidence` | 0.40 | owner confidence below which a person triages | weak guesses route automatically to the wrong team | most alerts land in the triage channel and the tool saves no time |
+| `auto_route_confidence` | 0.70 | owner confidence below which the route is marked for confirmation | uncertain routes carry no prompt to check ownership | every route is marked and the prompt stops meaning anything; it changes the note and `owner.status`, never the route |
+| `page_at` | `Major` | impact level at or above which the owner is paged rather than ticketed | minor impact wakes people | a major waits for business hours in a ticket |
+| `flag_change_above` | 0.65 | probability above which a recent change is flagged as suspected cause | every deploy in the window is blamed | the likely cause goes unmentioned; it affects a tag and a note line, never the route |
+
+`human_below_confidence` must not exceed `auto_route_confidence`, or no confidence could route automatically; the configuration is rejected when it does. The defaults are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the [evaluation harness](evaluation.md) to have labelled history to measure them against ([roadmap](roadmap.md)); its `conf|right` and `conf|wrong` columns are what a threshold is chosen from.
 
 ## The outcome contract
 
@@ -680,6 +734,8 @@ Every enumeration is `snake_case` on the wire.
 
 Tags are what incident.io routes on, so they stay lowercase and hyphenated as they were deployed. Every one of them is derivable from the document, which is what makes them a lossy view of it rather than a second source of truth. `Outcome::validate` rejects a document carrying an `ai-*` tag its own fields do not imply.
 
+That guarantee holds because the tag strings have one source. `src/outcome.rs` owns the tag builder, the `ai-action-*` values and the `ai-impact-*` keys; the flow's `tags_for` in `src/incidentio/sync.rs` and the document's own `expected_tags` both call it, so a new action or impact level is named once. `ai-suspected-change` is taken from the decision's `suspected_change` flag, not recomputed from the `caused_by_change` probability, so the `flag_change_above` threshold lives in one place, the policy, and a tag can never disagree with the decision written next to it.
+
 | Tag | Derived from |
 |---|---|
 | `ai-team-<key>` | `judgments.owner.chosen`, lowercased with underscores turned into hyphens, so `none_of_these` becomes `ai-team-none-of-these` |
@@ -737,7 +793,7 @@ Every decision carries its typed judgments in [the outcome contract](#the-outcom
 4. `signalman eval cases.jsonl --replay runs/<model>` to see the decisions under the new thresholds, without calling the model.
 5. Pin `typesafe.model` to the version recorded against in the same file and re-evaluate before moving to a new one.
 
-`flag_change_above` now governs the `ai-suspected-change` tag in full. The tag used to be recomputed from a hardcoded `caused_by_change` probability of 0.65 at the moment the tags were built, which ignored the configured threshold. It is taken from the decision's own `suspected_change` flag instead, so it honours `flag_change_above` and appears only on a `page` or a `ticket`.
+Every threshold, `flag_change_above` included, acts through the decision, and the tags are derived from the decision ([Tags are a view of the document](#tags-are-a-view-of-the-document)), so a replay under new thresholds shows the tags that would have been written as well as the action.
 
 ## Testing
 
@@ -862,7 +918,7 @@ Any endpoint that speaks the System One shape can be evaluated by pointing `type
 
 - Grading is argmax against one label. Alerts with two acceptable owners, or an impact between two levels, count as wrong unless the label says otherwise; the JSON report's `p_expected` shows how much probability the model gave the label.
 - The harness does not consult Backstage; catalog candidates can be reproduced by writing the `component` and the owner list into the case.
-- The example file's labels are the maintainers' reading of three synthetic alerts. Nothing here has been run against a real model yet ([roadmap](roadmap.md)).
+- The example file's labels are the maintainers' reading of three synthetic alerts. The harness has run against Laya through a local shim, which is the report above; it has not yet been run against Jev, TypeSafe's hosted model, nor against real alert history ([roadmap](roadmap.md)). The numbers above say how the harness reads, not how Jev performs.
 
 
 <!-- source: docs/incidentio.md -->
@@ -918,7 +974,9 @@ Alerts from any source that notifies incident.io appear in that list. Tsuga, the
 
 Tag names are lowercase with hyphens and prefixed `ai-`, so alert routes can filter on them and humans can tell them from their own tags. `<key>` is the catalog group name when Backstage is configured, or the static team key otherwise. Existing tags are kept. `--dry-run` on `serve` and `incidentio triage-alert` computes everything and writes nothing.
 
-`ai-suspected-change` follows the `flag_change_above` threshold in the policy. It used to be recomputed from a hardcoded `caused_by_change` probability of 0.65, which could disagree with the decision the same run had already made; it is now read off the decision itself.
+The tag strings have one source, `src/outcome.rs`: the same functions produce the tags the flow writes and the tags the outcome document says it implies, so the two cannot drift and `Outcome::validate` can reject a tag the document does not explain. `ai-suspected-change` in particular is taken from the decision's own `suspected_change` flag, not recomputed from the `caused_by_change` probability, so the `flag_change_above` threshold lives in one place, the policy, and the tag remains derivable from the document. It therefore appears only on a `page` or a `ticket`, the two decisions that carry the flag.
+
+The writes happen in a fixed order inside one `incidentio.write_back` span (absent on a dry run; its fields are the tag count and whether an attachment and a note were attempted, never their content): tags, then the attachment, then the note, then the owner notification through Backstage when it is enabled. The tags are the handoff, so a failure to write them fails the triage. The note and the notification are conveniences on top of the tags, so their failures are logged and recorded in the document and do not undo what was already written.
 
 Every triage, applied or dry run, also returns [the outcome contract](triage.md#the-outcome-contract): one JSON document holding the judgments, the decision, the policy that produced it and what was written. `writes.mode` says `applied` or `dry_run`, `writes.note` says what became of the note, and `writes.attached` says whether the attachment happened. The tags are a lossy view of that document, and every one of them is derivable from it.
 
@@ -949,7 +1007,17 @@ _Time to qualify: 42 s. Model jev-1.13.0. Tags: ai-team-payments, ai-impact-majo
 
 Every line is a judgment with its probability, a link, or a fact from the catalog or the hub. Alternatives are listed when they carry at least 0.05 probability, so a close call reads as one. The time to qualify is measured from the alert's `created_at` in incident.io to the decision and is also logged and returned in [the outcome contract](triage.md#the-outcome-contract) as `time_to_qualify_seconds`; it is the number this tool exists to lower.
 
-The note starts with a fixed marker line. Before writing, signalman lists the alert's notes and, when one of them starts with the marker, replaces that note instead of adding another; a human's notes are never touched. One alert therefore carries at most one signalman note, always the latest pass. Writing the note requires the manage alert notes scope. A failure to write it is logged and does not undo the tags or the attachment; the outcome document records it as `writes.note.status` `failed`, with the reason in `writes.note.error`.
+The note starts with a fixed marker line. Before writing, signalman lists the alert's notes and, when one of them starts with the marker, replaces that note instead of adding another; a human's notes are never touched. One alert therefore carries at most one signalman note, always the latest pass, and a responder never has to work out which of several notes is current. Writing the note requires the manage alert notes scope. A failure to write it is logged and does not undo the tags or the attachment.
+
+What became of the note is reported as `writes.note.status` in the outcome document:
+
+| Status | Meaning |
+|---|---|
+| `created` | a first pass added a new note |
+| `replaced` | the note signalman left on an earlier pass was rewritten in place; `writes.note.id` is its id |
+| `failed` | the write failed; the tags and the attachment were still written and `writes.note.error` says why |
+| `disabled` | the note is switched off (`--no-note`) |
+| `skipped` | no note was attempted: a dry run, or the file-based CLI with no alert to write to |
 
 ## Setup
 
@@ -981,7 +1049,15 @@ That block is flat on purpose and is not the same shape as [the outcome contract
 
 ## Candidate incidents
 
-`GET /v2/incidents` with `status_category[one_of]` for each of `triage`, `live` and `paused` as repeated keys, paginated with the `after` cursor, filtered client-side to `mode: standard`, capped at 40. The multi-value filter form is inferred from single-value examples and is unverified; the fallback is one request per category. The list endpoint has its own limit of 60 requests per minute.
+The `duplicate_of` question can only choose among incidents it is offered, so which incidents are fetched decides which duplicates can ever be caught, and every incident offered is one more Choice option the model must weigh and pay tokens for. The list is therefore narrowed three ways before it becomes state.
+
+`GET /v2/incidents` with `status_category[one_of]` for each of `triage`, `live` and `paused` as repeated keys, paginated with the `after` cursor, filtered client-side to `mode: standard`, capped at 40 (`DEFAULT_CANDIDATES` in `src/incidentio/sync.rs`).
+
+- **Three status categories.** `triage`, `live` and `paused` are the categories in which responders are still working, or have deliberately paused; a new alert on the same problem belongs with them. `declined`, `merged`, `canceled`, `closed` and `learning` (post-incident) are finished work, and attaching a firing alert to one would bury it where nobody is looking.
+- **`mode: standard` only.** incident.io also carries `test`, `tutorial` and `retrospective` incidents; none is live work a duplicate could join, and a retrospective describes a problem that is already over. The filter is applied client-side after the fetch; an incident with no `mode` field is kept. Whether the endpoint's own `mode` filter would do the same has not been checked against a live account.
+- **At most 40.** Each candidate is one Choice option, and the Choice limit is 255, so the cap protects the request from an account with hundreds of open incidents; below the limit, each option still costs input tokens and dilutes the model's attention across more choices. Pagination stops as soon as 40 are collected, so the incidents offered are the first 40 the endpoint returns; the cap assumes that order is newest first, where a duplicate is most likely to be, and that assumption has not been checked against a live account. Forty is a default awaiting tuning on real alerts; the [roadmap](roadmap.md) lists candidate selection by team and recency as the next step, and the number was not measured.
+
+The multi-value filter form is inferred from single-value examples and is unverified; the fallback is one request per category. The list endpoint has its own limit of 60 requests per minute, which is why the candidates are fetched once per triage and never polled.
 
 ## Errors
 
@@ -1117,11 +1193,13 @@ When changes were offered, the [qualification note](incidentio.md#the-qualificat
 
 # MCP server
 
-signalman serves six tools over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP): the same typed judgments the CLI and the webhook receiver produce, callable from an agent. `signalman mcp` serves them alone, over stdio or Streamable HTTP; `signalman serve` also mounts them at `/mcp` next to the webhook receiver (see [Transports](#transports)). Five are always registered and read-only. A sixth, `apply_qualification`, writes to incident.io and is registered only when `mcp.allow_write` is turned on (default off; see [Writing](#writing)). [Decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md) is why this exists and why it stops here: signalman is a tool for agents, not an agent. No tool creates an incident, and none runs a generative model. Every tool is a thin wrapper over a function the CLI subcommands already call, so there is exactly one implementation of each capability.
+An agent investigating an alert needs signalman's judgments (who owns this, how bad is it, is it a duplicate) without parsing a log line or shelling out to the CLI. This page describes how those judgments are served over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP): six tools, the same typed judgments the CLI and the webhook receiver produce. `signalman mcp` serves them alone, over stdio or Streamable HTTP; `signalman serve` also mounts them at `/mcp` next to the webhook receiver (see [Transports](#transports)). Five are always registered and read-only. A sixth, `apply_qualification`, writes to incident.io and is registered only when `mcp.allow_write` is turned on (default off; see [Writing](#writing)). Why the server exists and why it stops at these six is [decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md): signalman is a tool for agents, not an agent. Every tool wraps a function the CLI subcommands already call, so there is one implementation of each capability.
 
 Contract source: the official Rust SDK, [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (`modelcontextprotocol/rust-sdk`), with its server, stdio transport and Streamable HTTP server features (`transport-streamable-http-server`). The binary carries no MCP client and no OAuth feature.
 
 ## Tools
+
+Each tool answers one question an agent asks during an investigation, and each maps to a CLI subcommand or an outcome field so that what the agent sees is what an operator would see.
 
 | Tool | Answers | Mirrors |
 |---|---|---|
@@ -1135,11 +1213,11 @@ Every tool in this table has `read_only_hint: true`. Every result carries the va
 
 ## Writing
 
-`apply_qualification` is a sixth tool, registered only when `mcp.allow_write` is `true` (default `false`; see [Configuration](#configuration)). It applies a `qualify_alert` result: it writes the tags, rewrites the qualification note in place, and attaches the alert to an incident when the decision says so.
+An agent that has reviewed a `qualify_alert` result needs a way to apply it, and a tool that took free-form tags or note text would let a model write whatever it composed. `apply_qualification` is a sixth tool, registered only when `mcp.allow_write` is `true` (default `false`; see [Configuration](#configuration)). It applies a `qualify_alert` result: it writes the tags, rewrites the qualification note in place, and attaches the alert to an incident when the decision says so.
 
 Input is `{ "alert_id": string, "outcome": <Outcome> }`, where `outcome` must be the exact [outcome document](triage.md#the-outcome-contract) a prior `qualify_alert(alert_id)` call returned for that same alert. The tool checks `outcome.alert.id == alert_id` and refuses (a protocol-level `invalid_params` error) if they differ, which also rules out `qualify_alert`'s standalone `alert` form: that form never has an alert id to match. It then revalidates the document (`Outcome::validate`) and rebuilds the decision from it; either failing is also `invalid_params`. Every write is re-derived from the document's own typed judgments — the tags, the attach target, the note content — so the tool cannot be used to write anything the outcome does not already say, and it never accepts a free-form instruction about what to write. It never creates an incident ([decision 0001](decisions/0001-incidentio-remains-the-alert-hub.md) still holds).
 
-Output is a `Writes` object: `mode: "applied"`, `tags_applied` and `attached` booleans, and a `note` object (`status` of `created`, `updated`, `disabled` or `failed`, an optional note `id`, an optional `error`). The `notified` and `forwarded` fields are always absent from this tool's result; they belong to a different write path and this tool does not send notifications.
+Output is a `Writes` object: `mode: "applied"`, `tags_applied` and `attached` booleans, and a `note` object (`status` of `created`, `replaced`, `failed`, `disabled` or `skipped`, an optional note `id`, an optional `error`; `replaced` is an earlier pass's note rewritten in place, `skipped` is a dry run or a path that never attempts a note). The `notified` and `forwarded` fields are always absent from this tool's result; they belong to a different write path and this tool does not send notifications.
 
 Calling `apply_qualification` twice with the same outcome is safe: the tags and the attachment are idempotent on incident.io's side, and the note is replaced in place using the same marker-line template and "never stacked" behavior as the rest of the triage flow (`src/incidentio/note.rs`), never a second note. Its annotations reflect this: `read_only_hint: false`, `destructive_hint: false`, `idempotent_hint: true`, `open_world_hint: true`.
 
@@ -1166,7 +1244,7 @@ allow_write = false # registers apply_qualification when true; off by default
 
 ## Transports
 
-The same `Server` (`src/mcp.rs`) is reachable two ways. Over **stdio**, `signalman mcp` speaks newline-delimited JSON-RPC on stdin and stdout, one client per process, trusted by the process boundary; the client launches it. Over **Streamable HTTP** (`src/mcp/http.rs`), the server is mounted at `POST /mcp` on an axum router behind a bearer token, and any number of clients reach it over the network. The tool list is identical: `qualify_alert` is a forced dry run over HTTP exactly as over stdio, and `apply_qualification` is registered over HTTP if and only if `mcp.allow_write` is true.
+Two transports exist because agents run in two places: on an engineer's machine, where a client can launch a process and own it, and in a platform, where many clients reach one deployment over the network and a process-per-client is not an option. The same `Server` (`src/mcp.rs`) is reachable two ways. Over **stdio**, `signalman mcp` speaks newline-delimited JSON-RPC on stdin and stdout, one client per process, trusted by the process boundary; the client launches it. Over **Streamable HTTP** (`src/mcp/http.rs`), the server is mounted at `POST /mcp` on an axum router behind a bearer token, and any number of clients reach it over the network. The tool list is identical: `qualify_alert` is a forced dry run over HTTP exactly as over stdio, and `apply_qualification` is registered over HTTP if and only if `mcp.allow_write` is true.
 
 HTTP is served in two configurations:
 
@@ -1177,7 +1255,7 @@ HTTP is served in two configurations:
 
 `serve` logs at start-up whether `/mcp` was mounted and, if not, why (`SIGNALMAN_MCP_TOKEN` unset, or `mcp.enabled = false`). The MCP-only HTTP process deliberately has no `/changes` route of its own: a process that needs a live feed runs `serve`, which hosts `/mcp` next to `POST /changes`. One place to post changes, one place to be reached.
 
-**Stateless by construction.** The endpoint runs rmcp's `StreamableHttpService` with legacy session mode off, JSON responses on and a session manager that never creates a session. There is no `Mcp-Session-Id`; each `POST /mcp` is one JSON-RPC request answered by one JSON response. rmcp falls back to an SSE stream for a request only if the handler emits a notification before its result, which no signalman tool does. The consequences: two replicas behind one Kubernetes Service need no session affinity; a graceful shutdown has no long-lived streams to drain; `GET /mcp` and `DELETE /mcp` answer `405`, since there is no standalone SSE stream to open and no session to delete. The MCP specification allows a session-less server; Claude Code and rmcp clients handle it.
+**Stateless by construction.** A session per client would force replicas behind one Service to share session state or pin clients to a replica, and would give a graceful shutdown streams to drain. Nothing a signalman tool does needs a session: every call is one request with one typed answer. So the endpoint runs rmcp's `StreamableHttpService` with legacy session mode off, JSON responses on and a session manager that never creates a session. There is no `Mcp-Session-Id`; each `POST /mcp` is one JSON-RPC request answered by one JSON response. rmcp falls back to an SSE stream for a request only if the handler emits a notification before its result, which no signalman tool does. The consequences: two replicas behind one Kubernetes Service need no session affinity, and a graceful shutdown has no long-lived streams to drain. `GET /mcp` and `DELETE /mcp` answer `405` for the same reason: in the Streamable HTTP protocol `GET` opens a standalone server-to-client stream and `DELETE` ends a session, and a stateless server has neither to offer (`tests/mcp_http.rs` asserts both). The MCP specification allows a session-less server; Claude Code and rmcp clients handle it.
 
 **The token.** `SIGNALMAN_MCP_TOKEN` is environment only, like every other secret ([decision 0006](decisions/0006-layered-configuration.md)). A token-checking layer sits in front of rmcp's service, so a request without `Authorization: Bearer <token>` (compared in constant time) never reaches the protocol handler; it is refused with `401` and `WWW-Authenticate: Bearer`. It is a separate secret from `INCIDENTIO_WEBHOOK_SECRET` (incident.io authenticating to signalman) and from `SIGNALMAN_CHANGES_TOKEN` (delivery tooling authenticating to signalman): an agent is a third party with its own credential, revocable on its own. A test proves the feed token does not open `/mcp` and the MCP token does not open `/changes`.
 
@@ -1207,7 +1285,7 @@ Over stdio, add to `.mcp.json` in the repository, or the equivalent user-level c
 }
 ```
 
-`BACKSTAGE_TOKEN` is only needed when the catalog backend requires authentication. `SIGNALMAN_CONFIG` (or `--config` is not available for an MCP-launched process; use the environment variable) points at the same configuration file `serve` uses, so the two share one reviewed set of thresholds and wording.
+`BACKSTAGE_TOKEN` is only needed when the catalog backend requires authentication. The server should read the same configuration file `serve` uses, so that the agent and the webhook receiver share one reviewed set of thresholds and wording. Either way of naming it works for a launched process: `--config` is a global flag, so `"args": ["mcp", "--config", "/etc/signalman/config.toml"]`, or `SIGNALMAN_CONFIG` in the `env` block; without both, `./signalman.toml` and then `/etc/signalman/config.toml` are tried ([Configuration](configuration.md#the-file)).
 
 Over HTTP, point at a running `serve` or `signalman mcp` and send the token:
 
@@ -1260,9 +1338,9 @@ For interactive exploration, the [MCP Inspector](https://modelcontextprotocol.io
 
 ## What is not here
 
-- **Writing, beyond `apply_qualification`.** No tool notifies an owner, and no tool other than `apply_qualification` tags an alert, writes a note or attaches an incident. `apply_qualification` itself is gated behind `mcp.allow_write` (default off) and documented above under [Writing](#writing).
-- **OAuth or OIDC in front of `/mcp`.** The endpoint checks one bearer token and nothing else. Put an ingress or gateway in front of it for anything more, such as per-agent identities, TLS termination or rate limits.
-- **Investigation or remediation.** A tool answers one typed question; it does not decide what to do next, retry, or chain calls. That is the calling agent's job, which is the point of [decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
+- **Writing, beyond `apply_qualification`.** No tool notifies an owner; no other tool tags, writes a note or attaches an incident.
+- **OAuth or OIDC in front of `/mcp`.** The endpoint checks one bearer token and nothing else. Put an ingress or gateway in front of it for per-agent identities, TLS termination or rate limits.
+- **Investigation or remediation.** A tool answers one typed question and does not chain calls or choose the next step; that is the calling agent's job ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)).
 
 
 <!-- source: docs/configuration.md -->
@@ -1366,7 +1444,7 @@ signalman serves its typed capabilities over the Model Context Protocol ([MCP](m
 
 ### `[telemetry]`
 
-Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export on; without it the text log on stderr is the only signal ([Observability](observability.md)). The two `OTEL_*` variables are read here, like every other non-secret variable, and the endpoint is handed to the SDK programmatically; the SDK's own per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`) are not honoured. `OTEL_EXPORTER_OTLP_HEADERS` is a secret and sits in the table above.
+Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export on; without it the text log on stderr is the only signal ([Observability](observability.md)). The two `OTEL_*` variables are read here, like every other non-secret variable, and the endpoint is handed to the SDK programmatically; the SDK's own per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`) are not honoured: one base endpoint, always HTTP/protobuf. `OTEL_EXPORTER_OTLP_HEADERS` and its per-signal forms are honoured because the exporter reads them itself, never `src/config.rs`; they carry a collector's credential, so they are secrets and sit in the [table above](#secrets), never in the file.
 
 | File key | Environment | Default | Meaning |
 |---|---|---|---|
@@ -1416,6 +1494,8 @@ prints the effective configuration as TOML after every layer, headed by the file
 
 # Operations
 
+This page is for whoever runs the webhook receiver: what to start, what to probe, what bounds the load it can take, and how each failure shows up. The design constraints behind those answers live in the [decision records](decisions/README.md); this page states their conclusions and links them.
+
 ## Running
 
 ```sh
@@ -1426,22 +1506,24 @@ signalman serve --insecure-skip-verify               # local only; logs a warnin
 signalman serve --config /etc/signalman/config.toml  # explicit file; see Configuration for the search order
 ```
 
-Startup fails fast on a missing secret, an unknown key in the configuration file or an unparsable environment value. The process exits cleanly on SIGTERM or Ctrl-C. Backstage enrichment is on whenever `backstage.base_url` is set, in the file or through `BACKSTAGE_BASE_URL`.
+Startup fails fast on a missing secret, an unknown key in the configuration file or an unparsable environment value, so a misconfiguration stops the rollout instead of silently keeping a default ([decision 0006](decisions/0006-layered-configuration.md)). The process exits cleanly on SIGTERM or Ctrl-C. Backstage enrichment is on whenever `backstage.base_url` is set, in the file or through `BACKSTAGE_BASE_URL`.
 
 ## Endpoints
+
+Every route exists for a different caller with a different credential: incident.io delivers alerts, the kubelet probes, delivery tooling posts changes, agents call tools. Keeping them apart means each credential can be rotated or revoked without touching the others, and a route that is not configured is not mounted rather than mounted and refusing.
 
 | Path | Purpose |
 |---|---|
 | `POST /webhooks/incidentio` | delivery endpoint |
 | `GET /healthz` | liveness; returns `ok` |
-| `GET /readyz` | readiness; 200 when incident.io, TypeSafe and (when configured) Backstage answer with the configured credentials, 503 with a JSON body naming the failing upstream; cached 30 s |
+| `GET /readyz` | readiness; 200 when incident.io, TypeSafe and (when configured) Backstage answer with the configured credentials, 503 with a JSON body naming the failing upstream; cached 30 s ([decision 0009](decisions/0009-readiness-depends-on-the-upstreams.md)) |
 | `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
 | `POST /changes/argocd`, `POST /changes/gitlab` | native adapters: Argo CD `Application` (bearer) and GitLab webhooks (`X-Gitlab-Token`) |
 | `POST /mcp` | the [MCP server](mcp.md#transports) over Streamable HTTP; mounted only when `SIGNALMAN_MCP_TOKEN` is set; bearer token; stateless, no session id, so replicas need no session affinity |
 
 ## Readiness
 
-`GET /healthz` says the process runs. `GET /readyz` says the upstreams this replica needs answer with the credentials it holds. Each check is the cheapest authenticated call the upstream offers: incident.io `GET /v1/identity`, TypeSafe `GET /v1/models`, and, only when `backstage.base_url` is set, one catalog `by-query` for a single component. The body has two entries, or three with Backstage. A wrong or revoked API key therefore shows as not ready at rollout, not at the first alert.
+The receiver acknowledges a delivery with `202` before it calls any upstream, so a replica with a revoked key or no route to TypeSafe would accept alerts it cannot triage and leave them untagged. [Decision 0009](decisions/0009-readiness-depends-on-the-upstreams.md) therefore makes readiness depend on the upstreams: `GET /healthz` says the process runs, `GET /readyz` says the upstreams this replica needs answer with the credentials it holds, and the probe fails when one does not. Each check is the cheapest authenticated call the upstream offers: incident.io `GET /v1/identity`, TypeSafe `GET /v1/models`, and, only when `backstage.base_url` is set, one catalog `by-query` for a single component. A wrong or revoked API key shows as not ready at rollout, not at the first alert.
 
 The response is `200` when every upstream answered and `503` otherwise, with the same JSON body either way and `Cache-Control: no-store`:
 
@@ -1457,15 +1539,22 @@ The response is `200` when every upstream answered and `503` otherwise, with the
 }
 ```
 
-`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended.
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
 
-The checks run concurrently, each under its own deadline, `server.readiness_timeout_seconds` (default `3`, at least 1). The report is cached for `server.readiness_cache_seconds` (default `30`; `0` checks on every request), failures included, so probe storms and many replicas do not turn readiness into load on the upstreams; incident.io rate-limits the API key. Concurrent probes while a check is in flight wait for that one check rather than each running their own. `cached: true` marks a reused report. Both settings follow the usual layers ([Configuration](configuration.md#server)); there are no flags. The MCP-only process (`signalman mcp --transport http`) serves `/healthz` only.
+Two settings shape the probe, both under `[server]` with the usual layers and no flags ([Configuration](configuration.md#server)):
 
-The trade-off is an operational decision. With upstream checks in the readiness probe, an incident.io or TypeSafe outage marks every replica unready, so the Kubernetes Service stops routing deliveries to signalman. Those are deliveries it could not process anyway. incident.io retries non-2xx responses and connection failures for 24 hours, so nothing is lost, and the deployment recovers by itself when the upstream does. The price is that during such an outage the receiver cannot acknowledge or deduplicate either. That is accepted: a triage it cannot complete has no value, and the retry is free. Probe settings should tolerate a blip: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure. With the 30 s cache a probe sees a stale answer for up to 30 s, which is fine for readiness; it is meant to be slow-moving.
+| Setting | Default | Too low | Too high |
+|---|---|---|---|
+| `server.readiness_timeout_seconds` | `3` (at least 1) | shorter than a client's retry backoff, so a struggling upstream reports `timed out` instead of the transport error its last attempt saw | the probe answers late and the kubelet's own `timeoutSeconds` fires first, hiding which upstream was slow |
+| `server.readiness_cache_seconds` | `30` (`0` checks on every request) | probe storms across replicas become load on rate-limited APIs, which is what the cache exists to prevent | a replica stays marked ready, or unready, for that long after the upstream changed state |
+
+The checks run concurrently, each under its own deadline. The report is cached, failures included, and concurrent probes while a check is in flight wait for that one check rather than each running their own; `cached: true` marks a reused report. The trade-off the record accepts: during an incident.io or TypeSafe outage every replica goes unready, the Service stops routing deliveries signalman could not process anyway, and incident.io redelivers for 24 hours, at the price of no acknowledgement or deduplication until the upstream returns. Probe settings should tolerate a blip: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure. The MCP-only process (`signalman mcp` with `mcp.transport = "http"`) serves `/healthz` only.
 
 Each uncached check runs inside a `readiness.check` span; the upstream calls it makes are the already instrumented ones, so a failed probe also counts in `signalman.upstream.errors` ([Observability](observability.md#spans)). A failed check logs one `warn` line naming the service and the error. Like the rest of the receiver, the endpoint is tested against wiremock only, never a live account.
 
 ## Manual commands
+
+Each command runs one step of the flow by hand, against the live upstreams, so an operator can see what the receiver would have seen without waiting for a webhook.
 
 ```sh
 signalman incidentio whoami                              # API key and roles
@@ -1481,7 +1570,7 @@ signalman eval examples/eval/cases.jsonl --record runs/x  # grade labelled alert
 
 ## Kubernetes
 
-The shape of a deployment is a `ConfigMap`; the secrets are a `Secret`; a change to either rolls the pods. Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
+A rollout is the unit of change: the shape of a deployment is a `ConfigMap`, the secrets are a `Secret`, and a change to either rolls the pods, so every configuration change is visible in the deployment history and there is nothing to hot-reload ([decision 0006](decisions/0006-layered-configuration.md)). Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
 
 ```yaml
 apiVersion: v1
@@ -1549,7 +1638,7 @@ spec:
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
           readinessProbe:
-            httpGet: { path: /readyz, port: 8080 }    # upstream checks; see Readiness above
+            httpGet: { path: /readyz, port: 8080 }    # upstream checks; see Readiness above and decision 0009
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -1558,11 +1647,13 @@ spec:
           configMap: { name: signalman-config }
 ```
 
-Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold. There is no hot reload by design: a rollout is the unit of change, visible in the deployment history.
+Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold.
 
 The two replicas share nothing. For `/mcp` that is fine: every `POST` is one request and one response with no session, so the `Service` needs no session affinity. For the change feed it means each replica holds its own window, as the limits table below notes.
 
 ## Limits that bound throughput
+
+Every number here is a ceiling something else imposes: an upstream's rate limit, a memory budget per replica, or a deadline chosen so that a stuck call cannot hold a slot. Knowing which one binds at a given alert volume says what to raise, and what cannot be raised from this side.
 
 | Limit | Value | Consequence |
 |---|---|---|
@@ -1579,13 +1670,13 @@ The two replicas share nothing. For `/mcp` that is fine: every `POST` is one req
 
 ## Backpressure
 
-A replica admits at most `server.max_concurrent_triages` running plus `server.max_queued_triages` waiting triages ([Configuration](configuration.md#server)). The next `alert_created` delivery is answered `503` with `Retry-After: 30` before it is marked seen, so incident.io's retry (up to 24 hours, with backoff) delivers it again when a slot is free. A refused delivery costs nothing but the retry; an alert storm therefore degrades to slower qualification, not to memory growth or a rate-limited incident.io key. The log line at `warn` carries the running and admitted counts.
+Without a bound, an alert storm would spawn one background triage per delivery until the replica ran out of memory or the incident.io key ran into its rate limit, and every triage would then fail. The bound turns a storm into slower qualification instead. A replica admits at most `server.max_concurrent_triages` running plus `server.max_queued_triages` waiting triages ([Configuration](configuration.md#server)). The next `alert_created` delivery is answered `503` with `Retry-After: 30` before it is marked seen, so incident.io's retry (up to 24 hours, with backoff) delivers it again when a slot is free. A refused delivery costs nothing but the retry; an alert storm therefore degrades to slower qualification, not to memory growth or a rate-limited incident.io key. The log line at `warn` carries the running and admitted counts.
 
 Each triage runs under `server.triage_timeout_seconds`. The clients' own timeouts and retries bound every call; the deadline bounds their sum, so a stuck upstream cannot hold a slot forever. A triage that overruns is dropped and reported as a failed outcome; whatever it had already written (tags, an attachment) stays, and `incidentio triage-alert` re-runs it by hand.
 
 ## Logs
 
-Logs are one of three signals. Spans over each triage and metrics for the product and its upstreams are exported over OpenTelemetry when a collector endpoint is configured; [Observability](observability.md) covers both. The log is per replica and stays on stderr for the platform's log shipper; nothing below is exported by signalman.
+The log exists so that one alert's decision can be found and read after the fact, on a replica that exports nothing, with `grep`. Logs are one of three signals. Spans over each triage and metrics for the product and its upstreams are exported over OpenTelemetry when a collector endpoint is configured; [Observability](observability.md) covers both. The log is per replica and stays on stderr for the platform's log shipper; nothing below is exported by signalman.
 
 `tracing` to stderr, filtered by `RUST_LOG` (default `info`). Every line carries the prefixes of the spans it was emitted in, `triage{alert_id=al-1}:triage.flow{alert_id=al-1}:` for a line from the flow, so the same names appear in the log and in a trace. One line per triage, `alert triaged`, carries seven flat fields for grepping and reading: `alert_id`, `title`, `decision`, `impact`, `time_to_qualify_seconds`, `applied` and `model`. `time_to_qualify_seconds` is a number, and is absent when the alert carried no creation time to measure from.
 
@@ -1596,6 +1687,8 @@ signalman installs one subscriber with the human-readable `tracing` text formatt
 Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
 
 ## Failure modes
+
+Each row says what the operator sees and whether the hub's retry, a manual re-run, or a fix on this side recovers it. The pattern behind the table: a delivery refused before acknowledgement is retried by incident.io for free; a triage that fails after acknowledgement is not retried automatically, because the hub already believes it was handled, and `incidentio triage-alert` re-runs it by hand.
 
 | Situation | Behaviour |
 |---|---|
@@ -1643,10 +1736,7 @@ The `[telemetry]` table follows the same layers as everything else, default, the
 | `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
 | `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | metrics export interval; at least 1 |
 
-Two points where signalman departs from what an OpenTelemetry SDK does on its own:
-
-- Per [decision 0006](decisions/0006-layered-configuration.md), `src/config.rs` reads the two `OTEL_*` variables above and hands the endpoint to the SDK programmatically. The signal-specific variables `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, and `OTEL_EXPORTER_OTLP_PROTOCOL`, are not honoured: one base endpoint, always HTTP/protobuf.
-- `OTEL_EXPORTER_OTLP_HEADERS` is honoured. The exporter itself reads it, as `key=value,key2=value2`, so a hosted collector's `authorization=Bearer …` goes there; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way. It is a secret: environment only, never a file key, listed with the other secrets in [Configuration](configuration.md#secrets).
+Which `OTEL_*` variables are honoured and which are not (the per-signal endpoints and the protocol are ignored; the header variables are read by the exporter itself and are secrets) is stated once, in [Configuration](configuration.md#telemetry), because [decision 0006](decisions/0006-layered-configuration.md) makes `src/config.rs` the one reader of non-secret variables and that page its reference.
 
 ## Spans
 
@@ -1775,7 +1865,7 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests include a `compile_fail` case. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
 
@@ -1820,7 +1910,7 @@ src/
   config.rs        configuration layers: file schema, env, flags, resolve
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
-tests/             wiremock integration tests and end-to-end webhook runs
+tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers, the committed schema)
 examples/          sample alerts and a sample webhook delivery
 docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
 scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh
@@ -1841,21 +1931,32 @@ Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the g
 
 ## Claude Code harness
 
-`.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires three hooks:
+The harness exists because the same mistakes recurred across sessions: a setting added in six of its seven places, a documentation index left stale, a span forgotten on a new client method, a pull request argued with a CI that has never run. Each hook removes a class of mistake at the moment it would be made; each agent carries the checklist for one job so the main session does not have to hold it.
+
+`.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires four hooks:
 
 | Hook | Script | Effect |
 |---|---|---|
 | `SessionStart` | `bd prime --hook-json` | injects the beads workflow |
 | `PreToolUse` on Bash | `.claude/hooks/guard-bash.sh` | denies pushes to `main`, the interactive `bd edit`, committing `.env`, `cargo publish`; matches command positions only and ignores here-doc bodies |
-| `PostToolUse` on Edit/Write | `.claude/hooks/rustfmt-on-edit.sh` | formats a Rust file right after it is written |
+| `PostToolUse` on Edit/Write | `.claude/hooks/rustfmt-on-edit.sh` | formats a Rust file right after it is written, so diffs carry no formatting noise |
+| `PostToolUse` on Edit/Write | `.claude/hooks/llms-on-docs-edit.sh` | regenerates `docs/llms.txt` and `docs/llms-full.txt` after a page, the README or `mkdocs.yml` is written, so the index cannot lag the frontmatter |
 
-Subagents in `.claude/agents/`:
+Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report; writers edit. Delegate the job to the agent and keep the conclusion:
 
-| Agent | Use it for |
-|---|---|
-| `contract-reviewer` | checking boundary code against the live TypeSafe, incident.io and Backstage documentation |
-| `question-designer` | writing or reviewing questions, criteria and policy thresholds |
-| `docs-writer` | keeping the README and `docs/` accurate |
+| Agent | Kind | Use it for |
+|---|---|---|
+| `contract-reviewer` | reviews | boundary code against the live TypeSafe, incident.io, Backstage and MCP documentation |
+| `config-reviewer` | reviews | a new, renamed or removed setting: the seven places it must appear and the layering rules of decision 0006 |
+| `observability-reviewer` | reviews | spans, metrics and log fields on a change: names, no secrets in fields, instruments only in `src/telemetry.rs`, the docs table |
+| `question-designer` | proposes | questions, criteria and policy thresholds |
+| `test-writer` | writes | tests in this repository's style: wiremock per upstream, a real listener for transports, a negative case per gate, the footguns already paid for |
+| `docs-writer` | writes | README and `docs/`, explaining the problem solved and the trade-off taken, not only the mechanism |
+| `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, drift in the generated index |
+| `refactor-scout` | reports | dead public items, duplicated logic, stale comments and unused dependencies, as a ranked plan with evidence |
+| `pr-shepherd` | acts | opening a pull request in the repository's shape and telling the CI billing block apart from a real failure, with the one standing-down comment |
+
+A typical feature runs `test-writer` and `docs-writer` in parallel with the code, then `config-reviewer` and `observability-reviewer` on the diff, then `pr-shepherd`. A cleanup pass starts with `refactor-scout` and `docs-auditor` and feeds their reports to the main session and `docs-writer`.
 
 `CLAUDE.md` holds the short list of rules that are easy to get wrong and points here for everything else.
 
@@ -1887,7 +1988,7 @@ Thresholds are untuned defaults. The [evaluation harness](evaluation.md) exists 
 
 ## Backstage bridge (`signalman-90m`)
 
-Delivered against mocks. Open: candidate filtering by domain or system for large catalogs; `recent_changes` from the `github`, `argocd` or `flux` plugins; a frontend card showing signalman's last decision per component.
+Delivered against mocks. Open: candidate filtering by domain or system for large catalogs; a frontend card showing signalman's last decision per component. `recent_changes` is not a catalog concern: [decision 0007](decisions/0007-changes-are-pushed-not-polled.md) rejected polling deployment plugins, so changes reach signalman through the [change feed](changes.md), where the open item is more native adapters (only Argo CD and GitLab have one; GitHub Actions posts the generic shape directly and Flux needs a relay to it).
 
 ## Mean time to qualify (`signalman-3l7`)
 
@@ -1899,7 +2000,7 @@ Incident-created events are parsed but not acted on; the intended first use is a
 
 ## Agents (`signalman-4gp`)
 
-signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)): no generative-model loop runs in the triage path, and what an assistant needs from signalman is its typed judgments, callable. Delivered: the outcome as a versioned JSON contract, schema v1, emitted by `signalman triage --json`, `signalman incidentio triage-alert` and the receiver's log line, with the schema committed under `docs/schema/` and a test that fails on drift ([Triage](triage.md#the-outcome-contract)); `signalman mcp`, five read-only tools over the same capabilities, served over stdio ([MCP server](mcp.md), `signalman-4gp.5`); and `apply_qualification`, a sixth tool that takes the outcome document back and re-derives every write from it, registered only when `mcp.allow_write` is true (default off, `signalman-4gp.6`); and Streamable HTTP as a second transport, stateless behind its own bearer token, mounted at `/mcp` by `serve` where it shares the change feed, or served alone by `signalman mcp` (`signalman-4gp.7`); and [`llms.txt`](llms.txt) with [`llms-full.txt`](llms-full.txt), generated from the nav and the page frontmatter and checked for drift in the docs gate (`signalman-4gp.3`), which closes the epic's planned scope. Agent-driven remediation is deferred with its unblock criteria written in the decision record (`signalman-4gp.4`). The runbook section that applies to an alert, the one investigation step with a measurable effect on time to qualify, is planned as a typed Choice question under the MTTQ epic (`signalman-3l7.8`).
+signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)). Delivered: the versioned outcome contract, schema v1 ([Triage](triage.md#the-outcome-contract)); the [MCP server](mcp.md) with five read-only tools and the gated `apply_qualification` write tool, over stdio and Streamable HTTP (`signalman-4gp.5`, `.6`, `.7`); and the generated [`llms.txt`](llms.txt) and [`llms-full.txt`](llms-full.txt) (`signalman-4gp.3`), which closes the epic's planned scope. Open: agent-driven remediation, deferred with its unblock criteria in the decision record (`signalman-4gp.4`); the runbook section that applies to an alert as a typed Choice question, planned under the MTTQ epic (`signalman-3l7.8`).
 
 ## CI
 
@@ -1917,7 +2018,21 @@ GitHub Actions has never run in this repository: every job is refused at schedul
 
 # Architecture
 
-signalman is a single Rust process with two entry points, an HTTP receiver and a CLI, that share one library. The library talks to three external systems and owns no state beyond an in-memory set of seen webhook ids. This page describes the moving parts and the path an alert takes. The [C4 model](c4/context.md) gives the same picture at three zoom levels.
+An alert reaches a responder through incident.io with nothing attached that says who owns it, how bad it is, or whether it is already being handled. signalman adds those judgments as tags, an attachment and a note before a person looks, without taking over incident creation or escalation. This page describes the moving parts and the path an alert takes. The [C4 model](c4/context.md) gives the same picture at three zoom levels.
+
+signalman is one Rust binary with three ways to run it: `serve` is the HTTP receiver, `mcp` serves the same judgments to agents over stdio or HTTP, and every other subcommand is a CLI operation. All three share one library that talks to three external systems.
+
+## State
+
+signalman has no database. Each replica holds three in-memory stores. Each is in memory because losing it costs less than the dependency a shared store would add, and each is bounded so a replica cannot grow without limit.
+
+| Store | Module | Bound | Why in memory, per replica |
+|---|---|---|---|
+| Seen webhook ids | `src/serve.rs` | 4,096 most recent | Stops a Svix resend from re-running the model on the same alert. A miss after a restart, or on another replica, costs one repeated model call; tag adds are idempotent, so nothing else happens |
+| Change window | `src/changes/mod.rs` | 1,000 newest changes | A change is context for `caused_by_change`. Losing the window after a restart returns the flow to where it was before the feed existed: the question is not asked. [Decision 0007](decisions/0007-changes-are-pushed-not-polled.md) chose this over a store or a poll of delivery tools |
+| Readiness report | `src/readiness.rs` | one report, reused for `server.readiness_cache_seconds` (default 30) | Keeps probe storms and many replicas from turning `GET /readyz` into load on the upstreams. The staleness accepted is one cache period of a wrong verdict in either direction: a failed check stays cached too |
+
+The cost is per-replica truth: two replicas hold two seen sets, two change windows and two readiness verdicts. [Operations](operations.md) says what that means when scaling.
 
 ## Components
 
@@ -1928,47 +2043,64 @@ flowchart LR
         IO[incident.io<br/>alerts, incidents, alert routes]
         TS[TypeSafe System One API]
         BS[Backstage<br/>catalog, TechDocs, notifications]
+        CD[Delivery tools<br/>Argo CD, GitLab, any CI]
+        AG[Agents<br/>MCP clients]
+        OT[OTLP collector]
     end
     subgraph sm[signalman]
         SERVE[serve<br/>webhook receiver]
         CLI[CLI<br/>triage, lookup, utilities]
+        MCP[mcp<br/>tools for agents]
         SYNC[sync flow]
+        CHG[changes::ChangeLog]
         ENRICH[backstage::Enricher]
         Q[triage::questions]
         P[triage::policy]
+        OUT[outcome]
         TSC[TypeSafe client]
         IOC[incident.io client]
         BSC[Backstage client]
     end
     MON -->|alerts| IO
     IO -->|alert_created webhook| SERVE
+    CD -->|POST /changes| SERVE --> CHG
+    AG <-->|MCP| MCP
     SERVE --> SYNC
     CLI --> SYNC
+    MCP --> SYNC
+    SYNC --> CHG
     SYNC --> IOC
     SYNC --> ENRICH --> BSC --> BS
     SYNC --> Q --> TSC --> TS
-    SYNC --> P
+    SYNC --> P --> OUT
     IOC --> IO
+    sm -.->|spans, metrics| OT
 ```
 
-| Component | Module | Responsibility |
+| Component | Module | Problem it solves |
 |---|---|---|
-| Receiver | `src/serve.rs` | Verify the Svix signature, deduplicate deliveries, acknowledge, run the flow in the background |
-| Readiness probe | `src/readiness.rs` | `GET /readyz`: the cheapest authenticated call per upstream, run concurrently under a per-check deadline, with the report cached |
-| Sync flow | `src/incidentio/sync.rs` | Fetch fresh state, enrich, ask, decide, write back |
-| Enricher | `src/backstage/enrich.rs` | Resolve the component, assemble owner candidates, pick the runbook, notify the owner |
-| Questions | `src/triage/questions.rs` | Build the fan-out request with typed handles |
-| Policy | `src/triage/policy.rs` | Turn typed answers into one decision with risk-scaled thresholds |
-| Outcome contract | `src/outcome.rs` | The wire types of one triaged alert, the builder both emitters share, and the generated schema |
-| MCP server | `src/mcp.rs`, `src/mcp/http.rs` | Five read-only tools plus the gated `apply_qualification`, over one dry-run `Triager`, wrapping the same functions the CLI calls; served over stdio or Streamable HTTP behind a bearer token |
-| TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs` | Wire contract, typed handles, validated probabilities |
-| incident.io client | `src/incidentio/client.rs`, `types.rs` | Incidents, alerts, tags, attachments, alert-source events |
-| Backstage client | `src/backstage/client.rs`, `types.rs` | Catalog queries, TechDocs search index, notifications |
-| Shared HTTP | `src/http.rs` | One retry loop for all three clients; counts every failed attempt |
-| Telemetry | `src/telemetry.rs` | The `tracing` subscriber, OTLP/HTTP export of spans and metrics when an endpoint is set, and the one place that names an instrument ([Observability](observability.md)) |
-| CLI | `src/main.rs` | `triage`, `eval`, `serve`, `mcp`, `models`, `incidentio`, `backstage`, `config`, `schema` |
+| Receiver | `src/serve.rs` | incident.io retries any non-2xx for 24 hours, so the endpoint must accept fast and refuse only what it cannot take: it verifies the Svix signature, drops duplicate `webhook-id`s, refuses work beyond the replica's capacity with 503, answers 202, then runs the flow under a deadline. Hosts `/changes` and `/mcp` when their tokens are set |
+| Readiness probe | `src/readiness.rs` | Tells the Service whether this replica can do its job, not only that it runs: the cheapest authenticated call per upstream, concurrent, under a per-check deadline, cached |
+| Change feed | `src/changes/` | Fills `alert.recent_changes` from pushed change events so `caused_by_change` is asked in production; `argocd.rs` and `gitlab.rs` translate those tools' native payloads into the same change ([Change feed](changes.md)) |
+| Sync flow | `src/incidentio/sync.rs` | One order of operations for every triage, whichever entry point started it: fetch fresh state, enrich, ask, decide, write back |
+| Qualification note | `src/incidentio/note.rs` | Puts what the tags cannot carry (probabilities, alternatives, links) where the responder already is, from a fixed template, replaced in place so notes never stack |
+| Webhook verifier | `src/incidentio/webhook.rs` | Proves a delivery came from incident.io before any of it is parsed; reads the signing secret itself |
+| Enricher | `src/backstage/enrich.rs` | Turns catalog facts into the closed set of owner candidates and the context the model reasons over, and hands the decision to the owning group ([Backstage bridge](backstage.md)) |
+| Questions | `src/triage/questions.rs` | Asks every question in one request and returns typed handles, so an answer cannot be read as the wrong type |
+| Policy | `src/triage/policy.rs` | Turns probabilities into one decision with thresholds that rise with the cost of being wrong; a threshold change never re-runs inference |
+| Triage types | `src/triage/mod.rs` | The alert, candidate and answer types that questions, policy and note share, and the built-in team list used when no catalog is configured |
+| Outcome contract | `src/outcome.rs` | One versioned JSON document per triage, so scripts, log pipelines and agents index fields instead of parsing prose; schema committed and drift-tested |
+| MCP server | `src/mcp.rs`, `src/mcp/http.rs` | Lets agents call the judgments the CLI already exposes: five read-only tools plus the gated `apply_qualification`, over one dry-run `Triager`, on stdio or Streamable HTTP behind a bearer token ([MCP](mcp.md)) |
+| Evaluation harness | `src/eval/` | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model |
+| TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs`, `src/error.rs` | The wire contract, typed handles and validated probabilities: wire strings become Rust types at one place |
+| incident.io client | `src/incidentio/client.rs`, `types.rs`, `error.rs` | Incidents, alerts, tags, attachments, notes and alert-source events; wire types ignore unknown fields so an API addition is not an outage |
+| Backstage client | `src/backstage/client.rs`, `types.rs`, `error.rs` | Catalog queries, the TechDocs search index and notifications; lenient entity types so catalog drift is a named `Decode` error, not a panic |
+| Shared HTTP | `src/http.rs` | One retry loop for all three clients, so transient statuses are handled the same way everywhere and every failed attempt is counted once |
+| Telemetry | `src/telemetry.rs` | The `tracing` subscriber, OTLP/HTTP export of spans and metrics when an endpoint is set, and the one place that names an instrument, so the table in [Observability](observability.md) has a single source |
+| Configuration | `src/config.rs` | One function resolves default, file, environment and flag, so the precedence table in [Configuration](configuration.md) describes code rather than approximating it |
+| CLI | `src/main.rs` | `triage`, `eval`, `serve`, `mcp`, `models`, `incidentio`, `backstage`, `config`, `schema`; builds every client and the flow from the resolved configuration |
 
-Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. No other module reads the environment except the three clients for their own key or token ([Configuration](configuration.md)).
+Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. `src/config.rs` is the only module that reads a non-secret environment variable. Secrets are refused from the file and read by the module that uses them, so a reviewed `ConfigMap` cannot be persuaded into holding one ([decision 0006](decisions/0006-layered-configuration.md)). Those reads are `TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY` and `BACKSTAGE_TOKEN` in the three clients, `INCIDENTIO_WEBHOOK_SECRET` in the webhook verifier, `SIGNALMAN_CHANGES_TOKEN` in the change feed, `SIGNALMAN_MCP_TOKEN` in the MCP HTTP endpoint, and `OTEL_EXPORTER_OTLP_HEADERS` in the OpenTelemetry exporter. One read sits outside the rule: the CLI's forwarding mode takes `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` and `INCIDENTIO_ALERT_SOURCE_TOKEN` directly in `main`, and the id, which is not a secret, has no `Settings` field.
 
 ## The path of one alert
 
@@ -2017,7 +2149,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **Model versus code.** The model answers narrow questions and returns probabilities. Code chooses the questions, the candidates, the thresholds and the actions. A threshold change never re-runs inference. [ADR 0002](decisions/0002-calibrated-judgments-over-generated-text.md).
 
-**signalman versus incident.io.** signalman writes tags and attachments. incident.io owns incident creation, escalation and the human workflow. [ADR 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
+**signalman versus incident.io.** signalman writes tags, attachments and one note. incident.io owns incident creation, escalation and the human workflow. [ADR 0001](decisions/0001-incidentio-remains-the-alert-hub.md).
 
 **signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
@@ -2030,9 +2162,11 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | Bad or missing signature | Receiver returns 401 | incident.io retries for 24 hours; fix the secret |
 | Unparseable body | Receiver returns 400 | incident.io retries; check the event subscription |
 | Duplicate delivery | Receiver returns 200 | none |
-| Backstage unreachable or entity missing | Enricher | Missing entities degrade to the static team list; transport errors fail the triage |
+| Component not in the catalog | Enricher | Every catalog group of `spec.type: team` becomes a candidate, capped at 24; the triage continues. The compiled team list is used only when no catalog is configured at all |
+| Backstage transport or auth error | Enricher | The triage fails and is logged; the alert stays untagged |
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
+| Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |
 | Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
 | OTLP collector down or slow | OpenTelemetry SDK, on its own thread | The SDK logs a warning; no triage waits on export or fails because of it |
 
@@ -2044,6 +2178,8 @@ The receiver acknowledges before the flow runs, so an upstream failure never cau
 - [Triage](triage.md): the questions and the policy
 - [Backstage bridge](backstage.md): resolution, candidates, runbooks
 - [incident.io integration](incidentio.md): webhook verification and write-back
+- [Change feed](changes.md): how deploys reach `recent_changes`
+- [MCP](mcp.md): the tools agents call
 
 
 <!-- source: docs/c4/context.md -->
@@ -2051,44 +2187,57 @@ The receiver acknowledges before the flow runs, so an upstream failure never cau
 
 # C4 level 1: system context
 
-The context diagram answers one question: what does signalman talk to, and why. Everything inside the boundary is described at the next level in [containers](container.md).
+The context diagram answers one question: what does signalman talk to, and why. Every external system here is a credential to hold, a contract to track and a failure mode to contain, so each one has to earn its place; the ones that were considered and left out are listed at the end. Everything inside the boundary is described at the next level in [containers](container.md).
 
 ```mermaid
 C4Context
     title System context for signalman
-    Person(oncall, "On-call engineer", "Receives pages and tickets through incident.io; reads notifications in Backstage")
+    Person(oncall, "On-call engineer", "Receives pages and tickets through incident.io; reads notifications in Backstage; may work through an agent")
     Person(operator, "Platform engineer", "Runs signalman, tunes the policy, maintains the catalog")
-    System(signalman, "signalman", "Triages alerts: asks a decision model narrow questions, decides in code, writes the result back")
-    System_Ext(monitoring, "Monitoring", "Datadog, Alertmanager and other alert sources")
+    System(signalman, "signalman", "Triages alerts: asks a decision model narrow questions, decides in code, writes the result back; serves the same judgments to agents")
+    System_Ext(monitoring, "Monitoring", "Datadog, Alertmanager, Tsuga and other alert sources")
     System_Ext(incidentio, "incident.io", "Alert and incident hub: alerts, alert routes, incidents, escalations")
     System_Ext(typesafe, "TypeSafe System One API", "Calibrated typed judgments (Jev)")
     System_Ext(backstage, "Backstage", "Software catalog, TechDocs, Notifications")
+    System_Ext(delivery, "Delivery tools", "Argo CD, GitLab, any CI step that deploys or flips a flag")
+    System_Ext(agents, "Agents", "MCP clients: a coding agent, a chat assistant")
+    System_Ext(otel, "OTLP collector", "Traces and metrics backend")
     Rel(monitoring, incidentio, "sends alerts")
     Rel(incidentio, signalman, "alert created webhook", "HTTPS, Svix-signed")
-    Rel(signalman, incidentio, "reads alert and live incidents; writes tags and attachments", "REST, bearer token")
-    Rel(signalman, typesafe, "one fan-out request per alert", "REST, bearer token")
+    Rel(signalman, incidentio, "reads alert, live incidents, firing alerts; writes tags, attachment, note", "REST, API key")
+    Rel(signalman, typesafe, "one fan-out request per alert", "REST, API key")
     Rel(signalman, backstage, "reads catalog and TechDocs; sends notifications", "REST, static token")
+    Rel(delivery, signalman, "posts changes", "HTTPS, bearer token")
+    Rel(agents, signalman, "calls tools", "MCP over stdio or HTTPS, bearer token")
+    Rel(signalman, otel, "spans and metrics", "OTLP/HTTP")
     Rel(incidentio, oncall, "escalates by alert route")
     Rel(backstage, oncall, "shows the decision as a notification")
     Rel(operator, signalman, "configures, runs the CLI")
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
 ```
 
 ## Relationships
 
-| From | To | What flows | Protocol |
-|---|---|---|---|
-| Monitoring | incident.io | Alerts | Vendor integrations, unchanged by signalman |
-| incident.io | signalman | `public_alert.alert_created_v1` webhook | HTTPS POST, Svix HMAC-SHA256 signature |
-| signalman | incident.io | Alert by id; incidents in triage, live and paused; add tags; attach alert to incident | REST v2, API key |
-| signalman | TypeSafe | One request: state plus every question; answers with probabilities | REST v1, API key |
-| signalman | Backstage | Entities by name, query and refs; TechDocs search index; notification to a group | REST, static external-access token |
-| incident.io | On-call engineer | Escalation decided by alert routes reading the `ai-*` tags | incident.io native |
-| Backstage | On-call engineer | Notification with decision, severity and alert link | Notifications plugin |
+| From | To | What flows | Protocol | Why it is in the picture |
+|---|---|---|---|---|
+| Monitoring | incident.io | Alerts | Vendor integrations, unchanged by signalman | signalman never talks to a monitoring tool; every signal, including Tsuga's, enters through the hub ([ADR 0005](../decisions/0005-observability-signals-enter-through-incidentio.md)) |
+| incident.io | signalman | `public_alert.alert_created_v1` webhook | HTTPS POST, Svix HMAC-SHA256 signature | The hub already receives every alert; a webhook per alert is the only trigger signalman needs |
+| signalman | incident.io | Alert by id; incidents in triage, live and paused; alerts firing in the window; add tags; attach alert to incident; create or replace the qualification note | REST v2, API key | incident.io stays the hub: signalman writes tags, one attachment and one note, and alert routes decide escalation ([ADR 0001](../decisions/0001-incidentio-remains-the-alert-hub.md)) |
+| signalman | TypeSafe | One request: state plus every question; answers with probabilities | REST v1, API key | The one model call; it returns calibrated probabilities, not text, so code can hold thresholds ([ADR 0002](../decisions/0002-calibrated-judgments-over-generated-text.md)) |
+| signalman | Backstage | Entities by name, query and refs; TechDocs search index; notification to a group | REST, static external-access token | The catalog is the ownership source of truth, so candidates come from it rather than from a compiled list ([ADR 0004](../decisions/0004-catalog-is-the-ownership-source-of-truth.md)) |
+| Delivery tools | signalman | Change events: what was deployed or toggled, when, where | HTTPS POST, bearer token; native Argo CD and GitLab payloads accepted | Recent changes are pushed by the tool that made them rather than polled from each tool's API, so signalman holds one token and no delivery-tool client ([ADR 0007](../decisions/0007-changes-are-pushed-not-polled.md)) |
+| Agents | signalman | Tool calls: qualify, related alerts, recent changes, owner lookup, open incidents; optionally apply a qualification | MCP over stdio, or Streamable HTTP with a bearer token | signalman is a tool for agents, not an agent: responders get its judgments inside the assistant they already use, and no model inside signalman chooses actions ([ADR 0008](../decisions/0008-signalman-is-a-tool-for-agents.md)) |
+| signalman | OTLP collector | Spans over every triage and upstream call; product and upstream metrics | OTLP/HTTP, only when `telemetry.otlp_endpoint` is set | Operators need to see decisions, latency and upstream failures per alert; without an endpoint nothing is exported ([Observability](../observability.md)) |
+| incident.io | On-call engineer | Escalation decided by alert routes reading the `ai-*` tags | incident.io native | The page still comes from the tool the responder already trusts |
+| Backstage | On-call engineer | Notification with decision, severity and alert link | Notifications plugin | Teams that work from the portal see the decision without opening incident.io |
 
 ## What is deliberately outside
 
-signalman does not talk to the monitoring systems, does not page anyone directly, and does not create incidents. Those are incident.io's roles ([ADR 0001](../decisions/0001-incidentio-remains-the-alert-hub.md)). It holds no database; the only state is an in-memory set of recent webhook ids.
+- **Monitoring systems.** signalman reads no dashboards, metrics or alert history from Datadog, Alertmanager or Tsuga. Related alerts come from incident.io, which already aggregates them; a direct Tsuga client would add a credential and an unverified contract for signals the hub already carries ([ADR 0005](../decisions/0005-observability-signals-enter-through-incidentio.md)).
+- **Paging and incident creation.** signalman never pages a person or creates an incident; it tags, and alert routes escalate ([ADR 0001](../decisions/0001-incidentio-remains-the-alert-hub.md)). A wrong judgment is a wrong tag, reversible in the UI.
+- **Delivery-tool APIs.** No client for Argo CD, Flux, GitHub or GitLab; they post to signalman ([ADR 0007](../decisions/0007-changes-are-pushed-not-polled.md)).
+- **A generative model.** No agent loop or text generation runs inside the triage path ([ADR 0008](../decisions/0008-signalman-is-a-tool-for-agents.md)).
+- **A database.** The only state is in memory, per replica: recent webhook ids, the change window and the cached readiness report ([Architecture](../architecture.md#state)).
 
 
 <!-- source: docs/c4/container.md -->
@@ -2096,28 +2245,37 @@ signalman does not talk to the monitoring systems, does not page anyone directly
 
 # C4 level 2: containers
 
-signalman ships as one binary. Running it as `signalman serve` gives the webhook receiver; every other subcommand is the CLI. Both use the same library, so this level has two containers sharing one code path.
+signalman ships as one binary. `signalman serve` is the HTTP receiver; `signalman mcp` serves the same judgments to agents over stdio or HTTP; every other subcommand is the CLI. All three call one library, so this level has one code path reached from three run modes. Keeping them in one binary is what lets every MCP tool and every receiver write-back be a function the CLI already calls, and therefore testable without a model or an agent in the loop ([ADR 0008](../decisions/0008-signalman-is-a-tool-for-agents.md)).
 
 ```mermaid
 C4Container
     title Containers of signalman
     Person(oncall, "On-call engineer")
     Person(operator, "Platform engineer")
+    System_Ext(agents, "Agents", "MCP clients")
     System_Boundary(sm, "signalman") {
-        Container(serve, "Webhook receiver", "Rust, axum, tokio", "POST /webhooks/incidentio: verifies, deduplicates, acknowledges, runs the triage in the background. GET /healthz for liveness, GET /readyz for readiness against the upstreams.")
-        Container(cli, "CLI", "Rust, clap", "triage, incidentio, backstage and models commands for operators and evaluation")
-        Container(lib, "Triage library", "Rust crate", "Typed TypeSafe client, triage questions and policy, incident.io and Backstage bridges, shared retry loop")
+        Container(serve, "Webhook receiver", "Rust, axum, tokio", "signalman serve. POST /webhooks/incidentio: verifies, deduplicates, acknowledges, runs the triage in the background. GET /healthz, GET /readyz. POST /changes and the Argo CD and GitLab adapters when the feed token is set. POST /mcp when the MCP token is set.")
+        Container(mcp, "MCP server", "Rust, rmcp", "signalman mcp. The same tools over stdio for one local client, or over Streamable HTTP on its own listener; no webhook and no change feed of its own.")
+        Container(cli, "CLI", "Rust, clap", "triage, eval, models, incidentio, backstage, config, schema: operators, evaluation and scripts")
+        Container(lib, "Triage library", "Rust crate", "Typed TypeSafe client, triage questions and policy, incident.io and Backstage bridges, change window, outcome contract, shared retry loop")
     }
     System_Ext(incidentio, "incident.io", "Alerts, incidents, alert routes")
     System_Ext(typesafe, "TypeSafe System One API", "Jev")
     System_Ext(backstage, "Backstage", "Catalog, TechDocs, Notifications")
+    System_Ext(delivery, "Delivery tools", "Argo CD, GitLab, CI")
+    System_Ext(otel, "OTLP collector")
     Rel(incidentio, serve, "alert created webhook", "HTTPS")
+    Rel(delivery, serve, "POST /changes", "HTTPS, bearer token")
+    Rel(agents, serve, "POST /mcp", "HTTPS, bearer token")
+    Rel(agents, mcp, "JSON-RPC", "stdio or HTTPS")
     Rel(operator, cli, "runs", "shell")
-    Rel(serve, lib, "calls Triager")
-    Rel(cli, lib, "calls Triager, Enricher, clients")
+    Rel(serve, lib, "calls Triager, ChangeLog, Probe")
+    Rel(mcp, lib, "calls Triager")
+    Rel(cli, lib, "calls Triager, Enricher, clients, eval")
     Rel(lib, incidentio, "REST v2", "HTTPS, API key")
     Rel(lib, typesafe, "POST /v1/systemone", "HTTPS, API key")
     Rel(lib, backstage, "catalog, techdocs, notifications", "HTTPS, static token")
+    Rel(lib, otel, "OTLP/HTTP", "when an endpoint is set")
     Rel(incidentio, oncall, "escalates")
     Rel(backstage, oncall, "notifies")
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
@@ -2127,14 +2285,23 @@ C4Container
 
 | Container | Technology | Responsibilities | Configuration |
 |---|---|---|---|
-| Webhook receiver | axum on tokio | Signature verification, `webhook-id` deduplication (4,096 most recent), 202 acknowledgement, background execution of the flow, liveness endpoint | `SIGNALMAN_ADDR`, `INCIDENTIO_WEBHOOK_SECRET`, `--dry-run`, `--notify-owners` |
-| CLI | clap | `triage` on a file with optional catalog enrichment, incident dedup candidates and forwarding; `incidentio whoami`, `open-incidents`, `triage-alert`; `backstage lookup`; `models` | Same variables; flags per command |
-| Triage library | Rust crate `signalman` | Everything the two entry points share; the [component view](component.md) opens it | |
+| Webhook receiver | axum on tokio | Signature verification, `webhook-id` deduplication (4,096 most recent), admission control (503 beyond capacity), 202 acknowledgement, background execution of the flow under a deadline; `GET /healthz` for liveness and `GET /readyz` for readiness against the upstreams; `POST /changes`, `/changes/argocd` and `/changes/gitlab` into the in-memory change window when `SIGNALMAN_CHANGES_TOKEN` is set; `POST /mcp` when `SIGNALMAN_MCP_TOKEN` is set | `server.*` (`SIGNALMAN_ADDR`, concurrency, timeouts, readiness cache), `INCIDENTIO_WEBHOOK_SECRET`, `SIGNALMAN_CHANGES_TOKEN`, `SIGNALMAN_MCP_TOKEN`, `--dry-run`, `--notify-owners` |
+| MCP server | rmcp | `qualify_alert` (always a dry run), `related_alerts`, `recent_changes`, `lookup_owner`, `open_incidents`, and `apply_qualification` only when `mcp.allow_write` is true; over stdio, or over Streamable HTTP on `mcp.bind_address` with `GET /healthz` | `mcp.*` (`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOWED_HOSTS`, `SIGNALMAN_MCP_ALLOW_WRITE`), `SIGNALMAN_MCP_TOKEN` |
+| CLI | clap | `triage` on a file with optional catalog enrichment, incident dedup candidates, forwarding and `--json`; `eval` to grade labelled cases and replay recorded responses; `incidentio whoami`, `open-incidents`, `triage-alert`; `backstage lookup`; `models`; `config show`; `schema outcome` | Same file and variables; flags per command |
+| Triage library | Rust crate `signalman` | Everything the three run modes share; the [component view](component.md) opens it | |
+
+## Why one process, not two
+
+**MCP as a mode of the same binary.** An agent needs `recent_changes` to be live, and the change window is in memory in the process that received the posts. The MCP endpoint is therefore mounted on the receiver's router (`/mcp` on `serve`) so it reads the same window; `signalman mcp` over HTTP is for deployments without the webhook, and its start-up log says `recent_changes` will be empty. A separate MCP service with its own store was rejected because it would need either a shared database for the window or a second `/changes` endpoint for pipelines to post to; one place to post, one place to be reached ([MCP transports](../mcp.md#transports)). The cost is that the receiver's listener carries a second authenticated surface, with its own token and rate limits.
+
+**No database for the change window.** A change is context, not a record: losing it on restart returns the flow to a question not asked. A store would add a dependency to every replica for data whose value expires in two hours ([ADR 0007](../decisions/0007-changes-are-pushed-not-polled.md)). The cost is per-replica windows; a change posted to one replica is unknown to the other, and a restart forgets it.
 
 ## Deployment notes
 
 - One replica is enough for moderate alert volume; the binding limit is incident.io's 60 requests per minute on listing incidents, one call per triage.
-- Horizontal scaling is safe for correctness: tag adds are idempotent, and duplicate deliveries across replicas cost a repeated model call, nothing else. The in-memory seen set is per replica.
+- Horizontal scaling is safe for correctness: tag adds are idempotent, and duplicate deliveries across replicas cost a repeated model call, nothing else. The in-memory seen set, change window and readiness cache are per replica ([Architecture](../architecture.md#state)).
+- The MCP HTTP endpoint is stateless (no session id), so two replicas behind one Service need no affinity ([MCP transports](../mcp.md#transports)).
+- Readiness marks every replica unready during an upstream outage, so the Service stops accepting deliveries it could not process and incident.io's 24-hour retry keeps them; the other side of that trade-off is described in [Operations](../operations.md).
 - No persistent storage. The deployment's shape is a TOML file (a `ConfigMap`); secrets arrive as environment variables (a `Secret`); flags and variables override the file ([Configuration](../configuration.md)).
 
 
@@ -2143,35 +2310,50 @@ C4Container
 
 # C4 level 3: components
 
-This level opens the triage library. The `Triager` orchestrates; everything else is a collaborator with one job.
+This level opens the triage library. The `Triager` orchestrates; everything else is a collaborator with one job. The split follows the boundaries in [Architecture](../architecture.md#boundaries): the model is known to two components, the wire formats to one each, and every write-back is a function the CLI, the receiver and the MCP server all call.
 
 ```mermaid
 C4Component
     title Components of the signalman library
     Container_Boundary(lib, "Triage library") {
-        Component(triager, "Triager", "incidentio::sync", "Fetch fresh state, enrich, ask, decide, write back")
+        Component(triager, "Triager", "incidentio::sync", "Fetch fresh state, enrich, ask, decide, write back; builds the Outcome")
+        Component(outcome, "Outcome", "outcome", "The versioned JSON contract of one triage; schema v1, drift-tested; the inverse that replays a decision")
         Component(enricher, "Enricher", "backstage::enrich", "Resolve component, assemble owner candidates, select runbook, notify owner")
+        Component(changelog, "ChangeLog", "changes", "Bounded in-memory window of pushed changes; Argo CD and GitLab adapters")
         Component(questions, "TriageQuestions", "triage::questions", "Build the fan-out with typed handles; read answers")
         Component(policy, "Policy / decide", "triage::policy", "Thresholds that turn answers into one Decision")
+        Component(note, "Qualification note", "incidentio::note", "Fixed template over typed answers; marker line; replaced in place")
+        Component(mcpsrv, "MCP server", "mcp, mcp::http", "Six tools over one dry-run Triager; stdio or Streamable HTTP behind a token")
+        Component(readiness, "Readiness probe", "readiness", "Cheapest authenticated call per upstream, concurrent, cached")
+        Component(telemetry, "Telemetry", "telemetry", "Subscriber, OTLP export, every instrument name")
         Component(tsclient, "TypeSafe client", "client, question, answer", "Wire contract, Handle<A>, Probability, Confidence")
-        Component(ioclient, "incident.io client", "incidentio::client", "Incidents, alerts, tags, attachments, alert events")
+        Component(ioclient, "incident.io client", "incidentio::client", "Incidents, alerts, tags, attachments, notes, alert events")
         Component(bsclient, "Backstage client", "backstage::client", "by-name, by-query, by-refs, TechDocs index, notifications")
         Component(webhook, "Webhook verifier", "incidentio::webhook", "Svix HMAC-SHA256, tolerance, envelope parsing")
-        Component(http, "Retry loop", "http", "RetryPolicy, backoff, Retry-After")
+        Component(http, "Retry loop", "http", "RetryPolicy, backoff, Retry-After; counts failed attempts")
     }
     System_Ext(incidentio, "incident.io")
     System_Ext(typesafe, "TypeSafe")
     System_Ext(backstage, "Backstage")
-    Rel(triager, ioclient, "get alert, list incidents, add tags, attach")
+    Rel(triager, ioclient, "get alert, list incidents and alerts, add tags, attach, notes")
     Rel(triager, enricher, "enrich(hints, text); notify_owner")
+    Rel(triager, changelog, "recent(hints, window)")
     Rel(triager, questions, "for_alert_with(alert, candidates); read(response)")
     Rel(triager, policy, "decide(answers)")
+    Rel(triager, note, "render(input)")
+    Rel(triager, outcome, "Outcome::build")
     Rel(triager, tsclient, "system_one(state, questions)")
+    Rel(mcpsrv, triager, "dry-run triage, candidates, incidents")
+    Rel(mcpsrv, outcome, "validate, decision, answers, expected_tags")
+    Rel(readiness, ioclient, "identity")
+    Rel(readiness, tsclient, "models")
+    Rel(readiness, bsclient, "one by-query")
     Rel(enricher, bsclient, "catalog, techdocs, notifications")
     Rel(questions, tsclient, "Questions, Handle<A>")
     Rel(tsclient, http, "send_with_retries")
     Rel(ioclient, http, "send_with_retries")
     Rel(bsclient, http, "send_with_retries")
+    Rel(http, telemetry, "upstream error counter")
     Rel(ioclient, incidentio, "REST v2")
     Rel(tsclient, typesafe, "REST v1")
     Rel(bsclient, backstage, "REST")
@@ -2180,21 +2362,27 @@ C4Component
 
 ## Components
 
-| Component | Depends on | Owns |
-|---|---|---|
-| `Triager` | incident.io client, Enricher, TriageQuestions, policy, TypeSafe client | The order of operations and the write-back rules; `Outcome` |
-| `Enricher` | Backstage client, triage types | Hint resolution, neighbourhood walk, candidate rubric, runbook scoring, notification payloads |
-| `TriageQuestions` | TypeSafe question builder | Which questions exist, when the speculative ones are asked, the instruction text |
-| `Policy` and `decide` | Typed answers | Thresholds and their order of precedence |
-| TypeSafe client | Retry loop | `Handle<A>`, `Response::get`, `Probability`, `Confidence`, the `options!` macro |
-| incident.io client | Retry loop | Endpoint paths, per-endpoint authentication, error body parsing |
-| Backstage client | Retry loop | Filter set encoding, cursor pagination, lenient entity types |
-| Webhook verifier | none | Signature check pinned to Svix's published test vector; event envelope |
-| Retry loop | reqwest | Which statuses are transient, how long to wait |
+| Component | Module | Depends on | Owns | Why it is separate |
+|---|---|---|---|---|
+| `Triager` | `incidentio::sync` | incident.io client, Enricher, ChangeLog, TriageQuestions, policy, TypeSafe client, note, Outcome | The order of operations and the write-back rules | One flow for every entry point, so the receiver, the CLI and the MCP server cannot drift on what a triage does |
+| `Outcome` | `outcome` | triage types, answers, changes | The wire shape of one triage, the schema, `validate`, and the inverse (`decision`, `answers`, `expected_tags`) that `apply_qualification` replays | The contract is the boundary with agents and scripts ([ADR 0008](../decisions/0008-signalman-is-a-tool-for-agents.md)); defining it once, apart from the domain types, means a Rust rename cannot change the wire |
+| `Enricher` | `backstage::enrich` | Backstage client, triage types | Hint resolution, neighbourhood walk, candidate rubric, runbook scoring, notification payloads | Catalog facts become candidates here and nowhere else ([ADR 0004](../decisions/0004-catalog-is-the-ownership-source-of-truth.md)); without a catalog the component is never constructed |
+| `ChangeLog` | `changes`, `changes::argocd`, `changes::gitlab` | none | The bounded window, matching by component and time, the two native payload translations | Pushed changes are state the receiver owns and the flow reads; the adapters read a body and call nothing, so no delivery-tool client exists ([ADR 0007](../decisions/0007-changes-are-pushed-not-polled.md)) |
+| `TriageQuestions` | `triage::questions` | TypeSafe question builder | Which questions exist, when the speculative ones are asked, the instruction text | Adding a question touches this file and the policy field that reads it, nothing else ([ADR 0003](../decisions/0003-typed-handles-between-questions-and-answers.md)) |
+| `Policy` and `decide` | `triage::policy` | Typed answers | Thresholds and their order of precedence | A threshold change never re-runs inference ([ADR 0002](../decisions/0002-calibrated-judgments-over-generated-text.md)); `eval --replay` grades recorded answers against a new policy |
+| Qualification note | `incidentio::note` | triage types, answers | The marker line, the fixed template, the rule that a note is replaced, never stacked | The model judges, it does not write; the template is the only prose on the alert and it is code |
+| MCP server | `mcp`, `mcp::http` | `Triager`, `Outcome`, rmcp | Tool schemas, the dry-run guard, the `allow_write` gate, the HTTP token layer | Every tool wraps a `Triager` method the CLI already calls, so decision logic is never reimplemented for agents; the token check sits in front of the protocol handler so an unauthenticated request never reaches it ([MCP](../mcp.md)) |
+| Readiness probe | `readiness` | the three clients | Per-check deadline, concurrent checks, the cached report | Probes must not become upstream load, and a bad key should fail at rollout, not at the first alert; the trade-off is that an upstream outage marks every replica unready ([Operations](../operations.md)) |
+| Telemetry | `telemetry` | OpenTelemetry SDK | Subscriber setup, exporters, every instrument name | One module names instruments so the table in [Observability](../observability.md) has one source; export runs on the SDK's thread so no triage waits on a collector |
+| TypeSafe client | `client`, `question`, `answer` | Retry loop | `Handle<A>`, `Response::get`, `Probability`, `Confidence`, the `options!` macro | Wire strings become Rust types at one place ([ADR 0003](../decisions/0003-typed-handles-between-questions-and-answers.md)) |
+| incident.io client | `incidentio::client` | Retry loop | Endpoint paths, per-endpoint authentication, error body parsing | Only module that knows incident.io's paths; its types ignore unknown fields so an API addition is not an outage |
+| Backstage client | `backstage::client` | Retry loop | Filter set encoding, cursor pagination, lenient entity types | Only module that knows the catalog's paths; leniency turns catalog drift into a named `Decode` error |
+| Webhook verifier | `incidentio::webhook` | none | Signature check pinned to Svix's published test vector; event envelope; reads the signing secret | Nothing is parsed before the signature is proven; keeping it apart from the router makes the check testable against the vector alone |
+| Retry loop | `http` | reqwest, telemetry | Which statuses are transient, how long to wait, `Retry-After`, the per-service failure counter | Three clients, one policy: transient handling and error counting cannot differ by client |
 
 ## Where the model boundary sits
 
-Only `TriageQuestions` and the TypeSafe client know the model exists. `Policy` receives typed answers; `Triager` receives a `Decision`. Replacing the model, or adding a question, touches `questions.rs` and the policy field that reads it, nothing else.
+Only `TriageQuestions` and the TypeSafe client know the model exists. `Policy` receives typed answers; `Triager` receives a `Decision`; `Outcome` carries probabilities but never calls anything. Replacing the model, or adding a question, touches `questions.rs` and the policy field that reads it, nothing else. The MCP server sits on the other side of `Triager`: it can start a dry-run triage and replay an `Outcome`, and it cannot reach a question or an answer directly.
 
 
 <!-- source: docs/decisions/README.md -->
@@ -2214,6 +2402,15 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0006](0006-layered-configuration.md) | Layered configuration with secrets outside the file | accepted | `signalman-071.4` |
 | [0007](0007-changes-are-pushed-not-polled.md) | Changes are pushed to signalman, not polled from delivery tools | accepted | `signalman-ufg.3` |
 | [0008](0008-signalman-is-a-tool-for-agents.md) | signalman is a tool for agents, not an agent | accepted | `signalman-4gp.1` |
+| [0009](0009-readiness-depends-on-the-upstreams.md) | Readiness depends on the upstreams | accepted | `signalman-m28.3` |
+
+## Status notes
+
+Records are not edited after acceptance, so a fact that has moved since a record was written is noted here rather than in the record. Each note is checked against the code, not against the record.
+
+- 0006's confirmation counts four secret reads outside `src/config.rs`. There are now eight, in seven files: the TypeSafe, incident.io and Backstage clients read their API key or token, the webhook verifier reads the signing secret, `src/changes/mod.rs` reads `SIGNALMAN_CHANGES_TOKEN`, `src/mcp/http.rs` reads `SIGNALMAN_MCP_TOKEN`, and `src/main.rs` reads `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` and `INCIDENTIO_ALERT_SOURCE_TOKEN` for `triage --forward-to-incidentio`. Every one is a secret listed in [Configuration](../configuration.md#secrets); the rule the record states, that only `config.rs` reads a non-secret variable, still holds.
+- 0007's confirmation names `src/changes.rs`. The module is now the directory `src/changes/`: `mod.rs` holds the window and matching, `argocd.rs` and `gitlab.rs` the native adapters the record describes as translations of documented payloads.
+- 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record
 
@@ -2783,3 +2980,78 @@ This record is reopened only when all of the following hold. They are tracked as
 - [Cersei repository](https://github.com/pacifio/cersei) and [documentation](https://cersei.pacifio.dev/docs)
 - [Model Context Protocol](https://modelcontextprotocol.io) and its [Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)
 - Related records: [0001](0001-incidentio-remains-the-alert-hub.md), [0002](0002-calibrated-judgments-over-generated-text.md)
+
+
+<!-- source: docs/decisions/0009-readiness-depends-on-the-upstreams.md -->
+
+
+# 0009 Readiness depends on the upstreams
+
+## Context and problem statement
+
+The webhook receiver answers `202` to a delivery and runs the triage afterwards, so the delivery is acknowledged before any upstream is called. With a readiness probe that only said the process was running, a replica with a revoked API key, a wrong key for the environment, or no route to TypeSafe or incident.io kept taking deliveries it could not process: every triage failed after the acknowledgement, the alerts stayed untagged, and the failure was found at the first alert rather than at rollout. What should `GET /readyz` ([Operations](../operations.md#readiness), `src/readiness.rs`) check, and what should happen to traffic when a check fails?
+
+## Decision drivers
+
+- A misconfigured replica must be found at rollout, before it acknowledges an alert it cannot triage
+- Readiness must not become load on the upstreams: incident.io rate-limits the API key, and Kubernetes probes every replica every few seconds
+- incident.io retries a delivery that is refused or unanswered for 24 hours, so a refused delivery is delayed, not lost ([decision 0001](0001-incidentio-remains-the-alert-hub.md))
+- A probe must answer quickly and predictably whatever the upstreams do
+
+## Considered options
+
+1. Liveness only: `/readyz` says the process runs and nothing more
+2. Upstream checks on every probe, no cache
+3. Upstream checks with a cached report, and the probe fails when an upstream does
+4. Upstream checks with a cached report, reported in the body but never failing the probe
+
+## Decision outcome
+
+Chosen option: "Upstream checks with a cached report, and the probe fails when an upstream does". `GET /readyz` runs the cheapest authenticated call each configured upstream offers: TypeSafe `GET /v1/models`, incident.io `GET /v1/identity`, and one Backstage catalog `by-query` when `backstage.base_url` is set. The checks run concurrently, each under `server.readiness_timeout_seconds`, through the same clients a triage uses, credentials and retry policy included. The report is cached for `server.readiness_cache_seconds`, failures as well as successes, and concurrent probes wait for the one check in flight rather than each running their own. The response is `200` when every upstream answered and `503` otherwise, with the same JSON body naming each upstream, its latency and its error.
+
+### Consequences
+
+- Good, because a wrong or revoked key shows as not-ready at rollout, and the body says which upstream and why
+- Good, because during a TypeSafe or incident.io outage every replica goes unready and the Service stops routing deliveries signalman could not process anyway; incident.io retries non-2xx responses and connection failures for 24 hours, so nothing is lost and recovery is automatic when the upstream returns
+- Good, because the cache bounds readiness load to one call per upstream per replica per cache period, whatever the probe frequency
+- Bad, because during such an outage the receiver also stops acknowledging and deduplicating: an alert that arrives then waits for the retry instead of being seen at once. This is accepted: a triage it cannot complete has no value, and the retry is free
+- Bad, because a probe sees a stale answer for up to the cache period; readiness is meant to be slow-moving, and `server.readiness_cache_seconds = 0` disables the cache where that matters
+- Bad, because a deadline shorter than a client's retry backoff reports `timed out` where a longer one would name the transport error the last attempt saw
+
+Probe settings should tolerate a blip rather than react to one: `periodSeconds: 10`, `timeoutSeconds: 5`, `failureThreshold: 3` pull a replica after about 30 s of upstream failure, which with the default 30 s cache means one to two fresh checks.
+
+### Confirmation
+
+- `src/readiness.rs` is the only place a readiness check is defined; it calls the clients' existing methods (`list_models`, `identity`, `query`) and adds no request of its own
+- `tests/readiness.rs` exercises `GET /readyz` against wiremock: `200` with every upstream up, two entries without a catalog and three with one, `503` naming the failing upstream, a slow upstream reported as `timed out` on its own deadline, the report reused within the cache window and re-run with the cache at zero, and `Cache-Control: no-store` on every answer
+- `server.readiness_cache_seconds` and `server.readiness_timeout_seconds` follow [decision 0006](0006-layered-configuration.md); `tests/config_precedence.rs` covers the environment layer
+
+## Pros and cons of the options
+
+### Liveness only
+
+- Good, because it never fails for a reason outside the process
+- Good, because it costs nothing
+- Bad, because a bad credential or an unreachable upstream is found at the first alert, after the delivery was acknowledged, with the alert left untagged
+
+### Upstream checks without a cache
+
+- Good, because every probe answer is current
+- Bad, because probe storms multiply across replicas: every `periodSeconds` each replica makes one call per upstream, and incident.io rate-limits the key those calls share with the triages
+- Bad, because a kubelet retrying a slow probe adds load exactly when the upstream is struggling
+
+### Upstream checks with a cache, failing the probe
+
+- Good, because a misconfigured replica is pulled before it acknowledges anything, and an outage pulls the fleet and hands the deliveries to incident.io's retry
+- Good, because load is bounded by the cache period, not the probe period
+- Bad, because acknowledgement and deduplication stop during an upstream outage, and a probe can be up to one cache period stale
+
+### Upstream checks with a cache, reporting but never failing
+
+- Good, because the `202` stays available during an upstream outage and the body still tells an operator what is wrong
+- Bad, because deliveries keep flowing to replicas whose triages will fail after acknowledgement, which is the situation this record exists to end
+- Rejected for now. It is a one-line change in the handler (`200` regardless of `ready`) if operations come to prefer availability of the acknowledgement over correctness of the triage; the evidence for that would be alerts that incident.io failed to redeliver, or deduplication lost during outages, neither of which has been observed
+
+## More information
+
+[Operations](../operations.md#readiness) documents the endpoint, the body and the settings; [Observability](../observability.md#spans) the `readiness.check` span and the `signalman.upstream.errors` counter a failed probe increments. Beads: `signalman-m28.3`. Like the rest of the receiver, the endpoint has been tested against wiremock only, never against a live account.

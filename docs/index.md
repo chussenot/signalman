@@ -35,7 +35,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 
 ## Conventions
 
-- Every page starts with YAML frontmatter. `title` and `description` are required and checked by `scripts/check-frontmatter.sh`; `status` is `current` or `draft`; `last_reviewed` is the date someone last confirmed the page against the code; `tags` help search.
+- Every page starts with YAML frontmatter. `title` and `description` are required and checked by `scripts/check-frontmatter.sh`; `status` is `current`, `draft` or `experiment` for a page (`experiment` marks a page about something run once and kept for its measurements, such as [Laya](laya.md); it is not a supported path and the page says so) and a [MADR](https://adr.github.io/madr/) status (`proposed`, `accepted`, `superseded by 000N`) for a decision record; `last_reviewed` is the date someone last confirmed the page against the code; `tags` help search.
 - `llms.txt` and `llms-full.txt` are generated from the `mkdocs.yml` nav and the frontmatter by `scripts/gen-llms-txt.sh` (`mise run docs:llms`), in nav order; a page opts out with `llms: false` (the decision template does). `mise run check` fails when they are stale. Never edit them by hand: change the page or the nav.
 - Diagrams are Mermaid, kept next to the prose they explain. GitHub renders them natively; TechDocs needs the Mermaid addon ([Development](development.md#techdocs)).
 - Decision records follow [MADR](https://adr.github.io/madr/) ([Decisions](decisions/README.md)).

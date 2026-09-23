@@ -37,10 +37,7 @@ The `[telemetry]` table follows the same layers as everything else, default, the
 | `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
 | `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | metrics export interval; at least 1 |
 
-Two points where signalman departs from what an OpenTelemetry SDK does on its own:
-
-- Per [decision 0006](decisions/0006-layered-configuration.md), `src/config.rs` reads the two `OTEL_*` variables above and hands the endpoint to the SDK programmatically. The signal-specific variables `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, and `OTEL_EXPORTER_OTLP_PROTOCOL`, are not honoured: one base endpoint, always HTTP/protobuf.
-- `OTEL_EXPORTER_OTLP_HEADERS` is honoured. The exporter itself reads it, as `key=value,key2=value2`, so a hosted collector's `authorization=Bearer …` goes there; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way. It is a secret: environment only, never a file key, listed with the other secrets in [Configuration](configuration.md#secrets).
+Which `OTEL_*` variables are honoured and which are not (the per-signal endpoints and the protocol are ignored; the header variables are read by the exporter itself and are secrets) is stated once, in [Configuration](configuration.md#telemetry), because [decision 0006](decisions/0006-layered-configuration.md) makes `src/config.rs` the one reader of non-secret variables and that page its reference.
 
 ## Spans
 

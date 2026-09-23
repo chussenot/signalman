@@ -5,45 +5,32 @@
 //! (`recent_changes` and the tool list) never call TypeSafe or incident.io.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use rmcp::model::CallToolRequestParams;
+use common::{DummyClient, call};
+use rmcp::ServiceExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientHandler, ServiceExt};
-use serde_json::{Value, json};
+use serde_json::json;
 use signalman::changes::{ChangeLog, FeedToken};
 use signalman::incidentio::Triager;
 use signalman::mcp::Server;
 use signalman::mcp::http::{McpToken, PATH, router as mcp_router};
 use signalman::serve::{AppState, router as serve_router};
-use signalman::{Client, RetryPolicy};
 
 const MCP_TOKEN: &str = "mcp-token-for-tests";
 const FEED_TOKEN: &str = "feed-token-for-tests";
 
-#[derive(Debug, Clone, Default)]
-struct DummyClient;
-
-impl ClientHandler for DummyClient {}
-
 /// A triager whose clients point at a closed port: nothing here calls them.
 fn triager() -> Triager {
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url("http://127.0.0.1:9")
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = signalman::incidentio::Client::builder()
-        .api_key("io")
-        .base_url("http://127.0.0.1:9")
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    Triager::new(typesafe, io)
+    Triager::new(
+        common::typesafe_client("http://127.0.0.1:9"),
+        common::incidentio_client("http://127.0.0.1:9"),
+    )
 }
 
 fn mcp_token() -> McpToken {
@@ -76,13 +63,6 @@ async fn connect(
         .serve(transport)
         .await
         .expect("client connects over HTTP")
-}
-
-fn call(name: &'static str, args: Value) -> CallToolRequestParams {
-    let Value::Object(object) = args else {
-        panic!("tool arguments must be a JSON object, got {args}");
-    };
-    CallToolRequestParams::new(name).with_arguments(object)
 }
 
 fn initialize_body() -> String {
@@ -180,6 +160,24 @@ async fn an_authenticated_client_lists_the_tools_and_calls_one_over_http() {
     let body = result.structured_content.expect("structured content");
     assert_eq!(body["configured"], json!(false));
     assert_eq!(body["changes"], json!([]));
+}
+
+/// Stateless by construction: there is no standalone SSE stream to `GET`
+/// and no session to `DELETE`, so both answer 405 with the token presented,
+/// and the token check still comes first without it.
+#[tokio::test]
+async fn get_and_delete_answer_405_because_there_is_no_session() {
+    let app = mcp_router(Server::new(triager(), false), mcp_token(), &[]);
+    let addr = listen(app).await;
+    let http = reqwest::Client::new();
+    let url = format!("http://{addr}{PATH}");
+
+    for req in [http.get(&url), http.delete(&url)] {
+        let res = req.bearer_auth(MCP_TOKEN).send().await.unwrap();
+        assert_eq!(res.status(), 405, "{}", res.url());
+    }
+    let res = http.get(&url).send().await.unwrap();
+    assert_eq!(res.status(), 401, "the token is checked before the method");
 }
 
 /// `allow_write` is honoured over HTTP exactly as over stdio.

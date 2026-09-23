@@ -77,14 +77,22 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 
 ## Harness
 
-- Subagents in `.claude/agents/`: `contract-reviewer` (API boundary vs live
-  docs), `question-designer` (TypeSafe questions and policy), `docs-writer`
-  (README and `docs/`). Delegate to them for those jobs.
-- Hooks in `.claude/hooks/`: Rust files are formatted after every edit; a
-  Bash guard denies pushes to `main`, `bd edit`, committing `.env`, and
-  `cargo publish`. `bd prime` runs at session start.
+- Subagents in `.claude/agents/` (`docs/development.md#claude-code-harness`
+  says when to use each). Reviewers report, writers edit:
+  `contract-reviewer` (API and MCP boundary vs live docs),
+  `config-reviewer` (a setting's seven places, decision 0006),
+  `observability-reviewer` (spans, metrics, no secrets in fields),
+  `question-designer` (TypeSafe questions and policy), `test-writer`
+  (tests in this repo's wiremock style), `docs-writer` (README and `docs/`,
+  the why as well as the how), `docs-auditor` (docs vs code drift),
+  `refactor-scout` (dead code and duplication, ranked), `pr-shepherd`
+  (open the PR, tell the CI billing block from a real failure). Delegate
+  the job; run the reviewers on a diff before opening a pull request.
+- Hooks in `.claude/hooks/`: Rust files are formatted after every edit;
+  `docs/llms.txt` is regenerated after a docs page, the README or
+  `mkdocs.yml` is written; a Bash guard denies pushes to `main`, `bd edit`,
+  committing `.env`, and `cargo publish`. `bd prime` runs at session start.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
 
 This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.

@@ -104,7 +104,7 @@ signalman serves its typed capabilities over the Model Context Protocol ([MCP](m
 
 ### `[telemetry]`
 
-Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export on; without it the text log on stderr is the only signal ([Observability](observability.md)). The two `OTEL_*` variables are read here, like every other non-secret variable, and the endpoint is handed to the SDK programmatically; the SDK's own per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`) are not honoured. `OTEL_EXPORTER_OTLP_HEADERS` is a secret and sits in the table above.
+Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export on; without it the text log on stderr is the only signal ([Observability](observability.md)). The two `OTEL_*` variables are read here, like every other non-secret variable, and the endpoint is handed to the SDK programmatically; the SDK's own per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`) are not honoured: one base endpoint, always HTTP/protobuf. `OTEL_EXPORTER_OTLP_HEADERS` and its per-signal forms are honoured because the exporter reads them itself, never `src/config.rs`; they carry a collector's credential, so they are secrets and sit in the [table above](#secrets), never in the file.
 
 | File key | Environment | Default | Meaning |
 |---|---|---|---|

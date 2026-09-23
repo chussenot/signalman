@@ -30,7 +30,7 @@ Thresholds are untuned defaults. The [evaluation harness](evaluation.md) exists 
 
 ## Backstage bridge (`signalman-90m`)
 
-Delivered against mocks. Open: candidate filtering by domain or system for large catalogs; `recent_changes` from the `github`, `argocd` or `flux` plugins; a frontend card showing signalman's last decision per component.
+Delivered against mocks. Open: candidate filtering by domain or system for large catalogs; a frontend card showing signalman's last decision per component. `recent_changes` is not a catalog concern: [decision 0007](decisions/0007-changes-are-pushed-not-polled.md) rejected polling deployment plugins, so changes reach signalman through the [change feed](changes.md), where the open item is more native adapters (only Argo CD and GitLab have one; GitHub Actions posts the generic shape directly and Flux needs a relay to it).
 
 ## Mean time to qualify (`signalman-3l7`)
 
@@ -42,7 +42,7 @@ Incident-created events are parsed but not acted on; the intended first use is a
 
 ## Agents (`signalman-4gp`)
 
-signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)): no generative-model loop runs in the triage path, and what an assistant needs from signalman is its typed judgments, callable. Delivered: the outcome as a versioned JSON contract, schema v1, emitted by `signalman triage --json`, `signalman incidentio triage-alert` and the receiver's log line, with the schema committed under `docs/schema/` and a test that fails on drift ([Triage](triage.md#the-outcome-contract)); `signalman mcp`, five read-only tools over the same capabilities, served over stdio ([MCP server](mcp.md), `signalman-4gp.5`); and `apply_qualification`, a sixth tool that takes the outcome document back and re-derives every write from it, registered only when `mcp.allow_write` is true (default off, `signalman-4gp.6`); and Streamable HTTP as a second transport, stateless behind its own bearer token, mounted at `/mcp` by `serve` where it shares the change feed, or served alone by `signalman mcp` (`signalman-4gp.7`); and [`llms.txt`](llms.txt) with [`llms-full.txt`](llms-full.txt), generated from the nav and the page frontmatter and checked for drift in the docs gate (`signalman-4gp.3`), which closes the epic's planned scope. Agent-driven remediation is deferred with its unblock criteria written in the decision record (`signalman-4gp.4`). The runbook section that applies to an alert, the one investigation step with a measurable effect on time to qualify, is planned as a typed Choice question under the MTTQ epic (`signalman-3l7.8`).
+signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md)). Delivered: the versioned outcome contract, schema v1 ([Triage](triage.md#the-outcome-contract)); the [MCP server](mcp.md) with five read-only tools and the gated `apply_qualification` write tool, over stdio and Streamable HTTP (`signalman-4gp.5`, `.6`, `.7`); and the generated [`llms.txt`](llms.txt) and [`llms-full.txt`](llms-full.txt) (`signalman-4gp.3`), which closes the epic's planned scope. Open: agent-driven remediation, deferred with its unblock criteria in the decision record (`signalman-4gp.4`); the runbook section that applies to an alert as a typed Choice question, planned under the MTTQ epic (`signalman-3l7.8`).
 
 ## CI
 

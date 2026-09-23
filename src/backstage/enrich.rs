@@ -438,12 +438,6 @@ impl Enricher {
     }
 }
 
-/// Pick the search-index entry that best matches the alert and return its
-/// text, bounded. Prefers pages under a `runbook` path, then title overlap.
-pub fn select_runbook(index: &SearchIndex, alert_text: &str, max_chars: usize) -> Option<String> {
-    select_runbook_doc(index, alert_text).map(|d| excerpt(d, max_chars))
-}
-
 /// The search-index entry that best matches the alert, if any scores above
 /// the noise floor.
 pub fn select_runbook_doc<'a>(index: &'a SearchIndex, alert_text: &str) -> Option<&'a SearchDoc> {
@@ -583,20 +577,21 @@ mod tests {
                 doc("adr/0001/", "Use Postgres", "We chose Postgres."),
             ],
         };
-        let r = select_runbook(&index, "HighErrorRate checkout-api 5xx ratio 12%", 500).unwrap();
+        let r = select_runbook_doc(&index, "HighErrorRate checkout-api 5xx ratio 12%")
+            .map(|d| excerpt(d, 500))
+            .unwrap();
         assert!(
             r.starts_with("High error rate (runbooks/high-error-rate): Check the payments gateway"),
             "{r}"
         );
-        assert!(select_runbook(&SearchIndex::default(), "x", 100).is_none());
+        assert!(select_runbook_doc(&SearchIndex::default(), "x").is_none());
         // Weak matches are not returned.
         assert!(
-            select_runbook(
+            select_runbook_doc(
                 &SearchIndex {
                     docs: vec![doc("adr/0001/", "Use Postgres", "text")]
                 },
                 "DiskUsageHigh",
-                100
             )
             .is_none()
         );
@@ -607,7 +602,9 @@ mod tests {
         let index = SearchIndex {
             docs: vec![doc("runbooks/x/", "Runbook", "a".repeat(5000).as_str())],
         };
-        let r = select_runbook(&index, "anything", 200).unwrap();
+        let r = select_runbook_doc(&index, "anything")
+            .map(|d| excerpt(d, 200))
+            .unwrap();
         assert!(r.chars().count() <= 201);
         assert!(r.ends_with('…'));
     }
