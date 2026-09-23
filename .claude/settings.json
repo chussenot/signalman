@@ -4,7 +4,10 @@
   },
   "extraKnownMarketplaces": {
     "typesafe-ai": {
-      "source": { "repo": "typesafe-ai/skills", "source": "github" }
+      "source": {
+        "repo": "typesafe-ai/skills",
+        "source": "github"
+      }
     }
   },
   "permissions": {
@@ -34,7 +37,12 @@
       "Bash(bd prime:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(scripts/gen-llms-txt.sh:*)",
+      "Bash(bd export:*)",
+      "Bash(cargo run -q -- config show:*)",
+      "Bash(cargo run -- config show:*)",
+      "Bash(cargo run -q -- schema:*)"
     ],
     "deny": [
       "Read(./.env)",
@@ -46,7 +54,10 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "bd prime --hook-json" }
+          {
+            "type": "command",
+            "command": "bd prime --hook-json"
+          }
         ]
       }
     ],
@@ -54,7 +65,11 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-bash.sh", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-bash.sh",
+            "timeout": 5
+          }
         ]
       }
     ],
@@ -62,7 +77,21 @@
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/rustfmt-on-edit.sh", "timeout": 15 }
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/rustfmt-on-edit.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/llms-on-docs-edit.sh",
+            "timeout": 15
+          }
         ]
       }
     ]

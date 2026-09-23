@@ -107,20 +107,31 @@ Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the g
 
 ## Claude Code harness
 
-`.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires three hooks:
+The harness exists because the same mistakes recurred across sessions: a setting added in six of its seven places, a documentation index left stale, a span forgotten on a new client method, a pull request argued with a CI that has never run. Each hook removes a class of mistake at the moment it would be made; each agent carries the checklist for one job so the main session does not have to hold it.
+
+`.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires four hooks:
 
 | Hook | Script | Effect |
 |---|---|---|
 | `SessionStart` | `bd prime --hook-json` | injects the beads workflow |
 | `PreToolUse` on Bash | `.claude/hooks/guard-bash.sh` | denies pushes to `main`, the interactive `bd edit`, committing `.env`, `cargo publish`; matches command positions only and ignores here-doc bodies |
-| `PostToolUse` on Edit/Write | `.claude/hooks/rustfmt-on-edit.sh` | formats a Rust file right after it is written |
+| `PostToolUse` on Edit/Write | `.claude/hooks/rustfmt-on-edit.sh` | formats a Rust file right after it is written, so diffs carry no formatting noise |
+| `PostToolUse` on Edit/Write | `.claude/hooks/llms-on-docs-edit.sh` | regenerates `docs/llms.txt` and `docs/llms-full.txt` after a page, the README or `mkdocs.yml` is written, so the index cannot lag the frontmatter |
 
-Subagents in `.claude/agents/`:
+Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report; writers edit. Delegate the job to the agent and keep the conclusion:
 
-| Agent | Use it for |
-|---|---|
-| `contract-reviewer` | checking boundary code against the live TypeSafe, incident.io and Backstage documentation |
-| `question-designer` | writing or reviewing questions, criteria and policy thresholds |
-| `docs-writer` | keeping the README and `docs/` accurate |
+| Agent | Kind | Use it for |
+|---|---|---|
+| `contract-reviewer` | reviews | boundary code against the live TypeSafe, incident.io, Backstage and MCP documentation |
+| `config-reviewer` | reviews | a new, renamed or removed setting: the seven places it must appear and the layering rules of decision 0006 |
+| `observability-reviewer` | reviews | spans, metrics and log fields on a change: names, no secrets in fields, instruments only in `src/telemetry.rs`, the docs table |
+| `question-designer` | proposes | questions, criteria and policy thresholds |
+| `test-writer` | writes | tests in this repository's style: wiremock per upstream, a real listener for transports, a negative case per gate, the footguns already paid for |
+| `docs-writer` | writes | README and `docs/`, explaining the problem solved and the trade-off taken, not only the mechanism |
+| `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, drift in the generated index |
+| `refactor-scout` | reports | dead public items, duplicated logic, stale comments and unused dependencies, as a ranked plan with evidence |
+| `pr-shepherd` | acts | opening a pull request in the repository's shape and telling the CI billing block apart from a real failure, with the one standing-down comment |
+
+A typical feature runs `test-writer` and `docs-writer` in parallel with the code, then `config-reviewer` and `observability-reviewer` on the diff, then `pr-shepherd`. A cleanup pass starts with `refactor-scout` and `docs-auditor` and feeds their reports to the main session and `docs-writer`.
 
 `CLAUDE.md` holds the short list of rules that are easy to get wrong and points here for everything else.
