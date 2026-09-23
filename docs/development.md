@@ -100,7 +100,7 @@ src/               the signalman application, depending on judgment by path
 tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers, the committed schema)
 examples/          sample alerts and a sample webhook delivery
 docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
-scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh
+scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh, incidentio-create-key.sh
 .beads/            issue tracker data and git hooks
 .claude/           agents, hooks, settings for Claude Code
 catalog-info.yaml  Backstage registration; mkdocs.yml builds docs/ as TechDocs

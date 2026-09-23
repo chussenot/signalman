@@ -103,7 +103,7 @@ What became of the note is reported as `writes.note.status` in the outcome docum
 
 ## Setup
 
-1. Create an API key with view alerts, view incidents, manage alert tags, manage incident alerts and manage alert notes. `signalman incidentio whoami` prints the roles the key has.
+1. Create an API key with view alerts, view incidents, manage alert tags, manage incident alerts and manage alert notes. `signalman incidentio whoami` prints the roles the key has. incident.io names roles (`viewer`, `incident_editor`, …) without saying which one covers alert tags or notes, so `scripts/incidentio-create-key.sh` creates a key with the roles you name and probes every endpoint the flow uses with it (reads must answer 200; writes get an empty body and must answer 422, not 403), deleting the key again when a probe fails. It needs a calling key with `api_keys_manage`, which the shared key verified on 2026-09-23 did not have.
 2. Run the receiver where incident.io can reach it; for local work, Svix Play or ngrok.
 3. Settings → Webhooks → add endpoint, subscribe to **Alert created (public)**, copy the signing secret into `INCIDENTIO_WEBHOOK_SECRET`.
 4. Send a test event from the webhook settings page. A signature failure is a 401 with the reason in the body.
