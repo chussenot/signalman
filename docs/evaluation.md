@@ -25,7 +25,7 @@ flowchart LR
 
 ## Cases
 
-A JSON Lines file, one case per line. `alert` is exactly what `signalman triage` accepts; `expected` is what a responder would have said, every field optional. Blank lines and lines starting with `#` are ignored. [`examples/eval/cases.jsonl`](https://github.com/chussenot/rustsafe/blob/main/examples/eval/cases.jsonl) labels the three example alerts.
+A JSON Lines file, one case per line. `alert` is exactly what `signalman triage` accepts; `expected` is what a responder would have said, every field optional. Blank lines and lines starting with `#` are ignored. [`examples/eval/cases.jsonl`](https://github.com/chussenot/signalman/blob/main/examples/eval/cases.jsonl) labels the three example alerts.
 
 ```json
 {"id": "crashloop",

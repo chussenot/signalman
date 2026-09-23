@@ -38,7 +38,7 @@ Secrets are marked sensitive in HTTP headers and redacted from the `Debug` outpu
 
 ## The file
 
-TOML, every key optional, unknown keys rejected. Location, first match wins: `--config PATH`, then `SIGNALMAN_CONFIG`, then `./signalman.toml`, then `/etc/signalman/config.toml`. A file named explicitly must exist; the implicit paths may be absent. [`examples/config/signalman.toml`](https://github.com/chussenot/rustsafe/blob/main/examples/config/signalman.toml) shows every key with its default and the variable that overrides it.
+TOML, every key optional, unknown keys rejected. Location, first match wins: `--config PATH`, then `SIGNALMAN_CONFIG`, then `./signalman.toml`, then `/etc/signalman/config.toml`. A file named explicitly must exist; the implicit paths may be absent. [`examples/config/signalman.toml`](https://github.com/chussenot/signalman/blob/main/examples/config/signalman.toml) shows every key with its default and the variable that overrides it.
 
 ## Settings
 
