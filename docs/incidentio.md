@@ -125,7 +125,7 @@ Tags arrive a few seconds after the alert is created. Routes should evaluate on 
 
 ## Forwarding from the CLI
 
-`triage --forward-to-incidentio` posts the alert to an HTTP alert source (`POST /v2/alert_events/http/{config id}`), authenticated with the source's token rather than the API key. The judgments travel under `metadata.ai` (`team`, `team_confidence`, `impact_level`, `impact_label`, `impact_score`, `actionable`, `decision`, `model`), and the resolved component under `metadata.component`. Map them to alert attributes in the source's template, then route on the attributes. Only `status: firing` is sent today.
+`triage --forward-to-incidentio` posts the alert to the HTTP alert source named by `incidentio.alert_source_config_id` (`POST /v2/alert_events/http/{config id}`), authenticated with the source's token (`INCIDENTIO_ALERT_SOURCE_TOKEN`) rather than the API key. The judgments travel under `metadata.ai` (`team`, `team_confidence`, `impact_level`, `impact_label`, `impact_score`, `actionable`, `decision`, `model`), and the resolved component under `metadata.component`. Map them to alert attributes in the source's template, then route on the attributes. Only `status: firing` is sent today.
 
 That block is flat on purpose and is not the same shape as [the outcome contract](triage.md#the-outcome-contract). Attribute templates in incident.io read flat paths, so the forwarded metadata stays flat and the versioned contract is free to nest. The two evolve separately. What incident.io accepted is reported back in the document as `writes.forwarded`. None of this has been checked against a live alert source.
 

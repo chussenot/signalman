@@ -121,8 +121,9 @@ struct TriageArgs {
     #[arg(long)]
     enrich_from_backstage: bool,
     /// After deciding, post the alert with its judgments as metadata to the
-    /// incident.io HTTP alert source named by INCIDENTIO_ALERT_SOURCE_CONFIG_ID
-    /// (authenticated with INCIDENTIO_ALERT_SOURCE_TOKEN).
+    /// incident.io HTTP alert source [file: incidentio.alert_source_config_id,
+    /// env: INCIDENTIO_ALERT_SOURCE_CONFIG_ID], authenticated with
+    /// INCIDENTIO_ALERT_SOURCE_TOKEN.
     #[arg(long)]
     forward_to_incidentio: bool,
     /// Print the TypeSafe request body and exit without calling the model.
@@ -489,7 +490,7 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
     let mut forwarded = None;
     if args.forward_to_incidentio {
         let client = io_client.as_ref().ok_or("incident.io client missing")?;
-        forwarded = Some(forward(client, &alert, &answers, &decision, &response.model).await?);
+        forwarded = Some(forward(cfg, client, &alert, &answers, &decision, &response.model).await?);
     }
 
     if args.json {
@@ -543,21 +544,23 @@ async fn dedup_candidates(
     Ok(incidents)
 }
 
-/// Post the alert with its judgments to the incident.io HTTP alert source
-/// named by the environment, and let incident.io's alert routes escalate.
+/// Post the alert with its judgments to the configured incident.io HTTP
+/// alert source, and let incident.io's alert routes escalate.
 async fn forward(
+    cfg: &Config,
     client: &incidentio::Client,
     alert: &Alert,
     answers: &TriageAnswers,
     decision: &Decision,
     model: &str,
 ) -> Result<AlertEventAck, AnyError> {
-    let source_id = std::env::var("INCIDENTIO_ALERT_SOURCE_CONFIG_ID")
-        .map_err(|_| "set INCIDENTIO_ALERT_SOURCE_CONFIG_ID to forward alerts")?;
-    let token = std::env::var("INCIDENTIO_ALERT_SOURCE_TOKEN")
-        .map_err(|_| "set INCIDENTIO_ALERT_SOURCE_TOKEN to forward alerts")?;
+    let source_id = cfg.incidentio.alert_source_config_id.as_deref().ok_or(
+        "set incidentio.alert_source_config_id in the file or INCIDENTIO_ALERT_SOURCE_CONFIG_ID to forward alerts",
+    )?;
+    let token = incidentio::Client::alert_source_token()
+        .ok_or("set INCIDENTIO_ALERT_SOURCE_TOKEN to forward alerts")?;
     let event = alert_event(alert, answers, decision, model);
-    let ack = client.send_alert_event(&source_id, &token, &event).await?;
+    let ack = client.send_alert_event(source_id, &token, &event).await?;
     tracing::info!(dedup_key = %ack.deduplication_key, status = %ack.status, "forwarded to incident.io");
     Ok(ack)
 }

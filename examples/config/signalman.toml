@@ -21,6 +21,7 @@ timeout_seconds = 10                   # TYPESAFE_TIMEOUT_SECONDS
 [incidentio]
 # base_url = "https://api.incident.io" # INCIDENTIO_BASE_URL
 max_candidates = 40                    # SIGNALMAN_MAX_CANDIDATES; open incidents offered for dedup
+# alert_source_config_id = "01GW…"     # INCIDENTIO_ALERT_SOURCE_CONFIG_ID; HTTP alert source for triage --forward-to-incidentio
 
 [backstage]
 # Setting base_url turns catalog enrichment on.

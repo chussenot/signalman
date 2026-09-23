@@ -66,6 +66,10 @@ pub const ENV_VARS: &[(&str, &str)] = &[
     ("TYPESAFE_TIMEOUT_SECONDS", "typesafe.timeout_seconds"),
     ("INCIDENTIO_BASE_URL", "incidentio.base_url"),
     ("SIGNALMAN_MAX_CANDIDATES", "incidentio.max_candidates"),
+    (
+        "INCIDENTIO_ALERT_SOURCE_CONFIG_ID",
+        "incidentio.alert_source_config_id",
+    ),
     ("BACKSTAGE_BASE_URL", "backstage.base_url"),
     ("BACKSTAGE_APP_URL", "backstage.app_url"),
     ("BACKSTAGE_NAMESPACE", "backstage.namespace"),
@@ -205,6 +209,9 @@ pub struct IncidentioFile {
     pub base_url: Option<String>,
     /// Open incidents offered as dedup candidates.
     pub max_candidates: Option<usize>,
+    /// HTTP alert source `triage --forward-to-incidentio` posts to. Its
+    /// token is a secret and stays in the environment.
+    pub alert_source_config_id: Option<String>,
 }
 
 /// `[backstage]`
@@ -500,6 +507,8 @@ pub struct Incidentio {
     pub base_url: String,
     /// Dedup candidates offered.
     pub max_candidates: usize,
+    /// HTTP alert source to forward to; `None` until configured.
+    pub alert_source_config_id: Option<String>,
 }
 
 /// Effective `[backstage]`.
@@ -612,46 +621,55 @@ impl Config {
     /// `Settings::default()`), `cli` the flags that were given.
     #[allow(clippy::too_many_lines)] // one setting per statement, in file order; splitting hides the precedence
     pub fn resolve(file: &Settings, cli: &Overrides) -> Result<Self> {
+        Self::resolve_from(file, cli, Env::process())
+    }
+
+    /// [`resolve`](Self::resolve) with an explicit environment layer, so a
+    /// test can assert defaults whatever the developer's `.env` exports.
+    #[allow(clippy::too_many_lines)] // one setting per statement, in file order; splitting hides the precedence
+    pub fn resolve_from(file: &Settings, cli: &Overrides, env: Env<'_>) -> Result<Self> {
         let server = Server {
             addr: cli
                 .addr
-                .or(env_parsed("SIGNALMAN_ADDR", "server.addr")?)
+                .or(env.parsed("SIGNALMAN_ADDR", "server.addr")?)
                 .or(file.server.addr)
                 .unwrap_or_else(|| {
                     DEFAULT_ADDR
                         .parse()
                         .unwrap_or_else(|_| unreachable!("default address is valid"))
                 }),
-            max_concurrent_triages: env_parsed(
-                "SIGNALMAN_MAX_CONCURRENT_TRIAGES",
-                "server.max_concurrent_triages",
-            )?
-            .or(file.server.max_concurrent_triages)
-            .unwrap_or(crate::serve::DEFAULT_MAX_CONCURRENT),
-            max_queued_triages: env_parsed(
-                "SIGNALMAN_MAX_QUEUED_TRIAGES",
-                "server.max_queued_triages",
-            )?
-            .or(file.server.max_queued_triages)
-            .unwrap_or(crate::serve::DEFAULT_MAX_QUEUED),
-            triage_timeout_seconds: env_parsed(
-                "SIGNALMAN_TRIAGE_TIMEOUT_SECONDS",
-                "server.triage_timeout_seconds",
-            )?
-            .or(file.server.triage_timeout_seconds)
-            .unwrap_or(crate::serve::DEFAULT_TRIAGE_TIMEOUT.as_secs()),
-            readiness_cache_seconds: env_parsed(
-                "SIGNALMAN_READINESS_CACHE_SECONDS",
-                "server.readiness_cache_seconds",
-            )?
-            .or(file.server.readiness_cache_seconds)
-            .unwrap_or(crate::readiness::DEFAULT_CACHE.as_secs()),
-            readiness_timeout_seconds: env_parsed(
-                "SIGNALMAN_READINESS_TIMEOUT_SECONDS",
-                "server.readiness_timeout_seconds",
-            )?
-            .or(file.server.readiness_timeout_seconds)
-            .unwrap_or(crate::readiness::DEFAULT_TIMEOUT.as_secs()),
+            max_concurrent_triages: env
+                .parsed(
+                    "SIGNALMAN_MAX_CONCURRENT_TRIAGES",
+                    "server.max_concurrent_triages",
+                )?
+                .or(file.server.max_concurrent_triages)
+                .unwrap_or(crate::serve::DEFAULT_MAX_CONCURRENT),
+            max_queued_triages: env
+                .parsed("SIGNALMAN_MAX_QUEUED_TRIAGES", "server.max_queued_triages")?
+                .or(file.server.max_queued_triages)
+                .unwrap_or(crate::serve::DEFAULT_MAX_QUEUED),
+            triage_timeout_seconds: env
+                .parsed(
+                    "SIGNALMAN_TRIAGE_TIMEOUT_SECONDS",
+                    "server.triage_timeout_seconds",
+                )?
+                .or(file.server.triage_timeout_seconds)
+                .unwrap_or(crate::serve::DEFAULT_TRIAGE_TIMEOUT.as_secs()),
+            readiness_cache_seconds: env
+                .parsed(
+                    "SIGNALMAN_READINESS_CACHE_SECONDS",
+                    "server.readiness_cache_seconds",
+                )?
+                .or(file.server.readiness_cache_seconds)
+                .unwrap_or(crate::readiness::DEFAULT_CACHE.as_secs()),
+            readiness_timeout_seconds: env
+                .parsed(
+                    "SIGNALMAN_READINESS_TIMEOUT_SECONDS",
+                    "server.readiness_timeout_seconds",
+                )?
+                .or(file.server.readiness_timeout_seconds)
+                .unwrap_or(crate::readiness::DEFAULT_TIMEOUT.as_secs()),
         };
         if server.max_concurrent_triages == 0 {
             return Err(Error::Invalid(
@@ -669,45 +687,58 @@ impl Config {
             ));
         }
         let typesafe = Typesafe {
-            base_url: env_string("TYPESAFE_BASE_URL")
+            base_url: env
+                .string("TYPESAFE_BASE_URL")
                 .or_else(|| file.typesafe.base_url.clone())
                 .unwrap_or_else(|| crate::client::DEFAULT_BASE_URL.to_owned()),
             model: cli
                 .model
                 .clone()
-                .or_else(|| env_string("TYPESAFE_DEFAULT_MODEL"))
+                .or_else(|| env.string("TYPESAFE_DEFAULT_MODEL"))
                 .or_else(|| file.typesafe.model.clone())
                 .unwrap_or_else(|| crate::client::DEFAULT_MODEL.to_owned()),
-            timeout_seconds: env_parsed("TYPESAFE_TIMEOUT_SECONDS", "typesafe.timeout_seconds")?
+            timeout_seconds: env
+                .parsed("TYPESAFE_TIMEOUT_SECONDS", "typesafe.timeout_seconds")?
                 .or(file.typesafe.timeout_seconds)
                 .unwrap_or(crate::client::DEFAULT_TIMEOUT.as_secs()),
         };
         let incidentio = Incidentio {
-            base_url: env_string("INCIDENTIO_BASE_URL")
+            base_url: env
+                .string("INCIDENTIO_BASE_URL")
                 .or_else(|| file.incidentio.base_url.clone())
                 .unwrap_or_else(|| crate::incidentio::client::DEFAULT_BASE_URL.to_owned()),
-            max_candidates: env_parsed("SIGNALMAN_MAX_CANDIDATES", "incidentio.max_candidates")?
+            max_candidates: env
+                .parsed("SIGNALMAN_MAX_CANDIDATES", "incidentio.max_candidates")?
                 .or(file.incidentio.max_candidates)
                 .unwrap_or(crate::incidentio::sync::DEFAULT_CANDIDATES),
+            alert_source_config_id: env
+                .string("INCIDENTIO_ALERT_SOURCE_CONFIG_ID")
+                .or_else(|| file.incidentio.alert_source_config_id.clone()),
         };
-        let base_url = env_string("BACKSTAGE_BASE_URL").or_else(|| file.backstage.base_url.clone());
+        let base_url = env
+            .string("BACKSTAGE_BASE_URL")
+            .or_else(|| file.backstage.base_url.clone());
         let backstage = Backstage {
-            app_url: env_string("BACKSTAGE_APP_URL")
+            app_url: env
+                .string("BACKSTAGE_APP_URL")
                 .or_else(|| file.backstage.app_url.clone())
                 .or_else(|| base_url.clone()),
             base_url,
-            namespace: env_string("BACKSTAGE_NAMESPACE")
+            namespace: env
+                .string("BACKSTAGE_NAMESPACE")
                 .or_else(|| file.backstage.namespace.clone())
                 .unwrap_or_else(|| "default".to_owned()),
-            group_types: env_list("BACKSTAGE_GROUP_TYPES")
+            group_types: env
+                .list("BACKSTAGE_GROUP_TYPES")
                 .or_else(|| file.backstage.group_types.clone())
                 .unwrap_or_else(|| vec!["team".to_owned()]),
-            component_keys: env_list("SIGNALMAN_COMPONENT_KEYS")
+            component_keys: env
+                .list("SIGNALMAN_COMPONENT_KEYS")
                 .or_else(|| file.backstage.component_keys.clone())
                 .unwrap_or_else(|| DEFAULT_COMPONENT_KEYS.map(String::from).to_vec()),
             notify: cli
                 .notify_owners
-                .or(env_parsed("BACKSTAGE_NOTIFY", "backstage.notify")?)
+                .or(env.parsed("BACKSTAGE_NOTIFY", "backstage.notify")?)
                 .or(file.backstage.notify)
                 .unwrap_or(false),
         };
@@ -719,60 +750,71 @@ impl Config {
         let flow = Flow {
             note: cli
                 .note
-                .or(env_parsed("SIGNALMAN_NOTE", "flow.note")?)
+                .or(env.parsed("SIGNALMAN_NOTE", "flow.note")?)
                 .or(file.flow.note)
                 .unwrap_or(true),
             related_window_minutes: cli
                 .related_window_minutes
-                .or(env_parsed(
+                .or(env.parsed(
                     "SIGNALMAN_RELATED_WINDOW_MINUTES",
                     "flow.related_window_minutes",
                 )?)
                 .or(file.flow.related_window_minutes)
                 .unwrap_or(crate::incidentio::sync::DEFAULT_RELATED_WINDOW.as_secs() / 60),
-            related_max: env_parsed("SIGNALMAN_RELATED_MAX", "flow.related_max")?
+            related_max: env
+                .parsed("SIGNALMAN_RELATED_MAX", "flow.related_max")?
                 .or(file.flow.related_max)
                 .unwrap_or(crate::incidentio::sync::DEFAULT_RELATED_MAX),
-            change_window_minutes: env_parsed(
-                "SIGNALMAN_CHANGE_WINDOW_MINUTES",
-                "flow.change_window_minutes",
-            )?
-            .or(file.flow.change_window_minutes)
-            .unwrap_or(crate::changes::DEFAULT_WINDOW.as_secs() / 60),
-            change_max: env_parsed("SIGNALMAN_CHANGE_MAX", "flow.change_max")?
+            change_window_minutes: env
+                .parsed(
+                    "SIGNALMAN_CHANGE_WINDOW_MINUTES",
+                    "flow.change_window_minutes",
+                )?
+                .or(file.flow.change_window_minutes)
+                .unwrap_or(crate::changes::DEFAULT_WINDOW.as_secs() / 60),
+            change_max: env
+                .parsed("SIGNALMAN_CHANGE_MAX", "flow.change_max")?
                 .or(file.flow.change_max)
                 .unwrap_or(crate::changes::DEFAULT_MAX),
         };
         let mcp = Mcp {
-            enabled: env_parsed("SIGNALMAN_MCP_ENABLED", "mcp.enabled")?
+            enabled: env
+                .parsed("SIGNALMAN_MCP_ENABLED", "mcp.enabled")?
                 .or(file.mcp.enabled)
                 .unwrap_or(true),
-            transport: env_parsed("SIGNALMAN_MCP_TRANSPORT", "mcp.transport")?
+            transport: env
+                .parsed("SIGNALMAN_MCP_TRANSPORT", "mcp.transport")?
                 .or(file.mcp.transport)
                 .unwrap_or_default(),
-            bind_address: env_parsed("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address")?
+            bind_address: env
+                .parsed("SIGNALMAN_MCP_BIND_ADDRESS", "mcp.bind_address")?
                 .or(file.mcp.bind_address),
-            allowed_hosts: env_list("SIGNALMAN_MCP_ALLOWED_HOSTS")
+            allowed_hosts: env
+                .list("SIGNALMAN_MCP_ALLOWED_HOSTS")
                 .or_else(|| file.mcp.allowed_hosts.clone())
                 .unwrap_or_default(),
-            allow_write: env_parsed("SIGNALMAN_MCP_ALLOW_WRITE", "mcp.allow_write")?
+            allow_write: env
+                .parsed("SIGNALMAN_MCP_ALLOW_WRITE", "mcp.allow_write")?
                 .or(file.mcp.allow_write)
                 .unwrap_or(false),
         };
         let telemetry = Telemetry {
-            otlp_endpoint: env_string("OTEL_EXPORTER_OTLP_ENDPOINT")
+            otlp_endpoint: env
+                .string("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .or_else(|| file.telemetry.otlp_endpoint.clone())
                 .map(|e| e.trim().to_owned())
                 .filter(|e| !e.is_empty()),
-            service_name: env_string("OTEL_SERVICE_NAME")
+            service_name: env
+                .string("OTEL_SERVICE_NAME")
                 .or_else(|| file.telemetry.service_name.clone())
                 .unwrap_or_else(|| crate::telemetry::DEFAULT_SERVICE_NAME.to_owned()),
-            metrics_interval_seconds: env_parsed(
-                "SIGNALMAN_METRICS_INTERVAL_SECONDS",
-                "telemetry.metrics_interval_seconds",
-            )?
-            .or(file.telemetry.metrics_interval_seconds)
-            .unwrap_or(crate::telemetry::DEFAULT_METRICS_INTERVAL.as_secs()),
+            metrics_interval_seconds: env
+                .parsed(
+                    "SIGNALMAN_METRICS_INTERVAL_SECONDS",
+                    "telemetry.metrics_interval_seconds",
+                )?
+                .or(file.telemetry.metrics_interval_seconds)
+                .unwrap_or(crate::telemetry::DEFAULT_METRICS_INTERVAL.as_secs()),
         };
         if telemetry.metrics_interval_seconds == 0 {
             return Err(Error::Invalid(
@@ -817,7 +859,7 @@ impl Config {
     pub fn env_in_effect() -> Vec<&'static str> {
         ENV_VARS
             .iter()
-            .filter(|(var, _)| env_string(var).is_some())
+            .filter(|(var, _)| Env::process().string(var).is_some())
             .map(|(var, _)| *var)
             .collect()
     }
@@ -845,41 +887,57 @@ fn validate_teams(teams: &[OwnerCandidate]) -> Result<()> {
     Ok(())
 }
 
-/// A non-empty environment string. Empty counts as unset: Kubernetes and
-/// shells often export a variable with no value.
-fn env_string(var: &str) -> Option<String> {
-    std::env::var(var)
-        .ok()
-        .map(|v| v.trim().to_owned())
-        .filter(|v| !v.is_empty())
-}
+/// The environment layer: a lookup by variable name. The process
+/// environment in production; an empty or fixed one in tests.
+#[derive(Clone, Copy)]
+pub struct Env<'a>(pub &'a dyn Fn(&str) -> Option<String>);
 
-/// A comma-separated list.
-fn env_list(var: &str) -> Option<Vec<String>> {
-    env_string(var)
-        .map(|raw| {
-            raw.split(',')
-                .map(|x| x.trim().to_owned())
-                .filter(|x| !x.is_empty())
-                .collect::<Vec<_>>()
-        })
-        // A variable of only commas is "unset", like an empty one.
-        .filter(|v| !v.is_empty())
-}
+impl Env<'_> {
+    /// The process environment.
+    pub fn process() -> Self {
+        Env(&|var| std::env::var(var).ok())
+    }
 
-/// A parsed value; a set but unparsable variable is an error, not a default.
-fn env_parsed<T: std::str::FromStr>(var: &'static str, key: &'static str) -> Result<Option<T>>
-where
-    T::Err: std::fmt::Display,
-{
-    match env_string(var) {
-        None => Ok(None),
-        Some(raw) => raw.parse().map(Some).map_err(|e: T::Err| Error::Env {
-            var,
-            value: raw,
-            key,
-            reason: e.to_string(),
-        }),
+    /// A non-empty string. Empty counts as unset: Kubernetes and shells
+    /// often export a variable with no value.
+    fn string(&self, var: &str) -> Option<String> {
+        (self.0)(var)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    }
+
+    /// A comma-separated list.
+    fn list(&self, var: &str) -> Option<Vec<String>> {
+        self.string(var)
+            .map(|raw| {
+                raw.split(',')
+                    .map(|x| x.trim().to_owned())
+                    .filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            // A variable of only commas is "unset", like an empty one.
+            .filter(|v| !v.is_empty())
+    }
+
+    /// A parsed value; a set but unparsable variable is an error, not a
+    /// default.
+    fn parsed<T: std::str::FromStr>(
+        &self,
+        var: &'static str,
+        key: &'static str,
+    ) -> Result<Option<T>>
+    where
+        T::Err: std::fmt::Display,
+    {
+        match self.string(var) {
+            None => Ok(None),
+            Some(raw) => raw.parse().map(Some).map_err(|e: T::Err| Error::Env {
+                var,
+                value: raw,
+                key,
+                reason: e.to_string(),
+            }),
+        }
     }
 }
 
@@ -889,12 +947,42 @@ mod tests {
 
     use super::*;
 
-    // Environment is process-global: these tests only assert layers that do
-    // not need it set, and clear what they use. Integration tests cover env.
+    // The process environment is never read here: a developer's `.env` must
+    // not change what these tests assert. `resolve` sees an empty one and
+    // `with_env` a fixed one; the integration tests cover the real thing.
+    fn resolve(file: &Settings, cli: &Overrides) -> Result<Config> {
+        Config::resolve_from(file, cli, Env(&|_| None))
+    }
+
+    fn with_env(file: &Settings, vars: &[(&str, &str)]) -> Result<Config> {
+        let lookup = |var: &str| {
+            vars.iter()
+                .find(|(k, _)| *k == var)
+                .map(|(_, v)| (*v).to_owned())
+        };
+        Config::resolve_from(file, &Overrides::default(), Env(&lookup))
+    }
+
+    #[test]
+    fn env_layer_overrides_the_file_and_all_commas_count_as_unset() {
+        let s = Settings::parse(
+            "[backstage]\ngroup_types = [\"team\"]\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let c = with_env(&s, &[("BACKSTAGE_GROUP_TYPES", "squad, tribe")]).unwrap();
+        assert_eq!(c.backstage.group_types, ["squad", "tribe"]);
+        let c = with_env(&s, &[("BACKSTAGE_GROUP_TYPES", ",")]).unwrap();
+        assert_eq!(c.backstage.group_types, ["team"]);
+        let err = with_env(&s, &[("SIGNALMAN_MAX_CANDIDATES", "many")])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("SIGNALMAN_MAX_CANDIDATES"), "{err}");
+    }
 
     #[test]
     fn defaults_apply_when_nothing_is_set() {
-        let c = Config::resolve(&Settings::default(), &Overrides::default()).unwrap();
+        let c = resolve(&Settings::default(), &Overrides::default()).unwrap();
         assert_eq!(c.server.addr.to_string(), DEFAULT_ADDR);
         assert_eq!(c.server.max_concurrent_triages, 8);
         assert_eq!(c.server.max_queued_triages, 64);
@@ -928,7 +1016,7 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        let c = resolve(&s, &Overrides::default()).unwrap();
         assert!(!c.mcp.enabled);
         assert_eq!(c.mcp.transport, McpTransport::Http);
         assert_eq!(c.mcp.bind_address.unwrap().to_string(), "0.0.0.0:8081");
@@ -954,7 +1042,7 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        let c = resolve(&s, &Overrides::default()).unwrap();
         let r = c.server.readiness();
         assert_eq!(r.cache, Duration::ZERO);
         assert_eq!(r.timeout, Duration::from_secs(5));
@@ -964,10 +1052,19 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let err = Config::resolve(&s, &Overrides::default())
-            .unwrap_err()
-            .to_string();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("readiness_timeout_seconds"), "{err}");
+    }
+
+    #[test]
+    fn incidentio_alert_source_id_comes_from_the_file() {
+        let s = Settings::parse(
+            "[incidentio]\nalert_source_config_id = \"01GW\"\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let c = resolve(&s, &Overrides::default()).unwrap();
+        assert_eq!(c.incidentio.alert_source_config_id.as_deref(), Some("01GW"));
     }
 
     #[test]
@@ -977,13 +1074,11 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        let c = resolve(&s, &Overrides::default()).unwrap();
         assert_eq!(c.backstage.group_types, ["squad", "tribe"]);
 
         let s = Settings::parse("[backstage]\ngroup_types = []\n", Path::new("t.toml")).unwrap();
-        let err = Config::resolve(&s, &Overrides::default())
-            .unwrap_err()
-            .to_string();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("backstage.group_types"), "{err}");
     }
 
@@ -994,7 +1089,7 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        let c = resolve(&s, &Overrides::default()).unwrap();
         assert_eq!(
             c.telemetry.otlp_endpoint.as_deref(),
             Some("http://otel-collector:4318/")
@@ -1009,7 +1104,7 @@ mod tests {
         let s =
             Settings::parse("[telemetry]\notlp_endpoint = \"\"\n", Path::new("t.toml")).unwrap();
         assert_eq!(
-            Config::resolve(&s, &Overrides::default())
+            resolve(&s, &Overrides::default())
                 .unwrap()
                 .telemetry
                 .otlp_endpoint,
@@ -1021,9 +1116,7 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let err = Config::resolve(&s, &Overrides::default())
-            .unwrap_err()
-            .to_string();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("metrics_interval_seconds"), "{err}");
     }
 
@@ -1057,7 +1150,7 @@ mod tests {
             related_window_minutes: Some(5),
             ..Overrides::default()
         };
-        let c = Config::resolve(&s, &cli).unwrap();
+        let c = resolve(&s, &cli).unwrap();
         assert_eq!(c.server.addr.to_string(), "127.0.0.1:1");
         assert_eq!(c.typesafe.model, "jev-1.13.0");
         assert!(!c.flow.note);
@@ -1098,15 +1191,11 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let err = Config::resolve(&s, &Overrides::default())
-            .unwrap_err()
-            .to_string();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("max_concurrent_triages"), "{err}");
 
         let s = Settings::parse("[policy]\nsuppress_below = 1.5\n", Path::new("t.toml")).unwrap();
-        let err = Config::resolve(&s, &Overrides::default())
-            .unwrap_err()
-            .to_string();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("suppress_below"), "{err}");
 
         let s = Settings::parse(
@@ -1114,9 +1203,7 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        let err = Config::resolve(&s, &Overrides::default())
-            .unwrap_err()
-            .to_string();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("impact_levels"), "{err}");
 
         let s = Settings::parse(
@@ -1124,12 +1211,12 @@ mod tests {
             Path::new("t.toml"),
         )
         .unwrap();
-        assert!(Config::resolve(&s, &Overrides::default()).is_err());
+        assert!(resolve(&s, &Overrides::default()).is_err());
     }
 
     #[test]
     fn effective_config_round_trips_through_toml() {
-        let c = Config::resolve(&Settings::default(), &Overrides::default()).unwrap();
+        let c = resolve(&Settings::default(), &Overrides::default()).unwrap();
         let text = toml::to_string_pretty(&c).unwrap();
         let back = Settings::parse(&text, Path::new("effective.toml")).unwrap();
         assert_eq!(back.policy, Some(Policy::default()));

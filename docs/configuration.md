@@ -28,7 +28,7 @@ Secrets are environment only. The file schema has no key for them; `api_key = �
 | `TYPESAFE_API_KEY` | everything that calls the model | console.typesafe.ai/keys |
 | `INCIDENTIO_API_KEY` | `serve`, `incidentio *`, `triage --dedup-from-incidentio` | Settings → API keys; scopes: view alerts, view incidents, manage alert tags, manage incident alerts, manage alert notes |
 | `INCIDENTIO_WEBHOOK_SECRET` | `serve` unless `--insecure-skip-verify` | Settings → Webhooks → endpoint → signing secret, `whsec_...` |
-| `INCIDENTIO_ALERT_SOURCE_CONFIG_ID`, `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's id and token |
+| `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's token; the source's id is a setting, `incidentio.alert_source_config_id` |
 | `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 | `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
@@ -67,6 +67,7 @@ TOML, every key optional, unknown keys rejected. Location, first match wins: `--
 |---|---|---|---|---|
 | `incidentio.base_url` | `INCIDENTIO_BASE_URL` | | `https://api.incident.io` | tests, proxies |
 | `incidentio.max_candidates` | `SIGNALMAN_MAX_CANDIDATES` | `incidentio open-incidents --max` | `40` | open incidents offered as dedup candidates |
+| `incidentio.alert_source_config_id` | `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` | | unset | the HTTP alert source `triage --forward-to-incidentio` posts to; its token stays a secret |
 
 ### `[backstage]`
 

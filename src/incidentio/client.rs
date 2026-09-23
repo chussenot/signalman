@@ -22,6 +22,9 @@ use crate::http::{self, Completed, Exhausted, RetryPolicy};
 
 /// Environment variable holding the API key.
 pub const API_KEY_ENV: &str = "INCIDENTIO_API_KEY";
+/// Environment variable holding the HTTP alert source token used by
+/// `triage --forward-to-incidentio`; the source's id is a setting.
+pub const ALERT_SOURCE_TOKEN_ENV: &str = "INCIDENTIO_ALERT_SOURCE_TOKEN";
 /// Production API base URL.
 pub const DEFAULT_BASE_URL: &str = "https://api.incident.io";
 /// Default per-attempt timeout.
@@ -270,6 +273,14 @@ impl Client {
             })
             .await?;
         Ok(env.incident_alert)
+    }
+
+    /// The HTTP alert source token from [`ALERT_SOURCE_TOKEN_ENV`]: a secret,
+    /// so this module reads it, not the configuration layer.
+    pub fn alert_source_token() -> Option<String> {
+        std::env::var(ALERT_SOURCE_TOKEN_ENV)
+            .ok()
+            .filter(|t| !t.trim().is_empty())
     }
 
     /// `POST /v2/alert_events/http/{alert_source_config_id}`.

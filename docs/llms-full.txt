@@ -1044,7 +1044,7 @@ Tags arrive a few seconds after the alert is created. Routes should evaluate on 
 
 ## Forwarding from the CLI
 
-`triage --forward-to-incidentio` posts the alert to an HTTP alert source (`POST /v2/alert_events/http/{config id}`), authenticated with the source's token rather than the API key. The judgments travel under `metadata.ai` (`team`, `team_confidence`, `impact_level`, `impact_label`, `impact_score`, `actionable`, `decision`, `model`), and the resolved component under `metadata.component`. Map them to alert attributes in the source's template, then route on the attributes. Only `status: firing` is sent today.
+`triage --forward-to-incidentio` posts the alert to the HTTP alert source named by `incidentio.alert_source_config_id` (`POST /v2/alert_events/http/{config id}`), authenticated with the source's token (`INCIDENTIO_ALERT_SOURCE_TOKEN`) rather than the API key. The judgments travel under `metadata.ai` (`team`, `team_confidence`, `impact_level`, `impact_label`, `impact_score`, `actionable`, `decision`, `model`), and the resolved component under `metadata.component`. Map them to alert attributes in the source's template, then route on the attributes. Only `status: firing` is sent today.
 
 That block is flat on purpose and is not the same shape as [the outcome contract](triage.md#the-outcome-contract). Attribute templates in incident.io read flat paths, so the forwarded metadata stays flat and the versioned contract is free to nest. The two evolve separately. What incident.io accepted is reported back in the document as `writes.forwarded`. None of this has been checked against a live alert source.
 
@@ -1369,7 +1369,7 @@ Secrets are environment only. The file schema has no key for them; `api_key = �
 | `TYPESAFE_API_KEY` | everything that calls the model | console.typesafe.ai/keys |
 | `INCIDENTIO_API_KEY` | `serve`, `incidentio *`, `triage --dedup-from-incidentio` | Settings → API keys; scopes: view alerts, view incidents, manage alert tags, manage incident alerts, manage alert notes |
 | `INCIDENTIO_WEBHOOK_SECRET` | `serve` unless `--insecure-skip-verify` | Settings → Webhooks → endpoint → signing secret, `whsec_...` |
-| `INCIDENTIO_ALERT_SOURCE_CONFIG_ID`, `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's id and token |
+| `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's token; the source's id is a setting, `incidentio.alert_source_config_id` |
 | `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 | `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
@@ -1408,6 +1408,7 @@ TOML, every key optional, unknown keys rejected. Location, first match wins: `--
 |---|---|---|---|---|
 | `incidentio.base_url` | `INCIDENTIO_BASE_URL` | | `https://api.incident.io` | tests, proxies |
 | `incidentio.max_candidates` | `SIGNALMAN_MAX_CANDIDATES` | `incidentio open-incidents --max` | `40` | open incidents offered as dedup candidates |
+| `incidentio.alert_source_config_id` | `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` | | unset | the HTTP alert source `triage --forward-to-incidentio` posts to; its token stays a secret |
 
 ### `[backstage]`
 
