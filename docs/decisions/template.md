@@ -2,6 +2,7 @@
 title: NNNN Short title stating the decision
 description: One sentence on what was decided and for what problem.
 status: proposed
+llms: false
 date: YYYY-MM-DD
 decision-makers: []
 consulted: []

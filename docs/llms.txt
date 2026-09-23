@@ -1,0 +1,46 @@
+# signalman
+
+> Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
+
+This index is generated from the documentation nav (`mkdocs.yml`) and each page's frontmatter by `scripts/gen-llms-txt.sh`; the pages are the source of truth and every page carries `title`, `description`, `status` and `last_reviewed`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. Nothing here has been verified against a live TypeSafe, incident.io or Backstage account yet; pages say so where it matters.
+
+## Start here
+
+- [README](https://raw.githubusercontent.com/chussenot/rustsafe/main/README.md): why signalman exists, what it does and does not do, and the map of these pages
+- [Outcome contract, JSON Schema v1](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/schema/outcome.v1.json): the document every triage emits, for scripts and agents; generated from the wire types, drift-tested
+- [Full documentation text](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/llms-full.txt): every page below, concatenated in this order
+
+## Pages
+
+- [Documentation](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/index.md): Map of the signalman documentation, what each page is for, and the conventions the pages follow.
+- [Backstage bridge](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/backstage.md): How signalman turns the software catalog into ownership candidates and context, TechDocs into runbook excerpts and the Notifications plugin into a handoff, and how to register signalman itself.
+- [TypeSafe client](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/typesafe-client.md): How the Rust client implements the TypeSafe System One contract, ties each question to the type of its answer, validates probabilities, and retries transient failures.
+- [Laya as a model provider](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/laya.md): What Laya is, how signalman ran against it unchanged through a local System One-compatible shim, what the three example alerts measured on CPU, and why Jev stays the default until an evaluation on real alert history says otherwise.
+- [Triage](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/triage.md): The state signalman builds for an alert, the questions it asks in one request, the policy that turns the answers into a decision, the outcome contract every triage emits, what of it is configuration and what is code, and how to tune it.
+- [Evaluation harness](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/evaluation.md): How to replay labelled alerts through the triage questions, what the report measures (accuracy, Brier, calibration error, decision agreement, latency), how recording and replay separate inference from policy tuning, and how to use it to compare models.
+- [incident.io integration](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/incidentio.md): How signalman verifies and processes incident.io webhooks, what it reads and writes through the API including the qualification note, how to configure alert routes on the result, and how the CLI forwards enriched alerts.
+- [Change feed](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/changes.md): How recent deploys, configuration changes and flag flips reach the triage as alert.recent_changes through a push endpoint any delivery tool can call, the native Argo CD and GitLab adapters, how the window and matching work, and the limits.
+- [MCP server](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/mcp.md): The Model Context Protocol tools signalman serves over stdio and Streamable HTTP, five always-on read-only tools and one gated write tool, what each one answers, the two transports and how they are served, how to configure and connect to them, and what still writes nothing on purpose.
+- [Configuration](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/configuration.md): The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
+- [Operations](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/operations.md): Running the webhook receiver, its endpoints and manual commands, the upstream limits that bound throughput, what the logs contain, and how each failure shows up.
+- [Development](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/development.md): Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, TechDocs rendering, and the Claude Code harness for contributors.
+- [Roadmap](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/roadmap.md): What has not been verified against live systems, what is missing, and how the gaps map to the beads backlog.
+
+## Architecture
+
+- [Architecture](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/architecture.md): The components of signalman, how an alert moves through them, where the boundaries between catalog, model and code lie, and how failures are contained.
+- [C4 level 1, system context](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/c4/context.md): signalman in its environment, the people and systems it exchanges information with, and what flows between them.
+- [C4 level 2, containers](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/c4/container.md): The deployable units of signalman, the one process with a receiver and a CLI, and the external services each one uses.
+- [C4 level 3, components](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/c4/component.md): Inside the signalman library, the modules that make up a triage, how they call one another, and which external endpoint each client owns.
+
+## Decisions
+
+- [Decisions](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/README.md): Architecture decision records for signalman in MADR form, the index of accepted decisions, and how to add one.
+- [0001 incident.io remains the alert hub](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0001-incidentio-remains-the-alert-hub.md): signalman enriches alerts with tags and attachments and never creates incidents, so incident.io alert routes keep ownership of escalation.
+- [0002 Calibrated judgments over generated text](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0002-calibrated-judgments-over-generated-text.md): Use TypeSafe's System One primitives, which return typed answers with probabilities, instead of a generative model with prompt-and-parse output.
+- [0003 Typed handles between questions and answers](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md): Adding a question returns a handle that fixes the answer type, so the compiler ties each wire answer to the code that consumes it.
+- [0004 The catalog is the ownership source of truth](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0004-catalog-is-the-ownership-source-of-truth.md): Owner candidates for the triage come from the Backstage software catalog when it is configured; the model chooses among them; the static team list is only a fallback.
+- [0005 Observability signals enter through incident.io](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0005-observability-signals-enter-through-incidentio.md): Tsuga alerts reach signalman as incident.io alerts through Tsuga's own notification integration and are read back as related firing alerts; no direct Tsuga client is built until its API contract can be read with an operation API key.
+- [0006 Layered configuration with secrets outside the file](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0006-layered-configuration.md): One configuration model resolved in a fixed order (default, TOML file, environment, flag), owned by a single module; secrets are refused from the file; question wording, thresholds and the fallback team list become data while the question set stays code.
+- [0007 Changes are pushed to signalman, not polled from delivery tools](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0007-changes-are-pushed-not-polled.md): Recent deploys and configuration changes reach the triage through an authenticated push endpoint that any delivery tool can call, kept in a bounded in-memory window, rather than through clients for Argo CD, Flux, GitHub or Backstage deployment plugins.
+- [0008 signalman is a tool for agents, not an agent](https://raw.githubusercontent.com/chussenot/rustsafe/main/docs/decisions/0008-signalman-is-a-tool-for-agents.md): Expose signalman's typed qualification to external agents through a versioned JSON contract and, later, an MCP server; embed no generative-model loop in the triage path.

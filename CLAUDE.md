@@ -59,7 +59,11 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   for policy. Nothing has been verified against a live account yet; say so
   in docs where it matters.
 - Markdown under `docs/` and the README carries frontmatter (`title`,
-  `description`, `status`, `last_reviewed`, `tags`).
+  `description`, `status`, `last_reviewed`, `tags`). `docs/llms.txt` and
+  `docs/llms-full.txt` are generated from the `mkdocs.yml` nav and that
+  frontmatter: never edit them, run `mise run docs:llms` after adding a
+  page (add it to the nav too) or changing a title or description; the
+  docs gate fails when they are stale.
 - Secrets live in `.env` (gitignored, loaded by mise). Never commit one.
 
 ## Harness

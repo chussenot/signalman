@@ -2,7 +2,7 @@
 title: Development
 description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, TechDocs rendering, and the Claude Code harness for contributors.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [development, tooling]
 ---
 
@@ -27,7 +27,8 @@ mise tasks          # everything below
 | `lint` | `cargo clippy --all-targets --all-features` with `RUSTFLAGS=-D warnings` |
 | `test` | `cargo test --all-features` |
 | `doc` | `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS=-D warnings` |
-| `docs:check` | frontmatter on `README.md` and `docs/**` |
+| `docs:check` | frontmatter on `README.md` and `docs/**`; `docs/llms.txt` and `docs/llms-full.txt` match the nav and frontmatter |
+| `docs:llms` | regenerate `docs/llms.txt` and `docs/llms-full.txt` from `mkdocs.yml` and page frontmatter |
 | `schema` | regenerate `docs/schema/outcome.v1.json` from the wire types in `src/outcome.rs` |
 | `precommit` | `prek run --all-files` |
 | `build` | release build |
@@ -43,6 +44,8 @@ mise tasks          # everything below
 Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests include a `compile_fail` case. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
+
+`docs/llms.txt` and `docs/llms-full.txt` ([llmstxt.org](https://llmstxt.org)) are generated the same way, by `scripts/gen-llms-txt.sh` from the `mkdocs.yml` nav and each page's frontmatter: one line per page with its title and description, in nav order, top-level pages first and each nav group as its own section, linking the raw Markdown on the default branch; the full file concatenates the pages. A page opts out of both with `llms: false` in its frontmatter, which only the decision-record template does. `docs:check` regenerates both into a temporary directory and fails when the committed files differ, so a new page, a changed description or a nav edit cannot leave the index stale; a page under `docs/` that the nav does not list fails the check too. `mise run docs:llms` rewrites them. The script is POSIX `sh` and `awk`, like `check-frontmatter.sh`, so it needs nothing `mise install` does not already provide.
 
 ## Git hooks
 
@@ -61,7 +64,7 @@ flowchart TD
     T -->|pass| B2[beads pre-push] --> Z[pushed]
 ```
 
-`.pre-commit-config.yaml` on commit: whitespace and line-ending fixes, YAML (multi-document allowed), TOML and JSON syntax, merge markers, large files, private keys, no commits on `main`, `cargo fmt --check`, `cargo clippy`, Markdown frontmatter, a refusal to commit `.env`. On push: `cargo test`. Beads-managed files and `Cargo.lock` are excluded from the fixers. Run everything without committing with `mise run precommit`.
+`.pre-commit-config.yaml` on commit: whitespace and line-ending fixes, YAML (multi-document allowed), TOML and JSON syntax, merge markers, large files, private keys, no commits on `main`, `cargo fmt --check`, `cargo clippy`, Markdown frontmatter, a stale `docs/llms.txt`, a refusal to commit `.env`. On push: `cargo test`. Beads-managed files and `Cargo.lock` are excluded from the fixers. Run everything without committing with `mise run precommit`.
 
 ## Layout
 
@@ -83,8 +86,8 @@ src/
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs
 examples/          sample alerts and a sample webhook delivery
-docs/              this documentation (TechDocs source); docs/schema/ is generated
-scripts/           check-frontmatter.sh, setup-hooks.sh
+docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
+scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh
 .beads/            issue tracker data and git hooks
 .claude/           agents, hooks, settings for Claude Code
 catalog-info.yaml  Backstage registration; mkdocs.yml builds docs/ as TechDocs
