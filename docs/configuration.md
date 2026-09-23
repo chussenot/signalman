@@ -77,6 +77,7 @@ Setting `backstage.base_url` (or its variable) turns catalog enrichment on.
 | `backstage.base_url` | `BACKSTAGE_BASE_URL` | | unset | backend URL without `/api` |
 | `backstage.app_url` | `BACKSTAGE_APP_URL` | | `base_url` | frontend URL for links in the qualification note |
 | `backstage.namespace` | `BACKSTAGE_NAMESPACE` | | `default` | namespace tried first for bare component names |
+| `backstage.group_types` | `BACKSTAGE_GROUP_TYPES` (comma-separated) | | `team` | group `spec.type` values offered as owner candidates when no component matched; Backstage leaves the value free-form (`squad`, `business-unit`, …); an empty list is rejected |
 | `backstage.component_keys` | `SIGNALMAN_COMPONENT_KEYS` (comma-separated) | | `component,service,app,application,Service,Component` | alert attribute or label names carrying the component identity |
 | `backstage.notify` | `BACKSTAGE_NOTIFY` | `serve --notify-owners` | `false` | notify the owning group after page, ticket and human-triage decisions |
 

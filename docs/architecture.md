@@ -152,8 +152,8 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | Bad or missing signature | Receiver returns 401 | incident.io retries for 24 hours; fix the secret |
 | Unparseable body | Receiver returns 400 | incident.io retries; check the event subscription |
 | Duplicate delivery | Receiver returns 200 | none |
-| Component not in the catalog | Enricher | Every catalog group of `spec.type: team` becomes a candidate, capped at 24; the triage continues. The compiled team list is used only when no catalog is configured at all |
-| Backstage transport or auth error | Enricher | The triage fails and is logged; the alert stays untagged |
+| Component not in the catalog | Enricher | Every catalog group whose `spec.type` is in `backstage.group_types` becomes a candidate, capped at 24; the triage continues. The compiled team list is used only when no catalog is configured at all |
+| Backstage transport or auth error | Enricher | The triage fails and is logged; the alert stays untagged. A token without the `techdocs` plugin only loses the runbook, at `warn` |
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |

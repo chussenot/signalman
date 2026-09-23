@@ -381,7 +381,9 @@ fn enricher(cfg: &Config) -> Result<Option<Enricher>, AnyError> {
     let client = backstage::Client::builder()
         .base_url(base_url.clone())
         .build()?;
-    let mut e = Enricher::new(client).with_namespace(cfg.backstage.namespace.clone());
+    let mut e = Enricher::new(client)
+        .with_namespace(cfg.backstage.namespace.clone())
+        .with_group_types(cfg.backstage.group_types.clone());
     if let Some(app) = &cfg.backstage.app_url {
         e = e.with_app_url(app.clone());
     }

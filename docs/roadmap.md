@@ -12,13 +12,13 @@ The backlog is tracked in beads (`bd ready`). This page is the narrative index; 
 
 ## Unverified
 
-Nothing has run against a live TypeSafe, incident.io or Backstage instance. Wire shapes follow the documented examples and OpenAPI specifications. Epic `signalman-b11` covers live verification:
+Nothing has run against a live TypeSafe or incident.io instance; the Backstage catalog calls have, once (`signalman-b11.5`, 2026-09-23), and the rest of the Backstage integration has not. Wire shapes follow the documented examples and OpenAPI specifications. Epic `signalman-b11` covers live verification:
 
 - A real TypeSafe call over the example alerts, recording the versioned model and the distributions.
 - `incidentio whoami` to confirm key scopes.
 - The repeated-key form of `status_category[one_of]` on the incidents list, the likeliest drift point.
 - A signed webhook end to end through Svix Play or ngrok.
-- A real Backstage: `relations` on `by-refs` responses when `fields` narrows them; the TechDocs search index on your storage backend; the Notifications endpoint with `accessRestrictions`.
+- A real Backstage: the catalog is done (`relations` do come back when `fields` narrows them; groups there were `spec.type: squad`, which is why `backstage.group_types` exists). Still open, blocked on a token allowed on those plugins: the TechDocs search index on your storage backend and the Notifications endpoint with `accessRestrictions`.
 
 ## Hardening the receiver (`signalman-m28`)
 

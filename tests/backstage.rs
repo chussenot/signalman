@@ -412,3 +412,67 @@ async fn unknown_component_falls_back_to_all_teams() {
     let keys: Vec<&str> = e.candidates.iter().map(|c| c.key.as_str()).collect();
     assert_eq!(keys, vec!["payments", "sre", NONE_OF_THESE]);
 }
+
+#[tokio::test]
+async fn group_types_become_one_filter_set_each() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/catalog/entities/by-name/component/default/mystery",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/catalog/entities/by-query"))
+        .and(query_param(
+            "filter",
+            "kind=component,metadata.title=mystery",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "items": [], "totalItems": 0, "pageInfo": {} })),
+        )
+        .mount(&server)
+        .await;
+    // Two `filter` parameters, ORed by the catalog.
+    Mock::given(method("GET"))
+        .and(path("/api/catalog/entities/by-query"))
+        .and(query_param("filter", "kind=group,spec.type=squad"))
+        .and(query_param("filter", "kind=group,spec.type=tribe"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [group("fcp", "FCP", "", &[])], "totalItems": 1, "pageInfo": {}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let e = Enricher::new(client(&server))
+        .with_group_types(vec!["squad".into(), "tribe".into()])
+        .enrich(&["mystery".into()], "x")
+        .await
+        .unwrap();
+    let keys: Vec<&str> = e.candidates.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(keys, vec!["fcp", NONE_OF_THESE]);
+}
+
+#[tokio::test]
+async fn techdocs_forbidden_leaves_runbook_empty() {
+    let server = MockServer::start().await;
+    catalog(&server).await;
+    // A token restricted to the catalog plugin: TechDocs answers 403.
+    Mock::given(method("GET"))
+        .and(path("/api/techdocs/static/docs/default/component/checkout-api/search/search_index.json"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": { "name": "NotAllowedError", "message": "This token's access is restricted to plugin(s) 'catalog'" }
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let e = Enricher::new(client(&server))
+        .enrich(&["checkout-api".into()], "HighErrorRate checkout-api")
+        .await
+        .unwrap();
+    assert_eq!(e.component.unwrap().name, "checkout-api");
+    assert!(e.runbook.is_none());
+    assert!(e.runbook_url.is_none());
+}

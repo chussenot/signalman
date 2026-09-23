@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::client::Client;
-use super::error::Result;
+use super::client::{Client, FilterSet};
+use super::error::{Error, Result};
 use super::types::{
     Entity, EntityRef, NotificationPayload, NotificationSeverity, SearchDoc, SearchIndex,
 };
@@ -25,6 +25,10 @@ pub struct Enricher {
     pub client: Client,
     /// Namespace tried first when a hint has none.
     pub namespace: String,
+    /// Group `spec.type` values offered as owner candidates when no
+    /// component matched. Backstage leaves the value free-form; catalogs use
+    /// `team`, `squad`, `business-unit` and others.
+    pub group_types: Vec<String>,
     /// Cap on owner candidates (the Choice limit is 255; tokens cost more).
     pub max_candidates: usize,
     /// Cap on the runbook excerpt length.
@@ -60,6 +64,7 @@ impl Enricher {
         Self {
             client,
             namespace: "default".into(),
+            group_types: vec!["team".into()],
             max_candidates: DEFAULT_MAX_CANDIDATES,
             runbook_chars: DEFAULT_RUNBOOK_CHARS,
             app_url,
@@ -78,6 +83,13 @@ impl Enricher {
     #[must_use]
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
+        self
+    }
+
+    /// Group `spec.type` values that count as teams.
+    #[must_use]
+    pub fn with_group_types(mut self, types: Vec<String>) -> Self {
+        self.group_types = types;
         self
     }
 
@@ -320,10 +332,17 @@ impl Enricher {
     }
 
     async fn all_team_candidates(&self) -> Result<OwnerCandidates> {
+        // One filter set per type; the catalog ORs them.
+        let sets: Vec<[(&str, Option<&str>); 2]> = self
+            .group_types
+            .iter()
+            .map(|t| [("kind", Some("group")), ("spec.type", Some(t.as_str()))])
+            .collect();
+        let filters: Vec<FilterSet<'_>> = sets.iter().map(|s| &s[..]).collect();
         let groups = self
             .client
             .query(
-                &[&[("kind", Some("group")), ("spec.type", Some("team"))]],
+                &filters,
                 Some("kind,metadata,spec.profile,spec.type,relations"),
                 self.max_candidates,
             )
@@ -343,14 +362,18 @@ impl Enricher {
                     .take(6)
                     .collect();
                 let mut description = g.label().to_owned();
-                if let Some(d) = g
+                // Catalog descriptions are markdown, often multi-line and
+                // ending in a full stop; one line reads better in a rubric.
+                let d = g
                     .metadata
                     .description
                     .as_deref()
-                    .filter(|d| !d.trim().is_empty())
-                {
+                    .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                let d = d.trim_end_matches('.');
+                if !d.is_empty() {
                     description.push_str(": ");
-                    description.push_str(d.trim());
+                    description.push_str(d);
                 }
                 if !owned.is_empty() {
                     description.push_str(". Owns: ");
@@ -378,8 +401,16 @@ impl Enricher {
         let Some(docs_ref) = component.techdocs_entity() else {
             return Ok(None);
         };
-        let Some(index) = self.client.techdocs_search_index(&docs_ref).await? else {
-            return Ok(None);
+        // A token restricted to the catalog plugin gets 403 here; the
+        // runbook is optional, the triage is not.
+        let index = match self.client.techdocs_search_index(&docs_ref).await {
+            Ok(Some(index)) => index,
+            Ok(None) => return Ok(None),
+            Err(Error::Unauthorized { status }) => {
+                tracing::warn!(status, "TechDocs denied the token; no runbook");
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
         };
         Ok(select_runbook_doc(&index, alert_text).map(|d| {
             (

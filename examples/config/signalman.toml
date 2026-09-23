@@ -27,6 +27,7 @@ max_candidates = 40                    # SIGNALMAN_MAX_CANDIDATES; open incident
 base_url = "https://backstage-backend.example.com"   # BACKSTAGE_BASE_URL
 app_url = "https://backstage.example.com"            # BACKSTAGE_APP_URL; links in the note
 namespace = "default"                                # BACKSTAGE_NAMESPACE
+group_types = ["team"]                               # BACKSTAGE_GROUP_TYPES; spec.type of groups offered as owners
 component_keys = ["component", "service", "app", "application", "Service", "Component"]  # SIGNALMAN_COMPONENT_KEYS
 notify = false                                       # BACKSTAGE_NOTIFY, --notify-owners
 

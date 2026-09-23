@@ -69,7 +69,7 @@ flowchart TD
     GR --> GB[POST by-refs: groups with profile and ownerOf relations]
     GB --> CAND[candidates: key = group name<br/>rubric = display name: description. Owns: up to 6 components]
     CAND --> CAP[cap at 24, sorted by key] --> ADD[+ none_of_these]
-    C -.->|no component matched| ALL[by-query kind=group,spec.type=team, cap 24] --> ADD
+    C -.->|no component matched| ALL[by-query kind=group,spec.type in backstage.group_types, cap 24] --> ADD
 ```
 
 **Who is a candidate.** The registered owner first, then the owners of the component's direct neighbours (what it depends on, what depends on it, the APIs it consumes and provides), then the owners of any component whose name appears in the alert text. Neighbours are there because alerts fire on symptoms: the cause is usually upstream and the blast radius downstream, so their teams are the plausible exceptions to the registered owner. Mentions are there because alert text often names the failing dependency outright. Everything else in the catalog is excluded, on purpose: the candidate set is the graph around the alert, not the organisation.
@@ -82,7 +82,7 @@ flowchart TD
 
 **Why 24.** The Choice primitive allows 255 options; the cap of 24 (`DEFAULT_MAX_CANDIDATES`) is a token budget, since every option costs input tokens on every triage. It is a public field on `Enricher` that the configuration layer does not set, so changing it is a code change today. Raise it if the logs show the registered owner's neighbourhood being truncated; lower it if the owner distribution is flat across many teams.
 
-**When no component resolves, or no group could be fetched.** Every catalog group of `spec.type: team` becomes a candidate, capped at 24 in whatever order the catalog returns them, then sorted. This is the honest fallback: the model is asked to pick from the real teams with no neighbourhood hint, and `HumanTriage` is the likely outcome. What was rejected is falling back to the compiled `[[triage.teams]]` list when a catalog is configured: that list is a snapshot and would silently diverge from the source of truth. The compiled list is used only when no catalog is configured at all; then this module is never called. The cost is that a catalog with more than 24 teams is truncated by an order this page cannot promise, since the catalog API does not document one; that is unverified.
+**When no component resolves, or no group could be fetched.** Every catalog group whose `spec.type` is in `backstage.group_types` (default `team`) becomes a candidate, capped at 24 in `metadata.name` order, then sorted. The setting exists because Backstage leaves `spec.type` free-form and real catalogs do not all say `team`: the first instance this was run against uses `squad`, `tribe`, `chapter` and `root`, and with the default the fallback found nothing at all. This is the honest fallback: the model is asked to pick from the real teams with no neighbourhood hint, and `HumanTriage` is the likely outcome. What was rejected is falling back to the compiled `[[triage.teams]]` list when a catalog is configured: that list is a snapshot and would silently diverge from the source of truth. The compiled list is used only when no catalog is configured at all; then this module is never called. The cost is that a catalog with more than 24 teams is truncated alphabetically, which favours no team in particular but is not a choice either.
 
 ## Runbook selection
 
@@ -180,9 +180,10 @@ Among the community plugin workspaces, `firehydrant`, `ilert` and `healert` cove
 
 ## Limits and unverified points
 
-- Not yet run against a real Backstage instance. Shapes follow the OpenAPI specification and TypeScript types; drift surfaces as a `Decode` error naming the field.
+- The catalog calls (`by-name`, `by-query` with cursor and `orderField`, `by-refs` with `null` for missing entities, populated `relations`) were run once against a real instance on 2026-09-23 and matched the OpenAPI specification. The TechDocs index and the Notifications endpoint were not reachable there: the static token was restricted to other plugins and both answered `403 NotAllowedError`. Drift surfaces as a `Decode` error naming the field.
+- A token without the `techdocs` plugin costs only the runbook, logged at `warn`; the catalog part of the triage goes on. The catalog itself is required: a `403` there fails the triage.
 - Owner candidates are capped at 24 per triage. Each is a Choice option and costs input tokens. The cap and the 1,800-character excerpt are compiled defaults, not settings.
 - Mentioned components are matched by exact word against `metadata.name` in the configured namespace only.
 - The runbook excerpt is one page, at most 1,800 characters. Multi-page runbooks are not stitched.
 - Notifications need the Notifications backend installed and the token allowed on the `notifications` plugin.
-- Which 24 teams survive the all-teams fallback depends on the catalog's return order, which its API does not document.
+- Which 24 groups survive the all-teams fallback is decided by `metadata.name` order (the query asks for it), which is fair but blind: a catalog with more than 24 groups of the configured types offers the model an alphabetical slice.

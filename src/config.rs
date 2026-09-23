@@ -69,6 +69,7 @@ pub const ENV_VARS: &[(&str, &str)] = &[
     ("BACKSTAGE_BASE_URL", "backstage.base_url"),
     ("BACKSTAGE_APP_URL", "backstage.app_url"),
     ("BACKSTAGE_NAMESPACE", "backstage.namespace"),
+    ("BACKSTAGE_GROUP_TYPES", "backstage.group_types"),
     ("SIGNALMAN_COMPONENT_KEYS", "backstage.component_keys"),
     ("BACKSTAGE_NOTIFY", "backstage.notify"),
     ("SIGNALMAN_NOTE", "flow.note"),
@@ -216,6 +217,9 @@ pub struct BackstageFile {
     pub app_url: Option<String>,
     /// Namespace tried first for bare component names.
     pub namespace: Option<String>,
+    /// `spec.type` values of the groups offered as owner candidates when no
+    /// component matched.
+    pub group_types: Option<Vec<String>>,
     /// Alert attribute or label names carrying the component identity.
     pub component_keys: Option<Vec<String>>,
     /// Notify the owning group after page, ticket and human-triage decisions.
@@ -507,6 +511,8 @@ pub struct Backstage {
     pub app_url: Option<String>,
     /// Namespace tried first.
     pub namespace: String,
+    /// Group `spec.type` values that count as teams.
+    pub group_types: Vec<String>,
     /// Component identity keys.
     pub component_keys: Vec<String>,
     /// Notify owners.
@@ -693,6 +699,9 @@ impl Config {
             namespace: env_string("BACKSTAGE_NAMESPACE")
                 .or_else(|| file.backstage.namespace.clone())
                 .unwrap_or_else(|| "default".to_owned()),
+            group_types: env_list("BACKSTAGE_GROUP_TYPES")
+                .or_else(|| file.backstage.group_types.clone())
+                .unwrap_or_else(|| vec!["team".to_owned()]),
             component_keys: env_list("SIGNALMAN_COMPONENT_KEYS")
                 .or_else(|| file.backstage.component_keys.clone())
                 .unwrap_or_else(|| DEFAULT_COMPONENT_KEYS.map(String::from).to_vec()),
@@ -702,6 +711,11 @@ impl Config {
                 .or(file.backstage.notify)
                 .unwrap_or(false),
         };
+        if backstage.group_types.is_empty() {
+            return Err(Error::Invalid(
+                "backstage.group_types must list at least one type".into(),
+            ));
+        }
         let flow = Flow {
             note: cli
                 .note
@@ -842,12 +856,15 @@ fn env_string(var: &str) -> Option<String> {
 
 /// A comma-separated list.
 fn env_list(var: &str) -> Option<Vec<String>> {
-    env_string(var).map(|raw| {
-        raw.split(',')
-            .map(|x| x.trim().to_owned())
-            .filter(|x| !x.is_empty())
-            .collect()
-    })
+    env_string(var)
+        .map(|raw| {
+            raw.split(',')
+                .map(|x| x.trim().to_owned())
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+        })
+        // A variable of only commas is "unset", like an empty one.
+        .filter(|v| !v.is_empty())
 }
 
 /// A parsed value; a set but unparsable variable is an error, not a default.
@@ -890,6 +907,7 @@ mod tests {
         assert_eq!(c.flow.change_window_minutes, 120);
         assert_eq!(c.flow.change_max, 10);
         assert!(!c.backstage.enabled());
+        assert_eq!(c.backstage.group_types, ["team"]);
         assert!(c.mcp.enabled);
         assert_eq!(c.mcp.transport, McpTransport::Stdio);
         assert_eq!(c.mcp.bind_address, None);
@@ -950,6 +968,23 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("readiness_timeout_seconds"), "{err}");
+    }
+
+    #[test]
+    fn backstage_group_types_are_file_then_validated() {
+        let s = Settings::parse(
+            "[backstage]\ngroup_types = [\"squad\", \"tribe\"]\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        let c = Config::resolve(&s, &Overrides::default()).unwrap();
+        assert_eq!(c.backstage.group_types, ["squad", "tribe"]);
+
+        let s = Settings::parse("[backstage]\ngroup_types = []\n", Path::new("t.toml")).unwrap();
+        let err = Config::resolve(&s, &Overrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("backstage.group_types"), "{err}");
     }
 
     #[test]
