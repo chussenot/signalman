@@ -22,16 +22,13 @@ use crate::backstage::enrich::hints_from_labels;
 use crate::changes::{Change, ChangeLog};
 use crate::config::DEFAULT_COMPONENT_KEYS;
 use crate::outcome::{
-    self, AlertRef, Changes, IncidentRef, NoteStatus, NoteWrite, Outcome, WriteMode, Writes,
+    self, Action, AlertRef, Changes, ImpactLevel, IncidentRef, NoteStatus, NoteWrite, Outcome,
+    WriteMode, Writes, tag,
 };
 use crate::triage::{
     Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, Texts,
     TriageAnswers, TriageQuestions, decide,
 };
-
-/// Prefix for every tag this integration writes, so they can be filtered in
-/// alert routes and told apart from human tags.
-pub const TAG_PREFIX: &str = "ai";
 
 /// How many live incidents to offer as dedup candidates. Each is one Choice
 /// option (limit 255) and costs input tokens; recent incidents matter most.
@@ -430,8 +427,8 @@ impl Triager {
         );
 
         // A handful of flat fields stay indexable on their own; everything
-        // else that used to be dumped here is inside `outcome`, which is the
-        // whole document as one JSON object per triaged alert.
+        // else is inside `outcome`, the whole document as one JSON object
+        // per triaged alert, addressable by its documented paths.
         tracing::info!(
             alert_id = %io_alert.id,
             title = %io_alert.title,
@@ -584,8 +581,8 @@ pub fn tags_for(answers: &TriageAnswers, decision: &Decision) -> Vec<String> {
     let impact = Impact::from_level(answers.impact.nearest_level());
     let mut tags = vec![
         tag("team", &answers.owner.chosen),
-        tag("impact", impact_key(impact)),
-        tag("action", action_key(decision)),
+        tag("impact", ImpactLevel::from(impact).key()),
+        tag("action", Action::from(decision).tag_value()),
     ];
     // Taken from the decision, not recomputed from the answers: the policy
     // threshold lives in one place, and the tag stays derivable from the
@@ -603,34 +600,6 @@ pub fn tags_for(answers: &TriageAnswers, decision: &Decision) -> Vec<String> {
         tags.push(tag("suspected-change", ""));
     }
     tags
-}
-
-fn tag(kind: &str, value: &str) -> String {
-    let v = value.to_ascii_lowercase().replace([' ', '_'], "-");
-    if v.is_empty() {
-        format!("{TAG_PREFIX}-{kind}")
-    } else {
-        format!("{TAG_PREFIX}-{kind}-{v}")
-    }
-}
-
-fn impact_key(i: Impact) -> &'static str {
-    match i {
-        Impact::None => "none",
-        Impact::Minor => "minor",
-        Impact::Major => "major",
-        Impact::Outage => "outage",
-    }
-}
-
-fn action_key(d: &Decision) -> &'static str {
-    match d {
-        Decision::Suppress { .. } => "suppress",
-        Decision::AttachToIncident { .. } => "attach",
-        Decision::Page { .. } => "page",
-        Decision::Ticket { .. } => "ticket",
-        Decision::HumanTriage { .. } => "human-triage",
-    }
 }
 
 /// Failure anywhere in the flow.

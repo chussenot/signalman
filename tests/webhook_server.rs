@@ -3,6 +3,8 @@
 //! attached to the duplicate incident.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
+mod common;
+
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,14 +12,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::json;
-use signalman::backstage::{self, Enricher};
+use signalman::backstage::Enricher;
 use signalman::changes::{ChangeLog, FeedToken};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
 use signalman::outcome::{Action, NoteStatus, SchemaV1, WriteMode};
 use signalman::serve::{AppState, Limits, router};
 use signalman::triage::Decision;
-use signalman::{Client, RetryPolicy};
 use tower::ServiceExt;
 use wiremock::matchers::{
     body_json, body_partial_json, body_string_contains, method, path, query_param,
@@ -201,18 +202,8 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
         .mount(&incidentio_srv)
         .await;
 
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
+    let typesafe = common::typesafe_client(&typesafe_srv.uri());
+    let io = common::incidentio_client(&incidentio_srv.uri());
     let mut triager = Triager::new(typesafe, io);
     triager.write_back = write_back;
 
@@ -571,24 +562,9 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
         .mount(&typesafe_srv)
         .await;
 
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let bs = backstage::Client::builder()
-        .base_url(backstage_srv.uri())
-        .token("bs")
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
+    let typesafe = common::typesafe_client(&typesafe_srv.uri());
+    let io = common::incidentio_client(&incidentio_srv.uri());
+    let bs = common::backstage_client(&backstage_srv.uri());
     let mut triager = Triager::new(typesafe, io);
     triager.backstage = Some(Enricher::new(bs));
     triager.notify_owner = true;
@@ -734,18 +710,8 @@ async fn change_feed_fills_recent_changes_and_asks_caused_by_change() {
         .mount(&typesafe_srv)
         .await;
 
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
+    let typesafe = common::typesafe_client(&typesafe_srv.uri());
+    let io = common::incidentio_client(&incidentio_srv.uri());
     let mut triager = Triager::new(typesafe, io);
     triager.changes = Some(ChangeLog::default());
     // The posted changes carry fixed dates; a very wide window keeps the
@@ -897,18 +863,8 @@ async fn change_feed_is_unrouted_without_a_token() {
 async fn argocd_and_gitlab_adapters_record_native_payloads() {
     let incidentio_srv = MockServer::start().await;
     let typesafe_srv = MockServer::start().await;
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
+    let typesafe = common::typesafe_client(&typesafe_srv.uri());
+    let io = common::incidentio_client(&incidentio_srv.uri());
     let mut triager = Triager::new(typesafe, io);
     triager.changes = Some(ChangeLog::default());
     let mut state = AppState::new(Some(WebhookSecret::parse(SECRET).unwrap()), triager);
@@ -1085,18 +1041,8 @@ async fn slow_receiver(
         .mount(&typesafe_srv)
         .await;
 
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio_srv.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
+    let typesafe = common::typesafe_client(&typesafe_srv.uri());
+    let io = common::incidentio_client(&incidentio_srv.uri());
     let mut triager = Triager::new(typesafe, io);
     triager.write_back = WriteBack::DryRun;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

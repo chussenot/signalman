@@ -308,16 +308,6 @@ impl Score {
             .get(self.nearest_level())
             .map_or("", String::as_str)
     }
-
-    /// Index of the most probable level (argmax), which can differ from
-    /// [`Self::nearest_level`] when the distribution is bimodal.
-    pub fn most_probable_level(&self) -> usize {
-        self.probabilities
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map_or(0, |(i, _)| i)
-    }
 }
 
 impl FromAnswer for Score {
@@ -461,7 +451,6 @@ mod tests {
         let s = r.get(&h).unwrap();
         assert_eq!(s.levels[9], "L9");
         assert_eq!(s.nearest_level(), 9);
-        assert_eq!(s.most_probable_level(), 9);
         assert_eq!(s.nearest_label(), "L9");
     }
 

@@ -11,10 +11,11 @@
 
 use std::time::Duration;
 
+mod common;
+
 use serde_json::json;
-use signalman::incidentio::{Triager, WriteBack};
+use signalman::incidentio::WriteBack;
 use signalman::telemetry::{Error, Providers, Settings};
-use signalman::{Client, RetryPolicy};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -32,77 +33,21 @@ async fn collector() -> MockServer {
 }
 
 /// incident.io with alert `al-1` and one open incident, TypeSafe paging the
-/// `application` team; every write endpoint expected zero times (dry run).
+/// `application` team; every write endpoint expected zero times (dry run),
+/// plus one alert id that does not exist, so the error counter has
+/// something to count.
 async fn upstreams() -> (MockServer, MockServer) {
     let incidentio = MockServer::start().await;
     let typesafe = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts/al-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alert": {
-                "id": "al-1", "alert_source_id": "src-dd", "title": "HighErrorRate checkout-api",
-                "description": "5xx ratio 12% for 10m", "status": "firing",
-                "created_at": "2026-09-20T11:58:00Z", "attributes": [], "tags": []
-            }
-        })))
-        .mount(&incidentio)
-        .await;
+    common::mount_scene(&incidentio).await;
+    common::mount_no_writes(&incidentio).await;
+    common::SystemOne::default().mount(&typesafe).await;
     Mock::given(method("GET"))
         .and(path("/v2/alerts/al-missing"))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({
             "type": "not_found", "status": 404, "request_id": "r", "errors": []
         })))
         .mount(&incidentio)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/incidents"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "incidents": [{
-                "id": "01INC4821", "reference": "INC-4821", "name": "Checkout 5xx spike",
-                "permalink": "https://app.incident.io/org/incidents/4821",
-                "incident_status": { "id": "s", "name": "Active", "category": "live" },
-                "mode": "standard"
-            }],
-            "pagination_meta": { "page_size": 40 }
-        })))
-        .mount(&incidentio)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/alerts"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "alerts": [], "pagination_meta": { "page_size": 50 }
-        })))
-        .mount(&incidentio)
-        .await;
-    for p in [
-        "/v2/alerts/al-1/actions/add_tags",
-        "/v2/incident_alerts",
-        "/v1/alert_notes",
-    ] {
-        Mock::given(method("POST"))
-            .and(path(p))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .expect(0)
-            .mount(&incidentio)
-            .await;
-    }
-    Mock::given(method("POST"))
-        .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "owner": { "type": "choice", "choice": "application",
-                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.75 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
-                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 0.9 },
-                "actionable": { "type": "noul", "noul": 0.95 },
-                "duplicate_of": { "type": "choice", "choice": "none",
-                                  "probabilities": { "INC-4821": 0.1, "none": 0.9 }, "confidence": 0.8 },
-                "caused_by_change": { "type": "noul", "noul": 0.2 }
-            },
-            "usage": { "input_tokens": 500, "output_tokens": 30 }
-        })))
-        .mount(&typesafe)
         .await;
     (incidentio, typesafe)
 }
@@ -143,19 +88,7 @@ async fn a_triage_exports_its_spans_and_metrics_to_the_collector() {
         "a second init must be refused, not silently ignored"
     );
 
-    let ts = Client::builder()
-        .api_key("ts")
-        .base_url(typesafe.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = signalman::incidentio::Client::builder()
-        .api_key("io")
-        .base_url(incidentio.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let mut triager = Triager::new(ts, io);
+    let mut triager = common::triager(&typesafe, &incidentio);
     triager.write_back = WriteBack::DryRun;
 
     let outcome = triager.triage_alert_by_id("al-1").await.unwrap();

@@ -53,9 +53,6 @@ pub enum Error {
     /// Bad base URL or path.
     #[error("invalid URL: {0}")]
     Url(String),
-    /// An entity reference string could not be parsed.
-    #[error("invalid entity reference {0:?}")]
-    BadEntityRef(String),
 }
 
 /// Convenience alias.

@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::{Value, json};
+
+mod common;
+use common::committed_schema;
 use signalman::changes::Change;
 use signalman::incidentio::sync::tags_for;
 use signalman::outcome::{
@@ -24,19 +27,9 @@ use signalman::triage::{
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// The committed schema, the one consumers are pointed at.
-const SCHEMA_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/schema/outcome.v1.json");
-
 /// Fixed so fixtures are reproducible; the call sites pass the real crate
 /// version.
 const VERSION: &str = "0.0.0-test";
-
-fn committed_schema() -> Value {
-    let raw = std::fs::read_to_string(SCHEMA_PATH).unwrap_or_else(|e| {
-        panic!("{SCHEMA_PATH} is missing ({e}); run `mise run schema` to generate it")
-    });
-    serde_json::from_str(&raw).expect("the committed schema is valid JSON")
-}
 
 // ---------------------------------------------------------------------------
 // 1. Drift

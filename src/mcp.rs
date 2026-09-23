@@ -864,7 +864,8 @@ impl Server {
 
         // "the agent's name and the MCP client id are recorded in the
         // outcome log, never in the note" — read once at `initialize`
-        // (there is exactly one client per stdio connection).
+        // (one client per stdio connection; per request over HTTP, where
+        // the server is stateless and every POST carries its own).
         let mcp_client = ctx
             .peer
             .peer_info()
@@ -1106,7 +1107,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::incidentio::sync::TAG_PREFIX;
+    use crate::outcome::TAG_PREFIX;
 
     #[test]
     fn tool_names_match_what_the_router_advertises() {

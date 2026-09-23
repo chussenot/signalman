@@ -97,7 +97,7 @@ pub enum Error {
         request_id: String,
     },
     /// HTTP 429 after retries.
-    #[error("incident.io rate limited the request (429) after {attempts} attempts{}", retry_after_suffix(*.retry_after))]
+    #[error("incident.io rate limited the request (429) after {attempts} attempts{}", crate::http::retry_after_suffix(*.retry_after))]
     RateLimited {
         /// Attempts made, including the first.
         attempts: u32,
@@ -171,12 +171,6 @@ fn request_suffix(request_id: &str) -> String {
     } else {
         format!(" [request_id {request_id}]")
     }
-}
-
-fn retry_after_suffix(retry_after: Option<Duration>) -> String {
-    retry_after
-        .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
-        .unwrap_or_default()
 }
 
 /// Convenience alias.

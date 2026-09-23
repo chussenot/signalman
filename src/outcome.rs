@@ -76,10 +76,11 @@ use crate::triage::{
 /// The version this module reads and writes.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// Prefix of every tag signalman writes. Mirrors
-/// `crate::incidentio::sync::TAG_PREFIX`, which this module must not depend
-/// on; a test asserts the two agree.
-const TAG_PREFIX: &str = "ai";
+/// Prefix of every tag signalman writes, so they can be filtered in alert
+/// routes and told apart from human tags. The flow builds its tags from the
+/// same functions this module uses to read them back, so the two cannot
+/// disagree.
+pub(crate) const TAG_PREFIX: &str = "ai";
 
 /// The tag namespace signalman owns, prefix and separator. A tag outside it
 /// belongs to somebody else and this module says nothing about it.
@@ -1505,7 +1506,7 @@ fn suspected_change(decision: &Decision) -> bool {
 }
 
 /// One tag, as incident.io stores it: lowercase, hyphenated, prefixed.
-fn tag(kind: &str, value: &str) -> String {
+pub(crate) fn tag(kind: &str, value: &str) -> String {
     let v = value.to_ascii_lowercase().replace([' ', '_'], "-");
     if v.is_empty() {
         format!("{TAG_PREFIX}-{kind}")
@@ -1594,11 +1595,6 @@ mod tests {
                 serde_json::json!(key)
             );
         }
-    }
-
-    #[test]
-    fn the_tag_prefix_is_the_one_incidentio_writes() {
-        assert_eq!(TAG_PREFIX, crate::incidentio::sync::TAG_PREFIX);
     }
 
     #[test]

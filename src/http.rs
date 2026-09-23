@@ -76,8 +76,6 @@ impl RetryPolicy {
 pub struct Completed {
     /// HTTP status.
     pub status: StatusCode,
-    /// Response headers.
-    pub headers: HeaderMap,
     /// Response body as text.
     pub body: String,
     /// Total attempts made, including the first.
@@ -113,8 +111,7 @@ pub async fn send_with_retries(
         match make().send().await {
             Ok(resp) => {
                 let status = resp.status();
-                let headers = resp.headers().clone();
-                let retry_after = parse_retry_after(&headers);
+                let retry_after = parse_retry_after(resp.headers());
                 if !status.is_success() {
                     crate::telemetry::record_upstream_error(service, status.as_str());
                 }
@@ -147,7 +144,6 @@ pub async fn send_with_retries(
                 }
                 return Ok(Completed {
                     status,
-                    headers,
                     body,
                     attempts: attempt,
                     retry_after,
@@ -182,6 +178,14 @@ pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
         .ok()
         .filter(|s| *s >= 0.0)
         .map(Duration::from_secs_f64)
+}
+
+/// The `Retry-After` clause of a rate-limit error message, empty when the
+/// server sent none. Shared by the client error types.
+pub(crate) fn retry_after_suffix(retry_after: Option<Duration>) -> String {
+    retry_after
+        .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
+        .unwrap_or_default()
 }
 
 /// Truncate a response body for inclusion in an error message.

@@ -86,7 +86,7 @@ src/
   config.rs        configuration layers: file schema, env, flags, resolve
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
-tests/             wiremock integration tests and end-to-end webhook runs
+tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers, the committed schema)
 examples/          sample alerts and a sample webhook delivery
 docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
 scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh

@@ -4,6 +4,8 @@
 //! report for its lifetime.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,11 +13,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use signalman::backstage::{self, Enricher};
-use signalman::incidentio::{self, Triager};
+use signalman::backstage::Enricher;
 use signalman::readiness::{Probe, Settings};
 use signalman::serve::{AppState, router};
-use signalman::{Client, RetryPolicy};
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -74,26 +74,9 @@ fn app(
     bs: Option<&MockServer>,
     settings: Settings,
 ) -> axum::Router {
-    let typesafe = Client::builder()
-        .api_key("ts")
-        .base_url(ts.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let io = incidentio::Client::builder()
-        .api_key("io")
-        .base_url(io.uri())
-        .retry(RetryPolicy::none())
-        .build()
-        .unwrap();
-    let mut triager = Triager::new(typesafe, io);
+    let mut triager = common::triager(ts, io);
     if let Some(bs) = bs {
-        let client = backstage::Client::builder()
-            .base_url(bs.uri())
-            .retry(RetryPolicy::none())
-            .build()
-            .unwrap();
-        triager.backstage = Some(Enricher::new(client));
+        triager.backstage = Some(Enricher::new(common::backstage_client(&bs.uri())));
     }
     let mut state = AppState::new(None, triager);
     state.readiness = Probe::new(&state.triager, settings);

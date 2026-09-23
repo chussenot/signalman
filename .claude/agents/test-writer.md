@@ -14,6 +14,14 @@ without asserting the shape, is worse than none.
 
 ## Patterns in this repository
 
+- `tests/common/mod.rs` holds what every scenario shares: the clients
+  pointed at a mock (`typesafe_client`, `incidentio_client`,
+  `backstage_client`, `triager`), the `al-1` / `INC-4821` scene
+  (`mount_scene`, `mount_alert_al1`, `mount_open_incidents`,
+  `mount_firing_alerts`, `mount_no_writes`), the TypeSafe answer set
+  (`SystemOne`, parameterised by dedup choice and confidences), the
+  committed schema and the bare MCP client. Reach for it first; extend it
+  with a parameter rather than copying a fixture into a test file.
 - One `wiremock::MockServer` per upstream (`typesafe`, `incidentio`,
   `backstage`); clients built with `.base_url(srv.uri())` and
   `.retry(RetryPolicy::none())` so a failure fails once. Mocks assert the

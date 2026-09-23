@@ -14,12 +14,12 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8", features = ["json", "tokio", "http1"], default-features = false }
 base64 = "0.22"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 fastrand = "2"
 hmac = "0.12"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 schemars = "1.2"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "charset"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
 # MCP server (decision 0008): the server macros, the stdio transport, and the
 # Streamable HTTP server as a tower service mounted on the axum router. No
 # client, no OAuth extras. The client features live under dev-dependencies
@@ -34,7 +34,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", 
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-# OpenTelemetry (signalman-m28.2): spans over the triage flow and metrics for
+# OpenTelemetry: spans over the triage flow and metrics for
 # the receiver, exported over OTLP/HTTP (protobuf) through the reqwest this
 # crate already ships, only when an endpoint is configured. No gRPC stack and
 # no OTel logs signal: `tracing` text logs stay on stderr. tracing-opentelemetry
@@ -45,6 +45,8 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = ["
 tracing-opentelemetry = { version = "0.33", default-features = false }
 
 [dev-dependencies]
+# `json` only for the test clients; the crate serialises its own bodies.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.57", default-features = false }
 rmcp = { version = "3.4", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
