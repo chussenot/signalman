@@ -42,6 +42,14 @@ transport = "stdio"                    # SIGNALMAN_MCP_TRANSPORT; "stdio" or "ht
 # allowed_hosts = ["signalman.example.com"]  # SIGNALMAN_MCP_ALLOWED_HOSTS; Host header check, empty disables
 allow_write = false                    # SIGNALMAN_MCP_ALLOW_WRITE; registers apply_qualification
 
+# OpenTelemetry. Spans and metrics are exported over OTLP/HTTP only when an
+# endpoint is set; the text log on stderr is always there. A collector that
+# needs a token takes it from OTEL_EXPORTER_OTLP_HEADERS (environment only).
+[telemetry]
+# otlp_endpoint = "http://otel-collector.observability.svc:4318"  # OTEL_EXPORTER_OTLP_ENDPOINT
+service_name = "signalman"             # OTEL_SERVICE_NAME
+metrics_interval_seconds = 60          # SIGNALMAN_METRICS_INTERVAL_SECONDS
+
 # Routing thresholds. File only. Absent keys keep the built-in defaults.
 [policy]
 suppress_below = 0.25                  # actionable probability below which the alert is suppressed

@@ -83,6 +83,7 @@ src/
   serve.rs         axum webhook receiver
   outcome.rs       the outcome contract: wire types, builder, schema
   config.rs        configuration layers: file schema, env, flags, resolve
+  telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs
 examples/          sample alerts and a sample webhook delivery

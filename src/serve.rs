@@ -34,6 +34,7 @@ use axum::routing::{get, post};
 use jiff::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{Mutex, Semaphore};
+use tracing::Instrument;
 
 use crate::changes::gitlab::{self, Delivery};
 use crate::changes::{Change, ChangeLog, FeedToken, argocd};
@@ -159,6 +160,7 @@ impl AppState {
 
 /// Build the router.
 pub fn router(state: Arc<AppState>) -> Router {
+    crate::telemetry::observe_inflight(&state);
     if state.secret.is_none() {
         tracing::warn!(
             "webhook signature verification is DISABLED; never run this way in production"
@@ -323,14 +325,38 @@ async fn get_changes(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     axum::Json(log.all()).into_response()
 }
 
+/// The webhook handler, as one span per delivery (`webhook.receive`) whose
+/// `result` field says what became of it, mirrored in the
+/// `signalman.webhook.deliveries` counter.
 async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let span = tracing::info_span!(
+        "webhook.receive",
+        webhook_id = tracing::field::Empty,
+        event_type = tracing::field::Empty,
+        result = tracing::field::Empty
+    );
+    receive_inner(state, headers, body).instrument(span).await
+}
+
+/// Record how the delivery ended, on the span and in the counter.
+fn delivered(result: &'static str) {
+    tracing::Span::current().record("result", result);
+    crate::telemetry::record_webhook_delivery(result);
+}
+
+#[allow(clippy::too_many_lines)] // verify, dedup, parse, admit, spawn: one linear path per delivery
+async fn receive_inner(state: Arc<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     if let Some(secret) = &state.secret {
         let sig = match SignatureHeaders::from_headers(&headers) {
             Ok(h) => h,
-            Err(e) => return reject(StatusCode::UNAUTHORIZED, &e),
+            Err(e) => {
+                delivered("rejected");
+                return reject(StatusCode::UNAUTHORIZED, &e);
+            }
         };
         if let Err(e) = verify_now(secret, &sig, &body) {
             tracing::warn!(error = %e, webhook_id = %sig.id, "rejected webhook");
+            delivered("rejected");
             return reject(StatusCode::UNAUTHORIZED, &e);
         }
     }
@@ -341,8 +367,10 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
+    tracing::Span::current().record("webhook_id", webhook_id.as_str());
     if !webhook_id.is_empty() && state.seen.lock().await.set.contains(&webhook_id) {
         tracing::info!(%webhook_id, "duplicate delivery ignored");
+        delivered("duplicate");
         return StatusCode::OK.into_response();
     }
 
@@ -350,9 +378,11 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
         Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, %webhook_id, "unparseable webhook body");
+            delivered("invalid");
             return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
         }
     };
+    tracing::Span::current().record("event_type", event.event_type());
 
     match event {
         Event::AlertCreated(alert) => {
@@ -366,6 +396,7 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
                     admitted = state.admitted(),
                     "at capacity; asking incident.io to retry"
                 );
+                delivered("refused");
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     [(
@@ -378,10 +409,18 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
             };
             if !webhook_id.is_empty() && !state.seen.lock().await.insert(webhook_id.clone()) {
                 tracing::info!(%webhook_id, "duplicate delivery ignored");
+                delivered("duplicate");
                 return StatusCode::OK.into_response();
             }
             tracing::info!(alert_id = %alert.id, title = %alert.title, %webhook_id, queued = state.admitted().saturating_sub(state.running()), "alert created; triaging");
+            delivered("accepted");
             let state = Arc::clone(&state);
+            // The triage outlives the 202, so its span is not a child of the
+            // request's: it follows from it, which OpenTelemetry renders as
+            // a link between the two traces.
+            let triage_span =
+                tracing::info_span!("triage.background", alert_id = %alert.id, %webhook_id);
+            triage_span.follows_from(tracing::Span::current().id());
             tokio::spawn(async move {
                 let _admitted = admitted;
                 let Ok(_running) = Arc::clone(&state.running).acquire_owned().await else {
@@ -406,11 +445,12 @@ async fn receive(State(state): State<Arc<AppState>>, headers: HeaderMap, body: B
                 if let Some(tx) = &state.on_outcome {
                     let _ = tx.send(result);
                 }
-            });
+            }.instrument(triage_span));
             StatusCode::ACCEPTED.into_response()
         }
         other => {
             tracing::debug!(event_type = other.event_type(), %webhook_id, "event ignored");
+            delivered("ignored");
             StatusCode::OK.into_response()
         }
     }

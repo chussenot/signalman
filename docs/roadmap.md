@@ -22,7 +22,7 @@ Nothing has run against a live TypeSafe, incident.io or Backstage instance. Wire
 
 ## Hardening the receiver (`signalman-m28`)
 
-Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). Open: OpenTelemetry tracing and metrics for the flow, so time to qualify and the queue depth are exported rather than logged; a readiness endpoint that checks upstream reachability; a container image and the CI job that builds it.
+Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). OpenTelemetry tracing and metrics are delivered (`signalman-m28.2`, [Observability](observability.md)): spans over the delivery, the triage and every upstream call, and metrics that export time to qualify and the queue depth rather than logging them, over OTLP/HTTP when a collector endpoint is set. Verified against a mock collector only, never a real one. Open: a readiness endpoint that checks upstream reachability; a container image and the CI job that builds it; a JSON log format (`signalman-m28.5`).
 
 ## Triage quality (`signalman-ufg`)
 

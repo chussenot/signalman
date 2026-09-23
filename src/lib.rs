@@ -72,6 +72,7 @@ pub mod mcp;
 pub mod outcome;
 pub mod question;
 pub mod serve;
+pub mod telemetry;
 pub mod triage;
 
 pub use answer::{

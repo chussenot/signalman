@@ -290,7 +290,7 @@ impl Client {
 
     async fn call_raw(&self, make: impl Fn() -> reqwest::RequestBuilder) -> Result<String> {
         let make = || self.authed(make());
-        match http::send_with_retries(&self.retry, make).await {
+        match http::send_with_retries(&self.retry, "backstage", make).await {
             Ok(Completed { status, body, .. }) if status.is_success() => Ok(body),
             Ok(Completed {
                 status,

@@ -23,6 +23,7 @@ nav:
   - MCP server: mcp.md
   - Configuration: configuration.md
   - Operations: operations.md
+  - Observability: observability.md
   - Development: development.md
   - Roadmap: roadmap.md
   - Decisions:

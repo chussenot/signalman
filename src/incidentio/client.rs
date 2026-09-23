@@ -141,6 +141,7 @@ impl Client {
     }
 
     /// `GET /v1/identity`: which key this is and what it may do.
+    #[tracing::instrument(name = "incidentio.identity", skip_all)]
     pub async fn identity(&self) -> Result<Identity> {
         let url = self.url("v1/identity")?;
         let env: IdentityEnvelope = self
@@ -158,6 +159,7 @@ impl Client {
     /// filtered out client-side.
     ///
     /// Note the list endpoint's own rate limit (60 requests/minute).
+    #[tracing::instrument(name = "incidentio.list_incidents", skip_all, fields(max))]
     pub async fn list_incidents_in(
         &self,
         categories: &[StatusCategory],
@@ -214,6 +216,7 @@ impl Client {
     }
 
     /// `GET /v2/alerts/{id}`.
+    #[tracing::instrument(name = "incidentio.get_alert", skip(self))]
     pub async fn get_alert(&self, id: &str) -> Result<Alert> {
         let url = self.url(&format!("v2/alerts/{id}"))?;
         let env: AlertEnvelope = self
@@ -228,6 +231,7 @@ impl Client {
 
     /// `POST /v2/alerts/{id}/actions/add_tags`. Existing tags are kept; unknown
     /// names are created.
+    #[tracing::instrument(name = "incidentio.add_alert_tags", skip(self))]
     pub async fn add_alert_tags(&self, alert_id: &str, tags: &[String]) -> Result<Alert> {
         let url = self.url(&format!("v2/alerts/{alert_id}/actions/add_tags"))?;
         let body = serde_json::to_vec(&serde_json::json!({ "tags": tags }))?;
@@ -245,6 +249,7 @@ impl Client {
 
     /// `POST /v2/incident_alerts`: attach an alert to an incident. Idempotent
     /// on the server side when the connection already exists.
+    #[tracing::instrument(name = "incidentio.attach_alert", skip(self))]
     pub async fn attach_alert_to_incident(
         &self,
         alert_id: &str,
@@ -271,6 +276,7 @@ impl Client {
     ///
     /// Authenticates with the alert source's secret token, not the API key.
     /// The endpoint accepts and returns 202; processing is asynchronous.
+    #[tracing::instrument(name = "incidentio.send_alert_event", skip_all)]
     pub async fn send_alert_event(
         &self,
         alert_source_config_id: &str,
@@ -293,6 +299,7 @@ impl Client {
     /// Firing alerts created at or after `since` (RFC 3339), in the API's
     /// order. One page, capped at [`MAX_PAGE_SIZE`]: this is blast-radius
     /// context, where a bounded sample is enough and a second call is not.
+    #[tracing::instrument(name = "incidentio.list_firing_alerts", skip(self))]
     pub async fn list_firing_alerts_since(&self, since: &str, max: usize) -> Result<Vec<Alert>> {
         let mut url = self.url("v2/alerts")?;
         url.query_pairs_mut()
@@ -310,6 +317,7 @@ impl Client {
     }
 
     /// `GET /v1/alert_notes?alert_id=…`: the notes on one alert.
+    #[tracing::instrument(name = "incidentio.list_alert_notes", skip(self))]
     pub async fn list_alert_notes(&self, alert_id: &str) -> Result<Vec<AlertNote>> {
         let mut url = self.url("v1/alert_notes")?;
         url.query_pairs_mut()
@@ -326,6 +334,7 @@ impl Client {
     }
 
     /// `POST /v1/alert_notes`: add a markdown note to an alert.
+    #[tracing::instrument(name = "incidentio.create_alert_note", skip(self, content))]
     pub async fn create_alert_note(&self, alert_id: &str, content: &str) -> Result<AlertNote> {
         let url = self.url("v1/alert_notes")?;
         let body = serde_json::to_vec(&serde_json::json!({
@@ -345,6 +354,7 @@ impl Client {
     }
 
     /// `PUT /v1/alert_notes/{id}`: replace a note's content.
+    #[tracing::instrument(name = "incidentio.update_alert_note", skip(self, content))]
     pub async fn update_alert_note(&self, note_id: &str, content: &str) -> Result<AlertNote> {
         let url = self.url(&format!("v1/alert_notes/{note_id}"))?;
         let body = serde_json::to_vec(&serde_json::json!({ "content": content }))?;
@@ -370,7 +380,7 @@ impl Client {
         &self,
         make: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<T> {
-        match http::send_with_retries(&self.retry, make).await {
+        match http::send_with_retries(&self.retry, "incidentio", make).await {
             Ok(Completed { status, body, .. }) if status.is_success() => {
                 Ok(serde_json::from_str(&body)?)
             }
