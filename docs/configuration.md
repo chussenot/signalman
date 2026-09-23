@@ -2,7 +2,7 @@
 title: Configuration
 description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [configuration, kubernetes]
 ---
 
@@ -31,6 +31,7 @@ Secrets are environment only. The file schema has no key for them; `api_key = â€
 | `INCIDENTIO_ALERT_SOURCE_CONFIG_ID`, `INCIDENTIO_ALERT_SOURCE_TOKEN` | `triage --forward-to-incidentio` | the HTTP alert source's id and token |
 | `BACKSTAGE_TOKEN` | Backstage enrichment, unless the backend is unauthenticated | `backend.auth.externalAccess` static token |
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
+| `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
 
 Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 
@@ -88,13 +89,14 @@ Setting `backstage.base_url` (or its variable) turns catalog enrichment on.
 
 ### `[mcp]`
 
-`signalman mcp` serves signalman's typed capabilities as read-only tools over the Model Context Protocol ([MCP](mcp.md)), decision 0008.
+signalman serves its typed capabilities over the Model Context Protocol ([MCP](mcp.md)), decision 0008: five read-only tools and one write tool gated by `mcp.allow_write`. `signalman mcp` serves them alone, over stdio or Streamable HTTP; `signalman serve` also mounts them at `/mcp` on its own listener whenever `mcp.enabled` is true and `SIGNALMAN_MCP_TOKEN` is set ([Transports](mcp.md#transports)).
 
 | File key | Environment | Default | Meaning |
 |---|---|---|---|
-| `mcp.enabled` | `SIGNALMAN_MCP_ENABLED` | `true` | a kill switch: `signalman mcp` still has to be invoked, nothing auto-starts it, but a deployment can force it off |
-| `mcp.transport` | `SIGNALMAN_MCP_TRANSPORT` | `"stdio"` | `"stdio"` or `"http"`; only `"stdio"` is implemented today, `"http"` fails clearly at start-up |
-| `mcp.bind_address` | `SIGNALMAN_MCP_BIND_ADDRESS` | unset | listen address for the `"http"` transport; unused by `"stdio"` |
+| `mcp.enabled` | `SIGNALMAN_MCP_ENABLED` | `true` | a kill switch: `signalman mcp` still has to be invoked, nothing auto-starts it, but a deployment can force it off; `false` also stops `serve` from mounting `/mcp` |
+| `mcp.transport` | `SIGNALMAN_MCP_TRANSPORT` | `"stdio"` | how `signalman mcp` serves: `"stdio"` (one client per process) or `"http"` (Streamable HTTP at `/mcp` on `mcp.bind_address`, behind `SIGNALMAN_MCP_TOKEN`); `serve` ignores it |
+| `mcp.bind_address` | `SIGNALMAN_MCP_BIND_ADDRESS` | unset | listen address for `signalman mcp` with `"http"`; required there, start-up fails naming it when unset; unused by `"stdio"` and by `serve`, which uses `server.addr` |
+| `mcp.allowed_hosts` | `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) | empty | hostnames or `host:port` the `/mcp` endpoint answers to, checked on the `Host` header (rmcp's DNS-rebinding guard); empty disables the check, because the bearer token already defeats that attack |
 | `mcp.allow_write` | `SIGNALMAN_MCP_ALLOW_WRITE` | `false` | registers the `apply_qualification` write tool; an MCP client that can call it can write alert tags, a qualification note, and an incident attachment (never create an incident, decision 0001); off by default |
 
 ### `[policy]`, file only

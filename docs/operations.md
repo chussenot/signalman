@@ -2,7 +2,7 @@
 title: Operations
 description: Running the webhook receiver, its endpoints and manual commands, the upstream limits that bound throughput, what the logs contain, and how each failure shows up.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [operations]
 ---
 
@@ -28,6 +28,7 @@ Startup fails fast on a missing secret, an unknown key in the configuration file
 | `GET /healthz` | liveness; returns `ok` |
 | `POST /changes`, `GET /changes` | the [change feed](changes.md); routed only when `SIGNALMAN_CHANGES_TOKEN` is set; bearer token |
 | `POST /changes/argocd`, `POST /changes/gitlab` | native adapters: Argo CD `Application` (bearer) and GitLab webhooks (`X-Gitlab-Token`) |
+| `POST /mcp` | the [MCP server](mcp.md#transports) over Streamable HTTP; mounted only when `SIGNALMAN_MCP_TOKEN` is set; bearer token; stateless, no session id, so replicas need no session affinity |
 
 There is no readiness endpoint yet; upstream reachability is only known when a flow runs.
 
@@ -75,6 +76,7 @@ stringData:
   INCIDENTIO_API_KEY: "…"
   INCIDENTIO_WEBHOOK_SECRET: "whsec_…"
   BACKSTAGE_TOKEN: "…"
+  SIGNALMAN_MCP_TOKEN: "…"                  # mounts /mcp on the same port; omit to serve no MCP over HTTP
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -117,6 +119,8 @@ spec:
 ```
 
 Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold. There is no hot reload by design: a rollout is the unit of change, visible in the deployment history.
+
+The two replicas share nothing. For `/mcp` that is fine: every `POST` is one request and one response with no session, so the `Service` needs no session affinity. For the change feed it means each replica holds its own window, as the limits table below notes.
 
 ## Limits that bound throughput
 

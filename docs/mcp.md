@@ -1,16 +1,16 @@
 ---
 title: MCP server
-description: The Model Context Protocol tools signalman serves over stdio — five always-on read-only tools and one gated write tool — what each one answers, how to configure and connect to them, and what still writes nothing on purpose.
+description: The Model Context Protocol tools signalman serves over stdio and Streamable HTTP, five always-on read-only tools and one gated write tool, what each one answers, the two transports and how they are served, how to configure and connect to them, and what still writes nothing on purpose.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [mcp, agents, decisions]
 ---
 
 # MCP server
 
-`signalman mcp` serves six tools over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP): the same typed judgments the CLI and the webhook receiver produce, callable from an agent. Five are always registered and read-only. A sixth, `apply_qualification`, writes to incident.io and is registered only when `mcp.allow_write` is turned on (default off; see [Writing](#writing)). [Decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md) is why this exists and why it stops here: signalman is a tool for agents, not an agent. No tool creates an incident, and none runs a generative model. Every tool is a thin wrapper over a function the CLI subcommands already call, so there is exactly one implementation of each capability.
+signalman serves six tools over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP): the same typed judgments the CLI and the webhook receiver produce, callable from an agent. `signalman mcp` serves them alone, over stdio or Streamable HTTP; `signalman serve` also mounts them at `/mcp` next to the webhook receiver (see [Transports](#transports)). Five are always registered and read-only. A sixth, `apply_qualification`, writes to incident.io and is registered only when `mcp.allow_write` is turned on (default off; see [Writing](#writing)). [Decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md) is why this exists and why it stops here: signalman is a tool for agents, not an agent. No tool creates an incident, and none runs a generative model. Every tool is a thin wrapper over a function the CLI subcommands already call, so there is exactly one implementation of each capability.
 
-Contract source: the official Rust SDK, [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (`modelcontextprotocol/rust-sdk`), server and stdio transport features only.
+Contract source: the official Rust SDK, [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (`modelcontextprotocol/rust-sdk`), with its server, stdio transport and Streamable HTTP server features (`transport-streamable-http-server`). The binary carries no MCP client and no OAuth feature.
 
 ## Tools
 
@@ -44,20 +44,43 @@ signalman records the calling MCP client's name and version (read once from `ini
 
 ```toml
 [mcp]
-enabled = true      # a kill switch; signalman mcp still has to be invoked
-transport = "stdio" # "http" is accepted but not yet implemented
+enabled = true      # a kill switch; signalman mcp still has to be invoked, and serve mounts /mcp only when true
+transport = "stdio" # how `signalman mcp` serves: "stdio" or "http"; `serve` ignores it
+# bind_address = "0.0.0.0:8081"          # required by `signalman mcp` with transport = "http"; unused otherwise
+# allowed_hosts = ["signalman.example.com"] # Host-header allow list for /mcp; empty (default) disables the check
 allow_write = false # registers apply_qualification when true; off by default
 ```
 
-`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOW_WRITE` override the file; see [Configuration](configuration.md#mcp). `allow_write` is the only setting that changes which tools exist: turning it on registers `apply_qualification` (see [Writing](#writing)); leaving it off keeps the server entirely read-only. Everything else the tools need — the TypeSafe model, the software catalog, the change feed, the routing thresholds — is the same `[typesafe]`, `[incidentio]`, `[backstage]`, `[flow]`, `[policy]` and `[triage]` configuration the rest of the binary reads. Secrets (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `BACKSTAGE_TOKEN`) are environment only, as everywhere else.
+`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) and `SIGNALMAN_MCP_ALLOW_WRITE` override the file; see [Configuration](configuration.md#mcp). `allow_write` is the only setting that changes which tools exist: turning it on registers `apply_qualification` (see [Writing](#writing)); leaving it off keeps the server entirely read-only. It applies over both transports. Everything else the tools need, the TypeSafe model, the software catalog, the change feed, the routing thresholds, is the same `[typesafe]`, `[incidentio]`, `[backstage]`, `[flow]`, `[policy]` and `[triage]` configuration the rest of the binary reads. Secrets (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `BACKSTAGE_TOKEN`) are environment only, as everywhere else; so is `SIGNALMAN_MCP_TOKEN`, the bearer token the HTTP transport requires (see [Transports](#transports)).
 
-`recent_changes` is honest about a real limitation: the [change feed](changes.md) is per-process, in-memory state. A `signalman mcp` process running over stdio, separate from `signalman serve`, never receives `POST /changes`, so the tool always reports an empty list with a note explaining why. Streamable HTTP, mounted on the same router `serve` runs, would share the feed; it is not implemented yet (`signalman-4gp.7`).
+`recent_changes` depends on where the server runs, because the [change feed](changes.md) is per-process, in-memory state. Mounted at `/mcp` by `signalman serve`, the tool reads the same change log `POST /changes` writes in that process, so it is live; this is the first configuration in which it is. A `signalman mcp` process, over stdio or over HTTP, never receives `POST /changes`, so there the tool always reports an empty list with a note explaining why.
+
+## Transports
+
+The same `Server` (`src/mcp.rs`) is reachable two ways. Over **stdio**, `signalman mcp` speaks newline-delimited JSON-RPC on stdin and stdout, one client per process, trusted by the process boundary; the client launches it. Over **Streamable HTTP** (`src/mcp/http.rs`), the server is mounted at `POST /mcp` on an axum router behind a bearer token, and any number of clients reach it over the network. The tool list is identical: `qualify_alert` is a forced dry run over HTTP exactly as over stdio, and `apply_qualification` is registered over HTTP if and only if `mcp.allow_write` is true.
+
+HTTP is served in two configurations:
+
+| Process | When `/mcp` is served | Listener | Change feed |
+|---|---|---|---|
+| `signalman serve` | `mcp.enabled` is true (default) and `SIGNALMAN_MCP_TOKEN` is set | `server.addr`, next to `POST /webhooks/incidentio` and `POST /changes`; `mcp.transport` and `mcp.bind_address` are ignored | shared: `recent_changes` reads what `POST /changes` recorded in this process |
+| `signalman mcp` with `mcp.transport = "http"` | `mcp.enabled` is true (the command refuses to start otherwise); start-up fails naming `mcp.bind_address` (`SIGNALMAN_MCP_BIND_ADDRESS`) or `SIGNALMAN_MCP_TOKEN` when either is unset | `mcp.bind_address`, serving `/mcp` and `GET /healthz` only | none: no webhook route, no `POST /changes`; `recent_changes` is empty as over stdio, and the start-up log says so |
+
+`serve` logs at start-up whether `/mcp` was mounted and, if not, why (`SIGNALMAN_MCP_TOKEN` unset, or `mcp.enabled = false`). The MCP-only HTTP process deliberately has no `/changes` route of its own: a process that needs a live feed runs `serve`, which hosts `/mcp` next to `POST /changes`. One place to post changes, one place to be reached.
+
+**Stateless by construction.** The endpoint runs rmcp's `StreamableHttpService` with legacy session mode off, JSON responses on and a session manager that never creates a session. There is no `Mcp-Session-Id`; each `POST /mcp` is one JSON-RPC request answered by one JSON response. rmcp falls back to an SSE stream for a request only if the handler emits a notification before its result, which no signalman tool does. The consequences: two replicas behind one Kubernetes Service need no session affinity; a graceful shutdown has no long-lived streams to drain; `GET /mcp` and `DELETE /mcp` answer `405`, since there is no standalone SSE stream to open and no session to delete. The MCP specification allows a session-less server; Claude Code and rmcp clients handle it.
+
+**The token.** `SIGNALMAN_MCP_TOKEN` is environment only, like every other secret ([decision 0006](decisions/0006-layered-configuration.md)). A token-checking layer sits in front of rmcp's service, so a request without `Authorization: Bearer <token>` (compared in constant time) never reaches the protocol handler; it is refused with `401` and `WWW-Authenticate: Bearer`. It is a separate secret from `INCIDENTIO_WEBHOOK_SECRET` (incident.io authenticating to signalman) and from `SIGNALMAN_CHANGES_TOKEN` (delivery tooling authenticating to signalman): an agent is a third party with its own credential, revocable on its own. A test proves the feed token does not open `/mcp` and the MCP token does not open `/changes`.
+
+**`allowed_hosts`.** `mcp.allowed_hosts` (`SIGNALMAN_MCP_ALLOWED_HOSTS`, comma-separated) is rmcp's DNS-rebinding guard on the `Host` header, hostnames or `host:port`. Empty, the default, disables the check. That is deliberate: the guard exists for local servers a browser could be tricked into reaching, and a browser cannot attach this bearer token, so the token already closes that door. Operators who want to pin the hostnames the endpoint answers to set it anyway; a test shows a request to `127.0.0.1` refused when only `signalman.example.com` is listed.
+
+The HTTP transport is covered by `tests/mcp_http.rs` on a real TCP listener. Like everything else in this repository, it has not been exercised against a live account.
 
 ## Connecting a client
 
 ### Claude Code
 
-Add to `.mcp.json` in the repository, or the equivalent user-level configuration:
+Over stdio, add to `.mcp.json` in the repository, or the equivalent user-level configuration:
 
 ```json
 {
@@ -77,11 +100,33 @@ Add to `.mcp.json` in the repository, or the equivalent user-level configuration
 
 `BACKSTAGE_TOKEN` is only needed when the catalog backend requires authentication. `SIGNALMAN_CONFIG` (or `--config` is not available for an MCP-launched process; use the environment variable) points at the same configuration file `serve` uses, so the two share one reviewed set of thresholds and wording.
 
+Over HTTP, point at a running `serve` or `signalman mcp` and send the token:
+
+```json
+{
+  "mcpServers": {
+    "signalman": {
+      "type": "http",
+      "url": "https://signalman.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${SIGNALMAN_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+Claude Code expands `${VAR}` from its environment when it reads `.mcp.json`, so the token stays out of the file. No secrets for TypeSafe, incident.io or Backstage are needed on the client side: the server process holds them.
+
+### rmcp clients
+
+`StreamableHttpClientTransportConfig::auth_header` takes the bare token; rmcp prepends `Bearer ` itself.
+
 ### incident.io's own AI features
 
-incident.io has been adding AI and assistant features to the product; whether and how it lets an organisation register an external MCP server is a question for incident.io's current documentation, not something signalman controls or has verified. If it does, `signalman mcp` is a standard stdio MCP server and needs nothing special to be pointed at.
+incident.io has been adding AI and assistant features to the product; whether and how it lets an organisation register an external MCP server is a question for incident.io's current documentation, not something signalman controls or has verified. If it does, signalman is a standard MCP server over stdio or Streamable HTTP and needs nothing special to be pointed at.
 
 ## Trying it locally
+
+Over stdio:
 
 ```sh
 mise run build
@@ -89,10 +134,23 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
   | TYPESAFE_API_KEY=… INCIDENTIO_API_KEY=… target/release/signalman mcp
 ```
 
-prints the `initialize` response and exits once stdin closes. For interactive exploration, the [MCP Inspector](https://modelcontextprotocol.io/legacy/tools/inspector) speaks the same protocol: `npx @modelcontextprotocol/inspector signalman mcp`.
+prints the `initialize` response and exits once stdin closes.
+
+Over HTTP, with `serve` running on the default address and `SIGNALMAN_MCP_TOKEN` exported in both shells:
+
+```sh
+curl -sS http://127.0.0.1:8080/mcp \
+  -H "authorization: Bearer $SIGNALMAN_MCP_TOKEN" \
+  -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke-test","version":"0"}}}'
+```
+
+prints the same `initialize` response as one JSON body. Without the header the answer is `401` with `WWW-Authenticate: Bearer`.
+
+For interactive exploration, the [MCP Inspector](https://modelcontextprotocol.io/legacy/tools/inspector) speaks the same protocol. Over stdio: `npx @modelcontextprotocol/inspector signalman mcp`. Over HTTP: `npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:8081/mcp`, then add the `Authorization` header in its UI.
 
 ## What is not here
 
 - **Writing, beyond `apply_qualification`.** No tool notifies an owner, and no tool other than `apply_qualification` tags an alert, writes a note or attaches an incident. `apply_qualification` itself is gated behind `mcp.allow_write` (default off) and documented above under [Writing](#writing).
-- **Streamable HTTP** (`signalman-4gp.7`). `mcp.transport = "http"` is accepted in configuration and fails clearly at start-up naming the bead; it would mount the same tools on the router `serve` already runs, under its own bearer-token secret, not the webhook signing secret (a webhook is incident.io authenticating to signalman, this is the reverse).
+- **OAuth or OIDC in front of `/mcp`.** The endpoint checks one bearer token and nothing else. Put an ingress or gateway in front of it for anything more, such as per-agent identities, TLS termination or rate limits.
 - **Investigation or remediation.** A tool answers one typed question; it does not decide what to do next, retry, or chain calls. That is the calling agent's job, which is the point of [decision 0008](decisions/0008-signalman-is-a-tool-for-agents.md).

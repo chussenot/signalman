@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-23
 tags: [overview]
 ---
 
@@ -33,7 +33,7 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 - Resolves the alerting service in the Backstage catalog: owner group and dependency neighbours become the owner options, the component record and TechDocs runbook join the state, and the owning group can be notified through the Notifications plugin.
 - Triages an alert file from the CLI, optionally pulling live incidents as duplicate candidates, enriching from the catalog, and forwarding the enriched alert to an incident.io HTTP alert source.
 - Emits one JSON document per triaged alert: the judgments with their probabilities, the decision, the thresholds that produced it, and what was written back. The schema is committed and a test fails when the code and the file drift apart, so a script or an agent can read the document without reading the source.
-- Serves the same judgments as read-only tools over the Model Context Protocol (`signalman mcp`), so an agent can qualify an alert, list related alerts and open incidents, and look up an owner, without ever writing to incident.io or Backstage.
+- Serves the same judgments as tools over the Model Context Protocol, over stdio or HTTP, so an agent can qualify an alert, list related alerts and open incidents, and look up an owner. Those tools are read-only; one optional write tool, off by default, applies a reviewed outcome back to incident.io.
 - Exposes the TypeSafe client as a library: a question returns a typed handle, and reading the answer through that handle yields a Rust enum, a probability, or a score. A response of the wrong shape is an error, not a misread number.
 
 ## What it does not do
@@ -71,7 +71,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
 | [Change feed](docs/changes.md) | Pushing deploys and changes into the triage, wiring Argo CD, Flux and GitHub Actions |
-| [MCP server](docs/mcp.md) | The read-only tools an agent calls, connecting a client, what still writes nothing |
+| [MCP server](docs/mcp.md) | The tools an agent calls, stdio and Streamable HTTP, connecting a client, what still writes nothing |
 | [Backstage bridge](docs/backstage.md) | Catalog ownership, TechDocs runbooks, notifications, registering signalman |
 | [Configuration](docs/configuration.md) | The four layers, every setting, Kubernetes |
 | [Operations](docs/operations.md) | Running, health, limits, failure modes |

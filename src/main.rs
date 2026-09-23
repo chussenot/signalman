@@ -27,6 +27,7 @@ use signalman::eval;
 use signalman::incidentio::types::{AlertEvent, AlertEventAck, AlertStatus};
 use signalman::incidentio::webhook::WebhookSecret;
 use signalman::incidentio::{self, Triager, WriteBack};
+use signalman::mcp::http::McpToken;
 use signalman::outcome::{self, AlertRef, IncidentRef, Outcome};
 use signalman::serve::{AppState, Limits, router};
 use signalman::triage::{Alert, Decision, OpenIncident, TriageAnswers, TriageQuestions, decide};
@@ -40,7 +41,8 @@ use tracing_subscriber::EnvFilter;
     about = "TypeSafe-powered alert triage with incident.io and Backstage",
     after_help = "Precedence, lowest to highest: built-in default, configuration file, \
 environment variable, flag. Secrets (TYPESAFE_API_KEY, INCIDENTIO_API_KEY, \
-INCIDENTIO_WEBHOOK_SECRET, BACKSTAGE_TOKEN) are environment only."
+INCIDENTIO_WEBHOOK_SECRET, BACKSTAGE_TOKEN, SIGNALMAN_CHANGES_TOKEN, \
+SIGNALMAN_MCP_TOKEN) are environment only."
 )]
 struct Cli {
     /// Configuration file (TOML). Otherwise SIGNALMAN_CONFIG, then
@@ -77,11 +79,15 @@ enum Command {
         #[command(flatten)]
         flow: FlowArgs,
     },
-    /// Serve signalman's read-only tools over the Model Context Protocol
-    /// (decision 0008): qualify_alert, related_alerts, recent_changes,
-    /// lookup_owner, open_incidents. Never writes to incident.io or
-    /// Backstage. [file: mcp.enabled, mcp.transport, env: SIGNALMAN_MCP_ENABLED,
-    /// SIGNALMAN_MCP_TRANSPORT].
+    /// Serve signalman's tools over the Model Context Protocol (decision
+    /// 0008): qualify_alert, related_alerts, recent_changes, lookup_owner,
+    /// open_incidents, all read-only, plus apply_qualification when
+    /// mcp.allow_write is on. Over stdio, or over Streamable HTTP at /mcp on
+    /// mcp.bind_address behind SIGNALMAN_MCP_TOKEN. `serve` also mounts /mcp
+    /// when that token is set. [file: mcp.enabled, mcp.transport,
+    /// mcp.bind_address, mcp.allow_write; env: SIGNALMAN_MCP_ENABLED,
+    /// SIGNALMAN_MCP_TRANSPORT, SIGNALMAN_MCP_BIND_ADDRESS,
+    /// SIGNALMAN_MCP_ALLOW_WRITE].
     Mcp,
     /// incident.io utilities.
     #[command(subcommand)]
@@ -749,9 +755,30 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
         max_queued: cfg.server.max_queued_triages,
         timeout: cfg.server.triage_timeout(),
     };
+    // The MCP server gets its own clone: `Server::new` forces dry run on it,
+    // and the change log inside is shared, so `recent_changes` over HTTP sees
+    // what `POST /changes` records here.
+    let mcp_triager = triager.clone();
     let mut state = AppState::with_limits(secret, triager, limits);
     state.changes_token = changes_token;
-    let app = router(Arc::new(state));
+    let mut app = router(Arc::new(state));
+    match (cfg.mcp.enabled, McpToken::from_env()) {
+        (true, Some(token)) => {
+            app = app.merge(signalman::mcp::http::router(
+                signalman::mcp::Server::new(mcp_triager, cfg.mcp.allow_write),
+                token,
+                &cfg.mcp.allowed_hosts,
+            ));
+            tracing::info!(
+                allow_write = cfg.mcp.allow_write,
+                "MCP server mounted at /mcp over Streamable HTTP (decision 0008)"
+            );
+        }
+        (true, None) => {
+            tracing::info!("MCP over HTTP not mounted: SIGNALMAN_MCP_TOKEN is not set");
+        }
+        (false, _) => tracing::info!("MCP over HTTP not mounted: mcp.enabled is false"),
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, dry_run, note = cfg.flow.note, related_window_minutes = cfg.flow.related_window_minutes, max_concurrent = limits.max_concurrent, max_queued = limits.max_queued, timeout_seconds = limits.timeout.as_secs(), "listening for incident.io webhooks at /webhooks/incidentio");
     axum::serve(listener, app)
@@ -760,35 +787,65 @@ async fn serve(cfg: &Config, insecure_skip_verify: bool, dry_run: bool) -> Resul
     Ok(())
 }
 
-/// Serve the MCP tools. `qualify_alert` is always dry run:
-/// [`signalman::mcp::Server::new`] forces it on the wrapped `Triager`
-/// regardless of `cfg`, and this function never passes a `dry_run` flag to
-/// `triager` either, so the invariant holds twice over.
-/// `apply_qualification` is gated separately by `cfg.mcp.allow_write`.
+/// Serve the MCP tools on their own, over stdio or Streamable HTTP.
+/// `qualify_alert` is always dry run: [`signalman::mcp::Server::new`] forces
+/// it on the wrapped `Triager` regardless of `cfg`, and this function never
+/// passes a `dry_run` flag to `triager` either, so the invariant holds twice
+/// over. `apply_qualification` is gated separately by `cfg.mcp.allow_write`.
+///
+/// The HTTP transport here is MCP-only: no webhook route and no change
+/// feed, so `recent_changes` is empty exactly as over stdio. A process that
+/// needs the feed runs `serve`, which mounts `/mcp` next to `POST /changes`.
 async fn mcp_cmd(cfg: &Config) -> Result<(), AnyError> {
     if !cfg.mcp.enabled {
         return Err("mcp.enabled is false".into());
     }
-    match cfg.mcp.transport {
-        McpTransport::Http => {
-            return Err(concat!(
-                "mcp.transport = \"http\" is not implemented yet; use \"stdio\". ",
-                "Tracked as signalman-4gp.7."
-            )
-            .into());
-        }
-        McpTransport::Stdio => {}
-    }
     let triager = triager(cfg, incidentio_client(cfg)?, true)?;
-    tracing::info!(
-        allow_write = cfg.mcp.allow_write,
-        "MCP server listening on stdio (decision 0008)"
-    );
-    let service = signalman::mcp::Server::new(triager, cfg.mcp.allow_write)
-        .serve(rmcp::transport::stdio())
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "MCP server failed to start"))?;
-    service.waiting().await?;
+    let server = signalman::mcp::Server::new(triager, cfg.mcp.allow_write);
+    match cfg.mcp.transport {
+        McpTransport::Stdio => {
+            tracing::info!(
+                allow_write = cfg.mcp.allow_write,
+                "MCP server listening on stdio (decision 0008)"
+            );
+            let service = server
+                .serve(rmcp::transport::stdio())
+                .await
+                .inspect_err(|e| tracing::error!(error = %e, "MCP server failed to start"))?;
+            service.waiting().await?;
+        }
+        McpTransport::Http => {
+            let Some(addr) = cfg.mcp.bind_address else {
+                return Err(concat!(
+                    "mcp.transport = \"http\" needs a listen address: set mcp.bind_address ",
+                    "(SIGNALMAN_MCP_BIND_ADDRESS), for example \"0.0.0.0:8081\""
+                )
+                .into());
+            };
+            let token = McpToken::from_env().ok_or_else(|| {
+                format!(
+                    "{} is not set; the HTTP transport requires a bearer token",
+                    signalman::mcp::http::TOKEN_ENV
+                )
+            })?;
+            let app = axum::Router::new()
+                .route("/healthz", axum::routing::get(|| async { "ok" }))
+                .merge(signalman::mcp::http::router(
+                    server,
+                    token,
+                    &cfg.mcp.allowed_hosts,
+                ));
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tracing::info!(
+                %addr,
+                allow_write = cfg.mcp.allow_write,
+                "MCP server listening at /mcp over Streamable HTTP (decision 0008); no change feed here, run `serve` to share one"
+            );
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await?;
+        }
+    }
     Ok(())
 }
 
