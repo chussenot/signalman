@@ -235,7 +235,7 @@ impl Fake {
         let mut score = 0.0;
         for (i, p) in probabilities.into_iter().enumerate() {
             probs.insert(i.to_string(), Probability::new(p)?);
-            legend.insert(i.to_string(), format!("level {i}"));
+            legend.insert(i.to_string(), Value::String(format!("level {i}")));
             score += p * i as f64;
         }
         Ok(self.with_answer(

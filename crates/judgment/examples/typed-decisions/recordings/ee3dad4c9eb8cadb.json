@@ -1,0 +1,76 @@
+{
+  "case": "ee3dad4c9eb8cadb",
+  "response": {
+    "model": "laya-rl-agent",
+    "answers": {
+      "action": {
+        "type": "choice",
+        "choice": "answer_directly",
+        "probabilities": {
+          "answer_directly": 0.3837,
+          "close_no_action": 0.0536,
+          "escalate_to_human": 0.2176,
+          "execute_refund": 0.0448,
+          "request_information": 0.3004
+        },
+        "confidence": 0.1572
+      },
+      "category": {
+        "type": "choice",
+        "choice": "delivery",
+        "probabilities": {
+          "account": 0.0586,
+          "billing": 0.0571,
+          "delivery": 0.7691,
+          "refund": 0.0556,
+          "technical": 0.0595
+        },
+        "confidence": 0.4655
+      },
+      "churn_risk": {
+        "type": "score",
+        "score": 1.1512,
+        "legend": {
+          "0": "No sign of dissatisfaction.",
+          "1": "Mild frustration, but the relationship is intact.",
+          "2": "Clearly unhappy; repeat problems or explicit complaints.",
+          "3": "Imminent: threatening to cancel, dispute or leave."
+        },
+        "probabilities": {
+          "0": 0.1823,
+          "1": 0.5406,
+          "2": 0.2207,
+          "3": 0.0564
+        },
+        "confidence": 0.1788
+      },
+      "needs_human": {
+        "type": "noul",
+        "noul": 0.4443
+      },
+      "urgency": {
+        "type": "score",
+        "score": 1.399,
+        "legend": {
+          "0": "No time pressure; can wait indefinitely.",
+          "1": "Routine; handle within the normal queue.",
+          "2": "Elevated; should be handled within the same week.",
+          "3": "Critical; requires action within the same day."
+        },
+        "probabilities": {
+          "0": 0.0504,
+          "1": 0.578,
+          "2": 0.2938,
+          "3": 0.0778
+        },
+        "confidence": 0.2599
+      }
+    },
+    "usage": {
+      "input_tokens": 1261,
+      "output_tokens": 0
+    }
+  },
+  "elapsed_ms": 3345,
+  "request_hash": "ee3dad4c9eb8cadb"
+}

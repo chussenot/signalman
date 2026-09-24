@@ -1,0 +1,67 @@
+{
+  "case": "5f3c15d719839f1e",
+  "response": {
+    "model": "laya-rl-agent",
+    "answers": {
+      "discrepancy_severity": {
+        "type": "score",
+        "score": 2.1622,
+        "legend": {
+          "0": "None: everything reconciles.",
+          "1": "Trivial: rounding or a cosmetic difference.",
+          "2": "Moderate: a real difference worth confirming.",
+          "3": "Material: a large or unexplained difference."
+        },
+        "probabilities": {
+          "0": 0.0879,
+          "1": 0.0754,
+          "2": 0.4233,
+          "3": 0.4134
+        },
+        "confidence": 0.1793
+      },
+      "disposition": {
+        "type": "choice",
+        "choice": "manual_review",
+        "probabilities": {
+          "approve": 0.1403,
+          "hold": 0.2509,
+          "manual_review": 0.4936,
+          "reject": 0.1152
+        },
+        "confidence": 0.12
+      },
+      "duplicate": {
+        "type": "noul",
+        "noul": 0.1178
+      },
+      "matches_order": {
+        "type": "noul",
+        "noul": 0.1602
+      },
+      "urgency": {
+        "type": "score",
+        "score": 2.2069,
+        "legend": {
+          "0": "No time pressure; can wait indefinitely.",
+          "1": "Routine; handle within the normal queue.",
+          "2": "Elevated; should be handled within the same week.",
+          "3": "Critical; requires action within the same day."
+        },
+        "probabilities": {
+          "0": 0.0228,
+          "1": 0.1252,
+          "2": 0.4741,
+          "3": 0.3778
+        },
+        "confidence": 0.2295
+      }
+    },
+    "usage": {
+      "input_tokens": 1721,
+      "output_tokens": 0
+    }
+  },
+  "elapsed_ms": 4118,
+  "request_hash": "5f3c15d719839f1e"
+}

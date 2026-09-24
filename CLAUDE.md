@@ -73,8 +73,10 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   `Outcome` document (`validate`, `decision`, `answers`, `expected_tags`) —
   never add a second write path that trusts free-form input instead.
 - Tests never call a real API: wiremock for both clients, hand-built answers
-  for policy. Nothing has been verified against a live account yet; say so
-  in docs where it matters.
+  for policy. The one exception is `crates/judgment/tests/live.rs`, all
+  `#[ignore]`, run by hand against `JUDGMENT_LIVE_BASE_URL`
+  (`docs/judgment-laya-typed-decisions.md`). Nothing has been verified
+  against a live TypeSafe account yet; say so in docs where it matters.
 - Markdown under `docs/` and the README carries frontmatter (`title`,
   `description`, `status`, `last_reviewed`, `tags`). `docs/llms.txt` and
   `docs/llms-full.txt` are generated from the `mkdocs.yml` nav and that

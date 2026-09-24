@@ -2,7 +2,7 @@
 title: Laya as a model provider
 description: What Laya is, how signalman ran against it unchanged through a local System One-compatible shim, what the three example alerts measured on CPU, and why Jev stays the default until an evaluation on real alert history says otherwise.
 status: experiment
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-24
 tags: [typesafe, laya, model, evaluation]
 ---
 
@@ -51,3 +51,5 @@ None of this contradicts the model card, which states that the base checkpoints 
 Laya can stand in for Jev at the wire level today, and it cannot stand in for Jev at the judgment level today. The path to a real answer runs through the [evaluation harness](roadmap.md#triage-quality-signalman-ufg): replay labelled historical alerts through both models, compare accuracy, calibration and decision agreement per question, fine-tune Laya on the training split with the published notebook, refit its temperatures on our data, and then decide with numbers whether self-hosting (a GPU, tens of milliseconds, no per-token cost, alert text never leaving the network) beats the API. Tracked as `signalman-ufg.5`.
 
 Until then Jev remains the default `typesafe.model`, and the only Laya artefact in the repository is the shim.
+
+Since this page was written the typed client became the `judgment` crate and Laya grew its own server, `laya-serve`, so the shim is no longer the only way to run it. [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) records the crate's compatibility run against that server and the `typed-decisions` checkpoint on the benchmark it was fine-tuned for, with the ignored live tests and the replay example that produced the numbers.

@@ -28,6 +28,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | Why the typed client is the `judgment` crate, separate from the triager, and how signalman uses it | [TypeSafe client](typesafe-client.md) |
 | How to use the judgment core in another project | [TypeSafe client](typesafe-client.md), the crate README |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
+| Whether the judgment crate works against Laya, and what the benchmark measured | [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |
 | What is unverified or missing | [Roadmap](roadmap.md) |

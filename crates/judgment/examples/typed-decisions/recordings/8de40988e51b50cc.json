@@ -1,0 +1,69 @@
+{
+  "case": "8de40988e51b50cc",
+  "response": {
+    "model": "laya-rl-agent",
+    "answers": {
+      "credential_compromise": {
+        "type": "noul",
+        "noul": 0.5722
+      },
+      "disposition": {
+        "type": "choice",
+        "choice": "investigate",
+        "probabilities": {
+          "close_benign": 0.0784,
+          "contain": 0.2939,
+          "investigate": 0.4778,
+          "monitor": 0.1499
+        },
+        "confidence": 0.1366
+      },
+      "severity": {
+        "type": "score",
+        "score": 2.5761,
+        "legend": {
+          "0": "Negligible: no access to anything sensitive.",
+          "1": "Low: limited access, easily reversed.",
+          "2": "Moderate: access to internal systems or non-public data.",
+          "3": "High: access to production, secrets or customer data.",
+          "4": "Critical: active compromise of crown-jewel systems."
+        },
+        "probabilities": {
+          "0": 0.0234,
+          "1": 0.1396,
+          "2": 0.2466,
+          "3": 0.4182,
+          "4": 0.1722
+        },
+        "confidence": 0.1453
+      },
+      "true_positive": {
+        "type": "noul",
+        "noul": 0.6927
+      },
+      "urgency": {
+        "type": "score",
+        "score": 2.4976,
+        "legend": {
+          "0": "No time pressure; can wait indefinitely.",
+          "1": "Routine; handle within the normal queue.",
+          "2": "Elevated; should be handled within the same week.",
+          "3": "Critical; requires action within the same day."
+        },
+        "probabilities": {
+          "0": 0.0283,
+          "1": 0.0721,
+          "2": 0.2733,
+          "3": 0.6263
+        },
+        "confidence": 0.3233
+      }
+    },
+    "usage": {
+      "input_tokens": 1409,
+      "output_tokens": 0
+    }
+  },
+  "elapsed_ms": 3356,
+  "request_hash": "8de40988e51b50cc"
+}
