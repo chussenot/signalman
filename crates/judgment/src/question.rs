@@ -206,6 +206,16 @@ impl Questions {
         self.map.get(id)
     }
 
+    /// The question ids, in wire order.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.map.keys().map(String::as_str)
+    }
+
+    /// The questions with their ids, in wire order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Question)> {
+        self.map.iter().map(|(k, q)| (k.as_str(), q))
+    }
+
     /// Add a yes/no question.
     pub fn noul(
         &mut self,

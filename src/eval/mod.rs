@@ -12,13 +12,22 @@
 //! Cases are JSON Lines: one object per line with an `id`, an `alert` in the
 //! shape `signalman triage` accepts, and an `expected` block whose fields
 //! are all optional. Only labelled fields are graded.
+//!
+//! The measuring is [`judgment::eval`]'s: recordings, one [`Judgment`] per
+//! answer and label, and [`QuestionMetrics`] per question. What is
+//! signalman's is the mapping from the triage answers to labels, and the
+//! decision the policy reaches from them.
 
-pub mod metrics;
+/// Scoring rules, re-exported from the judgment crate.
+pub use judgment::eval::metrics;
+/// The generic measuring types, re-exported from the judgment crate.
+pub use judgment::eval::{ECE_BINS, Judgment, Latency, QuestionMetrics, Recording};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
+use judgment::SystemOne;
 use serde::{Deserialize, Serialize};
 
 use crate::answer::Response;
@@ -26,14 +35,10 @@ use crate::triage::{
     Alert, Decision, Impact, NO_DUPLICATE, OwnerCandidates, Policy, Texts, TriageAnswers,
     TriageQuestions, decide,
 };
-use crate::{Client, Request};
 
 /// The decision's kind, as graded. The vocabulary belongs to the outcome
 /// contract, which publishes it; the harness grades against the same values.
 pub use crate::outcome::Action;
-
-/// Bins for expected calibration error.
-pub const ECE_BINS: usize = 10;
 
 /// One labelled alert.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,38 +71,6 @@ pub struct Expected {
     pub action: Option<Action>,
 }
 
-/// A raw model response kept for replay.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Recording {
-    /// The case it answers.
-    pub case: String,
-    /// The response as received.
-    pub response: Response,
-    /// Wall-clock time of the call.
-    pub elapsed_ms: u64,
-}
-
-/// One graded judgment.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Judgment {
-    /// What the model chose (or the policy's reading of it).
-    pub predicted: String,
-    /// The label, when given.
-    pub expected: Option<String>,
-    /// `predicted == expected`, when labelled.
-    pub correct: Option<bool>,
-    /// The model's confidence in `predicted`: the Choice or Score
-    /// confidence, or `max(p, 1 - p)` for a Noul.
-    pub confidence: f64,
-    /// Probability the model put on the expected option, when labelled.
-    pub p_expected: Option<f64>,
-    /// The full distribution, keyed by option.
-    pub probabilities: BTreeMap<String, f64>,
-    /// False when the question was not asked for this state (no open
-    /// incidents, no recent changes) and the answer is the implied one.
-    pub asked: bool,
-}
-
 /// One graded case.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Graded {
@@ -121,27 +94,6 @@ pub struct Graded {
     pub output_tokens: u64,
 }
 
-/// Metrics for one question over the labelled cases.
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
-pub struct QuestionMetrics {
-    /// Cases with a label for this question.
-    pub labelled: usize,
-    /// Correct predictions.
-    pub correct: usize,
-    /// `correct / labelled`.
-    pub accuracy: Option<f64>,
-    /// Mean multi-class Brier score (0 perfect, 2 worst).
-    pub brier: Option<f64>,
-    /// Expected calibration error of the prediction confidence.
-    pub ece: Option<f64>,
-    /// Mean confidence when right.
-    pub confidence_when_right: Option<f64>,
-    /// Mean confidence when wrong.
-    pub confidence_when_wrong: Option<f64>,
-    /// `expected -> predicted -> count`.
-    pub confusion: BTreeMap<String, BTreeMap<String, usize>>,
-}
-
 /// Metrics for the decision.
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct DecisionMetrics {
@@ -153,17 +105,6 @@ pub struct DecisionMetrics {
     pub accuracy: Option<f64>,
     /// `expected -> reached -> count`.
     pub confusion: BTreeMap<String, BTreeMap<String, usize>>,
-}
-
-/// Latency summary in milliseconds.
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
-pub struct Latency {
-    /// Median.
-    pub p50_ms: Option<f64>,
-    /// 95th percentile.
-    pub p95_ms: Option<f64>,
-    /// Mean.
-    pub mean_ms: Option<f64>,
 }
 
 /// The report.
@@ -214,9 +155,23 @@ pub enum Error {
     /// Replay found no recording for a case.
     #[error("no recording for case {0} (expected {1})")]
     MissingRecording(String, String),
+    /// Reading or writing a recording.
+    #[error(transparent)]
+    Recording(judgment::eval::Error),
     /// Building questions or reading answers.
     #[error(transparent)]
     TypeSafe(#[from] crate::Error),
+}
+
+impl From<judgment::eval::Error> for Error {
+    fn from(e: judgment::eval::Error) -> Self {
+        match e {
+            judgment::eval::Error::MissingRecording { case, path } => {
+                Self::MissingRecording(case, path)
+            }
+            other => Self::Recording(other),
+        }
+    }
 }
 
 /// Result alias.
@@ -266,18 +221,12 @@ pub struct Setup<'a> {
 /// Call the model for every case, grade, and optionally record each raw
 /// response as `<record>/<id>.json`.
 pub async fn run(
-    client: &Client,
+    backend: &dyn SystemOne,
     model: &str,
     cases: &[Case],
     setup: &Setup<'_>,
     record: Option<&Path>,
 ) -> Result<Report> {
-    if let Some(dir) = record {
-        std::fs::create_dir_all(dir).map_err(|source| Error::Io {
-            path: dir.display().to_string(),
-            source,
-        })?;
-    }
     let mut graded = Vec::with_capacity(cases.len());
     for case in cases {
         let questions = TriageQuestions::for_alert_with_texts(
@@ -286,30 +235,19 @@ pub async fn run(
             setup.texts,
         )?;
         let state = TriageQuestions::state(&case.alert);
-        let request = Request {
-            state: &state,
-            model,
-            questions: &questions.questions,
-        };
         let started = Instant::now();
-        let response = client.evaluate(&request).await?;
+        let response = backend.answer(&state, model, &questions.questions).await?;
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(dir) = record {
-            let path = dir.join(format!("{}.json", case.id));
-            let rec = Recording {
-                case: case.id.clone(),
-                response: response.clone(),
-                elapsed_ms,
-            };
-            let text = serde_json::to_string_pretty(&rec).map_err(|source| Error::Json {
-                context: path.display().to_string(),
-                source,
-            })?;
-            // Committed recordings end with a newline like any text file.
-            std::fs::write(&path, text + "\n").map_err(|source| Error::Io {
-                path: path.display().to_string(),
-                source,
-            })?;
+            judgment::eval::write_recording(
+                dir,
+                &Recording {
+                    case: case.id.clone(),
+                    response: response.clone(),
+                    elapsed_ms,
+                    request_hash: None,
+                },
+            )?;
         }
         graded.push(grade(
             case,
@@ -327,13 +265,7 @@ pub async fn run(
 pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>) -> Result<Report> {
     let mut graded = Vec::with_capacity(cases.len());
     for case in cases {
-        let path = dir.join(format!("{}.json", case.id));
-        let text = std::fs::read_to_string(&path)
-            .map_err(|_| Error::MissingRecording(case.id.clone(), path.display().to_string()))?;
-        let rec: Recording = serde_json::from_str(&text).map_err(|source| Error::Json {
-            context: path.display().to_string(),
-            source,
-        })?;
+        let rec = judgment::eval::read_recording(dir, &case.id)?;
         let questions = TriageQuestions::for_alert_with_texts(
             &case.alert,
             setup.candidates.clone(),
@@ -384,7 +316,7 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
         .collect();
     out.insert(
         "owner".into(),
-        judge(
+        Judgment::new(
             a.owner.chosen.clone(),
             expected.owner.clone(),
             a.owner.confidence.value(),
@@ -402,7 +334,7 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
         .collect();
     out.insert(
         "impact".into(),
-        judge(
+        Judgment::new(
             Impact::from_level(a.impact.nearest_level())
                 .key()
                 .to_owned(),
@@ -415,13 +347,13 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
 
     out.insert(
         "actionable".into(),
-        judge_noul(a.actionable.yes.value(), expected.actionable, true),
+        Judgment::noul(a.actionable.yes.value(), expected.actionable, true),
     );
 
     out.insert(
         "duplicate_of".into(),
         match &a.duplicate_of {
-            Some(dup) => judge(
+            Some(dup) => Judgment::new(
                 dup.chosen.clone(),
                 expected.duplicate_of.clone(),
                 dup.confidence.value(),
@@ -433,7 +365,7 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
             ),
             // Not asked: there were no open incidents, so the implied answer
             // is `none` with certainty.
-            None => judge(
+            None => Judgment::new(
                 NO_DUPLICATE.to_owned(),
                 expected.duplicate_of.clone(),
                 1.0,
@@ -446,57 +378,20 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
     out.insert(
         "caused_by_change".into(),
         match a.caused_by_change {
-            Some(n) => judge_noul(n.yes.value(), expected.caused_by_change, true),
+            Some(n) => Judgment::noul(n.yes.value(), expected.caused_by_change, true),
             // Not asked: no recent changes were listed, so the implied
             // answer is no.
-            None => judge_noul(0.0, expected.caused_by_change, false),
+            None => Judgment::noul(0.0, expected.caused_by_change, false),
         },
     );
 
     out
 }
 
-fn judge(
-    predicted: String,
-    expected: Option<String>,
-    confidence: f64,
-    probabilities: BTreeMap<String, f64>,
-    asked: bool,
-) -> Judgment {
-    let correct = expected.as_ref().map(|e| *e == predicted);
-    let p_expected = expected
-        .as_ref()
-        .map(|e| probabilities.get(e).copied().unwrap_or(0.0));
-    Judgment {
-        predicted,
-        expected,
-        correct,
-        confidence,
-        p_expected,
-        probabilities,
-        asked,
-    }
-}
-
-fn judge_noul(p_yes: f64, expected: Option<bool>, asked: bool) -> Judgment {
-    let predicted = if p_yes >= 0.5 { "yes" } else { "no" };
-    judge(
-        predicted.to_owned(),
-        expected.map(|b| if b { "yes".to_owned() } else { "no".to_owned() }),
-        p_yes.max(1.0 - p_yes),
-        BTreeMap::from([("yes".to_owned(), p_yes), ("no".to_owned(), 1.0 - p_yes)]),
-        asked,
-    )
-}
-
 /// Aggregate graded cases.
 #[allow(clippy::cast_precision_loss)] // counts and milliseconds, far below 2^52
 pub fn report(graded: Vec<Graded>) -> Report {
-    let mut questions: BTreeMap<String, QuestionMetrics> = BTreeMap::new();
-    let mut brier: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut calib: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
-    let mut right: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut wrong: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut by_question: BTreeMap<String, Vec<&Judgment>> = BTreeMap::new();
     let mut decision = DecisionMetrics::default();
     let mut latencies = Vec::with_capacity(graded.len());
     let mut models = BTreeSet::new();
@@ -508,38 +403,7 @@ pub fn report(graded: Vec<Graded>) -> Report {
         input_tokens += g.input_tokens;
         output_tokens += g.output_tokens;
         for (qid, j) in &g.judgments {
-            let m = questions.entry(qid.clone()).or_default();
-            let (Some(expected), Some(correct)) = (&j.expected, j.correct) else {
-                continue;
-            };
-            m.labelled += 1;
-            if correct {
-                m.correct += 1;
-                right.entry(qid.clone()).or_default().push(j.confidence);
-            } else {
-                wrong.entry(qid.clone()).or_default().push(j.confidence);
-            }
-            *m.confusion
-                .entry(expected.clone())
-                .or_default()
-                .entry(j.predicted.clone())
-                .or_default() += 1;
-            let pairs: Vec<(bool, f64)> = j
-                .probabilities
-                .iter()
-                .map(|(k, p)| (k == expected, *p))
-                .collect();
-            // An expected option the model never offered counts as a miss
-            // with probability zero.
-            let mut b = metrics::brier(&pairs);
-            if !j.probabilities.contains_key(expected) {
-                b += 1.0;
-            }
-            brier.entry(qid.clone()).or_default().push(b);
-            calib
-                .entry(qid.clone())
-                .or_default()
-                .push((j.confidence, correct));
+            by_question.entry(qid.clone()).or_default().push(j);
         }
         if let Some(exp) = g.expected_action {
             decision.labelled += 1;
@@ -554,18 +418,10 @@ pub fn report(graded: Vec<Graded>) -> Report {
                 .or_default() += 1;
         }
     }
-    for (qid, m) in &mut questions {
-        if m.labelled > 0 {
-            m.accuracy = Some(m.correct as f64 / m.labelled as f64);
-        }
-        m.brier = brier.get(qid).and_then(|v| metrics::mean(v));
-        m.ece = calib
-            .get(qid)
-            .filter(|v| !v.is_empty())
-            .map(|v| metrics::expected_calibration_error(v, ECE_BINS));
-        m.confidence_when_right = right.get(qid).and_then(|v| metrics::mean(v));
-        m.confidence_when_wrong = wrong.get(qid).and_then(|v| metrics::mean(v));
-    }
+    let questions = by_question
+        .into_iter()
+        .map(|(qid, js)| (qid, QuestionMetrics::summarise(js, ECE_BINS)))
+        .collect();
     if decision.labelled > 0 {
         decision.accuracy = Some(decision.correct as f64 / decision.labelled as f64);
     }
@@ -574,11 +430,7 @@ pub fn report(graded: Vec<Graded>) -> Report {
         models,
         questions,
         decision,
-        latency: Latency {
-            p50_ms: metrics::percentile(&latencies, 0.5),
-            p95_ms: metrics::percentile(&latencies, 0.95),
-            mean_ms: metrics::mean(&latencies),
-        },
+        latency: Latency::of(&latencies),
         input_tokens,
         output_tokens,
         graded,

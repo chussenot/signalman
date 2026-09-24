@@ -2,13 +2,13 @@
 title: Evaluation harness
 description: How to replay labelled alerts through the triage questions, what the report measures (accuracy, Brier, calibration error, decision agreement, latency), how recording and replay separate inference from policy tuning, and how to use it to compare models.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-24
 tags: [evaluation, triage, tuning, typesafe]
 ---
 
 # Evaluation harness
 
-Thresholds, wording and the fallback team list are configuration; the model's calibration in this domain is an empirical question. `signalman eval` answers it with numbers: it replays labelled alerts through the same questions the webhook flow asks, grades every judgment against what a responder said, applies the policy, and reports how often the decision would have been right.
+Thresholds, wording and the fallback team list are configuration; the model's calibration in this domain is an empirical question. `signalman eval` answers it with numbers: it replays labelled alerts through the same questions the webhook flow asks, grades every judgment against what a responder said, applies the policy, and reports how often the decision would have been right. The measuring itself, recordings, per-question grading and the calibration metrics, lives in the `judgment` crate ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)) so any project built on it can grade its own judgments the same way; this page describes the harness signalman builds on top: its labels, its question-to-label mapping and the decision it grades.
 
 ```mermaid
 flowchart LR

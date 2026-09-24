@@ -806,7 +806,7 @@ Policy tests build answers by round-tripping a fake API response through the rea
 
 # Evaluation harness
 
-Thresholds, wording and the fallback team list are configuration; the model's calibration in this domain is an empirical question. `signalman eval` answers it with numbers: it replays labelled alerts through the same questions the webhook flow asks, grades every judgment against what a responder said, applies the policy, and reports how often the decision would have been right.
+Thresholds, wording and the fallback team list are configuration; the model's calibration in this domain is an empirical question. `signalman eval` answers it with numbers: it replays labelled alerts through the same questions the webhook flow asks, grades every judgment against what a responder said, applies the policy, and reports how often the decision would have been right. The measuring itself, recordings, per-question grading and the calibration metrics, lives in the `judgment` crate ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)) so any project built on it can grade its own judgments the same way; this page describes the harness signalman builds on top: its labels, its question-to-label mapping and the decision it grades.
 
 ```mermaid
 flowchart LR
@@ -1904,8 +1904,10 @@ crates/judgment/   the judgment crate (decision 0010): the typed client, reusabl
   src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
   src/answer.rs    Answer wire shape, Probability/Confidence, typed views
   src/error.rs     TypeSafe-side error enum
+  src/backend.rs   SystemOne: the trait; Client, Fake, Recorder and Replay implement it
+  src/eval/        recordings, one Judgment per answer and label, per-question metrics
   src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
-  tests/client.rs  the client against a mock TypeSafe API
+  tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
 src/               the signalman application, depending on judgment by path
   triage/          Alert state, owner candidates, questions, Decision policy
   eval/            evaluation harness: cases, grading, metrics, record and replay
@@ -2098,7 +2100,7 @@ flowchart LR
 | Triage types | `src/triage/mod.rs` | The alert, candidate and answer types that questions, policy and note share, and the built-in team list used when no catalog is configured |
 | Outcome contract | `src/outcome.rs` | One versioned JSON document per triage, so scripts, log pipelines and agents index fields instead of parsing prose; schema committed and drift-tested |
 | MCP server | `src/mcp.rs`, `src/mcp/http.rs` | Lets agents call the judgments the CLI already exposes: five read-only tools plus the gated `apply_qualification`, over one dry-run `Triager`, on stdio or Streamable HTTP behind a bearer token ([MCP](mcp.md)) |
-| Evaluation harness | `src/eval/` | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model |
+| Evaluation harness | `src/eval/`, `crates/judgment/src/eval/` | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model The measuring (recordings, per-question grading, accuracy, Brier, calibration error) is the judgment crate's; the labels, the question-to-label mapping and the decision are signalman's |
 | TypeSafe client | `crates/judgment/src/client.rs`, `crates/judgment/src/question.rs`, `crates/judgment/src/answer.rs`, `crates/judgment/src/error.rs` | The wire contract, typed handles and validated probabilities: wire strings become Rust types at one place |
 | incident.io client | `src/incidentio/client.rs`, `types.rs`, `error.rs` | Incidents, alerts, tags, attachments, notes and alert-source events; wire types ignore unknown fields so an API addition is not an outage |
 | Backstage client | `src/backstage/client.rs`, `types.rs`, `error.rs` | Catalog queries, the TechDocs search index and notifications; lenient entity types so catalog drift is a named `Decode` error, not a panic |

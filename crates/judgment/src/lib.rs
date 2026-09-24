@@ -49,6 +49,11 @@
 //! * [`answer`] validates probabilities and converts wire answers into typed
 //!   views through those handles.
 //! * [`client`] talks HTTP with SDK-equivalent defaults, retries and errors.
+//! * [`backend`] is where answers come from: [`SystemOne`] is the trait,
+//!   [`Client`] one implementation, [`Fake`], [`Recorder`] and [`Replay`]
+//!   the others, so a test or an offline run never needs the model.
+//! * [`eval`] measures: recordings for replay, graded judgments, accuracy,
+//!   Brier score and calibration error per question.
 //! * [`observer`] is the seam an application uses to count tokens and failed
 //!   attempts in its own metrics; the crate itself only emits `tracing` spans.
 //!
@@ -56,9 +61,11 @@
 //! the typed answers alone, for a project that brings its own transport.
 
 pub mod answer;
+pub mod backend;
 #[cfg(feature = "http")]
 pub mod client;
 pub mod error;
+pub mod eval;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod observer;
@@ -67,6 +74,7 @@ pub mod question;
 pub use answer::{
     Answer, Choice, Confidence, FromAnswer, Noul, Probability, Response, Score, Usage,
 };
+pub use backend::{Fake, Recorder, Replay, SystemOne};
 #[cfg(feature = "http")]
 pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
 pub use error::{Error, Result};

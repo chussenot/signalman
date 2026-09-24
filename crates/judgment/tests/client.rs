@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use judgment::{Client, Error, Questions, RetryPolicy, options};
+use judgment::{Client, Error, Questions, RetryPolicy, SystemOne, options};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -175,4 +175,31 @@ async fn lists_models() {
         .unwrap();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].name, "jev-latest");
+}
+
+/// `Client` is a `SystemOne`: the same request through the trait object.
+#[tokio::test]
+async fn the_client_answers_through_the_backend_trait() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(
+            json!({ "model": "jev-latest", "state": { "message": "hi" } }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.13.0",
+            "answers": { "urgent": { "type": "noul", "noul": 0.9 } },
+            "usage": { "input_tokens": 3, "output_tokens": 1 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = Questions::new();
+    let urgent = q.noul("urgent", "Is `message` urgent?", None).unwrap();
+    let backend: &dyn SystemOne = &client(&server, RetryPolicy::none());
+    let response = backend
+        .answer(&json!({ "message": "hi" }), "jev-latest", &q)
+        .await
+        .unwrap();
+    assert!(response.get(&urgent).unwrap().is_yes(0.5));
 }

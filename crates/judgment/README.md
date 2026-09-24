@@ -62,6 +62,15 @@ crates for the same API were not adopted.
   and `RetryPolicy` (two retries, exponential backoff with jitter,
   `Retry-After` honoured up to a cap), errors by remedy (`Unauthorized`,
   `InvalidRequest`, `RateLimited`, `Overloaded`, `Transport`, `Decode`).
+- `backend`: `SystemOne`, the one-method trait every source of answers
+  implements, so the code consuming judgments never knows which. `Client` is
+  one; `Fake` answers from a table and remembers what it was asked; `Recorder`
+  writes every response of another backend to a directory; `Replay` answers
+  from that directory offline, keyed by a content hash of the request.
+- `eval`: what makes calibrated probabilities trustworthy rather than assumed.
+  Recordings for replay, one `Judgment` per answer and label, and per-question
+  `QuestionMetrics`: accuracy, Brier score, expected calibration error,
+  confidence when right and when wrong.
 - `observer`: the seam an application uses to count tokens and failed attempts
   in its own metrics. The crate emits `tracing` spans and nothing else.
 

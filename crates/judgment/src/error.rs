@@ -49,9 +49,22 @@ pub enum Error {
         #[source]
         source: reqwest::Error,
     },
-    /// The response was not the JSON shape the API documents.
+    /// The response was not the JSON shape the API documents, or a
+    /// recording was not one.
     #[error("could not decode API response: {0}")]
     Decode(#[from] serde_json::Error),
+    /// A recording could not be read or written.
+    #[error("cannot access {context}: {source}")]
+    Io {
+        /// What was being accessed.
+        context: String,
+        /// Cause.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A replay had no recording for the request.
+    #[error("no recording for request {0}; record it first")]
+    NoRecording(String),
     /// A question id was added twice to one request.
     #[error("duplicate question id {0:?}")]
     DuplicateQuestionId(String),
