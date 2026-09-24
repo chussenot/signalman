@@ -1,5 +1,47 @@
 //! Answers: wire shapes, validated probabilities, and the typed views that
 //! [`Response::get`] produces from a [`crate::Handle`].
+//!
+//! # Two newtypes, not one `f64`
+//!
+//! The API returns two kinds of number in `[0, 1]`. A [`Probability`] is the
+//! model's estimate for one outcome: that the answer is yes, that this option
+//! is the right one. A [`Confidence`] is a summary of a whole Choice or Score
+//! distribution: how concentrated it is on one outcome. A caller thresholds
+//! them differently (act when the probability of yes is above 0.6; refuse to
+//! act when the confidence is below 0.5), and swapping them is a silent bug,
+//! so they are distinct types. Both refuse values outside `[0, 1]` on
+//! construction and on deserialisation: a wire value of 1.2 is
+//! [`Error::NotAProbability`] at decode time, never a number downstream. The
+//! cost is a `.value()` call wherever the raw `f64` is wanted.
+//!
+//! # What confidence means, and does not mean
+//!
+//! TypeSafe's [confidence page](https://docs.typesafe.ai/confidence) defines
+//! `confidence` as a statistic computed from the answer's own `probabilities`:
+//! concentrated on one option or level means high, spread out means low. It
+//! is a convenience the API computes so a caller can threshold without doing
+//! the arithmetic, and the full distribution is returned so a caller can
+//! compute a different measure. Noul answers carry none; `max(p, 1 - p)` is
+//! the usual stand-in and what [`crate::eval`] uses.
+//!
+//! Confidence is a measure of the model's certainty, not a permission to act.
+//! The same page's guidance is that the threshold is the caller's risk
+//! tolerance: gate a destructive action higher than a read-only one, treat
+//! low confidence as "route to a person", and set the numbers from observed
+//! results rather than by intuition. This crate supplies
+//! [`Confidence::at_least`] and nothing else; the policy is the caller's.
+//!
+//! # What `Response::get` checks
+//!
+//! [`Response::get`] takes the handle a question was added with and returns
+//! the answer as that handle's type. It fails with [`Error::MissingAnswer`]
+//! when the response has no answer under the handle's id; with
+//! [`Error::AnswerTypeMismatch`] when the answer is a different primitive
+//! than the handle was created for; with [`Error::UnknownOption`] when a
+//! typed Choice's chosen option, or any key in its distribution, is not in
+//! the Rust option set; and with [`Error::Decode`] when a Score's legend keys
+//! are not level indices. A [`Choice<String>`] from a dynamic choice passes
+//! its keys through unchecked, since there is no set to check them against.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -10,7 +52,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::question::Options;
 
-/// A number in `[0, 1]`, validated on construction and deserialisation.
+/// The model's estimate for one outcome, in `[0, 1]`, validated on
+/// construction and on deserialisation so an out-of-range wire value is an
+/// error and never a number downstream.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct Probability(f64);
@@ -55,9 +99,11 @@ impl fmt::Display for Probability {
     }
 }
 
-/// Model certainty derived from a Choice or Score distribution. Same domain
-/// as [`Probability`] but a distinct type: a confidence is not the probability
-/// of any particular outcome.
+/// How concentrated a Choice or Score distribution is on one outcome, from 0
+/// (flat) to 1 (all on one option). Same domain as [`Probability`] but a
+/// distinct type: a confidence is not the probability of any particular
+/// outcome, and a caller thresholds the two differently. The module docs say
+/// what it means and does not mean.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct Confidence(f64);
@@ -168,8 +214,11 @@ pub struct Response {
 impl Response {
     /// Read the answer for `handle` as its typed view.
     ///
-    /// Fails if the id is missing, the primitive differs from what the handle
-    /// was created for, or (for a typed Choice) the option is unknown.
+    /// Fails with [`Error::MissingAnswer`] if the id is absent,
+    /// [`Error::AnswerTypeMismatch`] if the primitive differs from what the
+    /// handle was created for, [`Error::UnknownOption`] if a typed Choice
+    /// names an option outside the enum, and [`Error::Decode`] if a Score's
+    /// legend is not indexed. The module docs explain each.
     pub fn get<A: FromAnswer>(&self, handle: &crate::Handle<A>) -> Result<A> {
         let id = handle.id();
         let answer = self

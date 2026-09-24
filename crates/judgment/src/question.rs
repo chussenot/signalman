@@ -7,6 +7,45 @@
 //! [`Handle<A>`] whose type parameter records what the answer must be, and
 //! [`crate::Response::get`] checks it, so mismatches surface as errors instead
 //! of a silently misread number.
+//!
+//! # Ids are for code, not for the model
+//!
+//! The id is the key the answer comes back under. The API does not send it to
+//! the model and does not use it in inference, so an id such as `is_urgent`
+//! tells the model nothing. The `instructions` must stand alone as the
+//! complete question. When it is about one part of the state, name that part
+//! by its backticked path (`` `message` ``, `` `alert.title` ``) so the model
+//! knows what to judge.
+//!
+//! # A Choice should carry a no-match option
+//!
+//! A Choice answer is always one of the options given, with the probability
+//! mass spread over them. When no option fits, the model still has to pick
+//! one, and a confident-looking wrong answer is the result. An `other` or
+//! `none_of_these` option gives the model a way to say so and gives the code a
+//! branch to route on. The [`options!`](crate::options) macro does not add one
+//! for you: what "none" means is part of the question's design, and the crate
+//! cannot know it for your set.
+//!
+//! # Static and dynamic option sets
+//!
+//! [`Questions::choice`] takes a Rust enum implementing [`Options`], so the
+//! option keys the API sees and the variants the code matches on are one
+//! definition and cannot drift. Some option sets exist only at runtime: the
+//! candidate records fetched from another system, the ids of the passages
+//! retrieved for a query. [`Questions::dynamic_choice`] takes those as
+//! `(key, description)` pairs and returns a handle to a [`Choice<String>`].
+//! That loses the enum and keeps everything else: the id check, the
+//! primitive check and the validated probabilities.
+//!
+//! # Limits are checked here
+//!
+//! The API allows at most 255 options per Choice and between 2 and 10 levels
+//! per Score, and rejects a violation with a 422. The builder enforces the
+//! same limits ([`MAX_CHOICE_OPTIONS`], [`MAX_SCORE_LEVELS`]) and rejects a
+//! duplicate id before anything is sent: the error names the question, and no
+//! round trip, retry or token is spent finding out. The cost is that the
+//! limits are duplicated here and must follow the API when it changes them.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -19,9 +58,12 @@ use serde_json::Value;
 use crate::answer::{Choice, Noul, Score};
 use crate::error::{Error, Result};
 
-/// Maximum options a Choice may define (API limit).
+/// Maximum options a Choice may define. The API's limit, checked by the
+/// builder so a violation is an error here rather than a 422 after a round
+/// trip.
 pub const MAX_CHOICE_OPTIONS: usize = 255;
-/// Maximum levels a Score may define (API limit).
+/// Maximum levels a Score may define. The API's limit, checked by the builder;
+/// the minimum is 2, since one level cannot be a scale.
 pub const MAX_SCORE_LEVELS: usize = 10;
 
 /// One question, as sent on the wire.
@@ -206,12 +248,15 @@ impl Questions {
         self.map.get(id)
     }
 
-    /// The question ids, in wire order.
+    /// The question ids, in wire order (sorted): what a backend must answer
+    /// and what a test asserts was asked.
     pub fn ids(&self) -> impl Iterator<Item = &str> {
         self.map.keys().map(String::as_str)
     }
 
-    /// The questions with their ids, in wire order.
+    /// The questions with their ids, in wire order, for a backend or a
+    /// harness that needs the questions themselves (a Choice's option keys, a
+    /// Score's levels) rather than only their ids.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Question)> {
         self.map.iter().map(|(k, q)| (k.as_str(), q))
     }
@@ -258,8 +303,14 @@ impl Questions {
         )
     }
 
-    /// Add a Choice whose options are only known at runtime (for example a
-    /// set of record ids). The answer is a [`Choice<String>`].
+    /// Add a Choice whose options are only known at runtime: candidate
+    /// records fetched from another system, passage ids for a query.
+    ///
+    /// Options are `(key, description)` pairs; a `None` description sends
+    /// `null`, as the API allows. The answer is a [`Choice<String>`] keyed by
+    /// those strings, so the check that a typed Choice gets from its enum
+    /// (every returned key is one the code knows) is the caller's to do. The
+    /// same 2 to [`MAX_CHOICE_OPTIONS`] limit applies and is checked here.
     pub fn dynamic_choice(
         &mut self,
         id: impl Into<String>,
@@ -281,7 +332,10 @@ impl Questions {
         )
     }
 
-    /// Add a Score over ordered levels (2 to 10, lowest first).
+    /// Add a Score over ordered levels, lowest first: 2 to
+    /// [`MAX_SCORE_LEVELS`], checked here. The answer is a [`Score`] whose
+    /// value is a probability-weighted position on these levels, so the order
+    /// given here is the meaning of that number.
     pub fn score(
         &mut self,
         id: impl Into<String>,

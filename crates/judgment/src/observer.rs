@@ -8,9 +8,12 @@
 //! it counts everything else. The default is a no-op, so nothing changes for a
 //! caller that does not care.
 //!
-//! Set one per client with [`crate::ClientBuilder::observer`], or once per
-//! process with [`set_global`]: a client without its own observer reports to
-//! the global one, the way `tracing` falls back to its global subscriber.
+//! Set one per client with [`crate::client::ClientBuilder::observer`], or
+//! once per process with [`set_global`]. Token usage goes to the client's own
+//! observer when it has one and to the global one otherwise, the way
+//! `tracing` falls back to its global subscriber. Failed attempts always go
+//! to the global one: the retry loop in [`crate::http`] is shared with
+//! clients that carry no observer, so it has no client to ask.
 
 use std::sync::{Arc, OnceLock};
 

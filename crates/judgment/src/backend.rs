@@ -5,14 +5,16 @@
 //! [`Client`](crate::client::Client), an
 //! open-weights model behind the same wire, a recording of an earlier run,
 //! or a fake with the answers a test wants. The trait exists so that the
-//! code consuming judgments never has to know which; a `Triager`, a harness
-//! or a test holds a `&dyn SystemOne` and the choice is made at
+//! code consuming judgments never has to know which; an application, a
+//! harness or a test holds a `&dyn SystemOne` and the choice is made at
 //! construction. It is also the seam that makes an official SDK, should
 //! one appear, an adapter rather than a rewrite.
 //!
 //! The state is a [`serde_json::Value`] rather than a generic `Serialize`
 //! so the trait can be used as a trait object; a typed state is one
 //! `serde_json::to_value` away, and [`SystemOne::answer_typed`] does it.
+//! The cost is one boxed future per call and that one conversion, both
+//! small next to a network round trip.
 //!
 //! Three implementations ship here besides the client: [`Fake`] answers
 //! from a table and remembers what it was asked; [`Recorder`] wraps another
@@ -171,21 +173,27 @@ impl Fake {
         self
     }
 
-    /// The wire answer for question `id`.
+    /// The wire answer for question `id`, stored as given: for a shape the
+    /// helpers below do not build, or to feed a real recorded answer back
+    /// through a fake.
     #[must_use]
     pub fn with_answer(mut self, id: impl Into<String>, answer: Answer) -> Self {
         self.answers.insert(id.into(), answer);
         self
     }
 
-    /// A Noul answer: the probability of yes.
+    /// A Noul answer: the probability of yes. Fails when `p_yes` is outside
+    /// `[0, 1]`, the same check the wire gets.
     pub fn noul(self, id: impl Into<String>, p_yes: f64) -> Result<Self> {
         let noul = Probability::new(p_yes)?;
         Ok(self.with_answer(id, Answer::Noul { noul }))
     }
 
     /// A Choice answer from `(option, probability)` pairs; the chosen option
-    /// is the most probable one and the confidence is as given.
+    /// is the most probable one and the confidence is as given. Fails when a
+    /// probability or the confidence is outside `[0, 1]`. Whether the
+    /// probabilities sum to 1 is not checked, since the wire layer does not
+    /// check it either.
     pub fn choice<'p>(
         self,
         id: impl Into<String>,
@@ -212,8 +220,9 @@ impl Fake {
     }
 
     /// A Score answer from one probability per level, lowest level first;
-    /// the score is the probability-weighted position and the legend the
-    /// level indices.
+    /// the score is the probability-weighted position and the legend names
+    /// the levels `level 0`, `level 1` and so on. Fails when a probability or
+    /// the confidence is outside `[0, 1]`.
     #[allow(clippy::cast_precision_loss)] // at most ten levels
     pub fn score(
         self,
@@ -240,7 +249,9 @@ impl Fake {
         ))
     }
 
-    /// Every request received so far, oldest first.
+    /// Every request received so far, oldest first: what a test asserts to
+    /// check that the code under test asked the right questions about the
+    /// right state with the right model.
     pub fn calls(&self) -> Vec<Call> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
     }
@@ -300,7 +311,8 @@ impl<B: SystemOne> Recorder<B> {
         }
     }
 
-    /// The wrapped backend.
+    /// The wrapped backend, for reading what it saw: a [`Fake`]'s calls, for
+    /// example.
     pub fn inner(&self) -> &B {
         &self.inner
     }
@@ -371,12 +383,14 @@ impl Replay {
         Ok(Self { by_hash })
     }
 
-    /// Number of requests this replay can answer.
+    /// Number of distinct requests this replay can answer.
     pub fn len(&self) -> usize {
         self.by_hash.len()
     }
 
-    /// True when nothing was recorded.
+    /// True when the directory held no hashed recording: it was never
+    /// recorded, or it was recorded by a harness keyed by case id, which
+    /// [`Replay::open`] skips.
     pub fn is_empty(&self) -> bool {
         self.by_hash.is_empty()
     }

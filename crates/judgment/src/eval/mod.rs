@@ -121,9 +121,16 @@ pub fn read_recording(dir: &Path, case: &str) -> Result<Recording> {
 }
 
 /// A stable content hash of a request: the same state and questions give
-/// the same hash whatever the key order or the model alias. FNV-1a over a
-/// canonical rendering, so it needs no dependency and does not move with
-/// the standard library's hasher.
+/// the same hash whatever order their keys were inserted in and whatever
+/// model alias was asked for.
+///
+/// It names recording files, so it must not change between runs, machines
+/// or toolchains. The standard library's `DefaultHasher` promises none of
+/// that (its algorithm and seeding may change between Rust versions), so
+/// this is FNV-1a over a canonical rendering of the JSON with keys sorted at
+/// every level: sixteen hex digits, no dependency, the same result anywhere.
+/// FNV is not collision-resistant against an adversary; for a directory of
+/// recordings an accidental collision is negligible.
 pub fn request_hash(state: &Value, questions: &Questions) -> String {
     let questions = serde_json::to_value(questions).unwrap_or(Value::Null);
     let mut canonical = String::new();
@@ -308,7 +315,9 @@ pub struct QuestionMetrics {
 impl QuestionMetrics {
     /// Aggregate the judgments of one question; unlabelled ones are
     /// counted in nothing. An expected option the model never offered counts
-    /// as a miss with probability zero.
+    /// as a miss with probability zero, so a label outside the option set
+    /// hurts the score rather than vanishing. `ece_bins` is usually
+    /// [`ECE_BINS`].
     #[allow(clippy::cast_precision_loss)] // counts, far below 2^52
     pub fn summarise<'a>(
         judgments: impl IntoIterator<Item = &'a Judgment>,

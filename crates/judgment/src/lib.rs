@@ -1,12 +1,19 @@
 //! # judgment
 //!
 //! Typed, calibrated judgments from [TypeSafe](https://docs.typesafe.ai) System
-//! One models (Jev) and backends that speak the same wire (Laya behind a shim).
-//! Extracted from the signalman alert triager (decision 0010) so any Rust
-//! project can build on the same layer without carrying that application.
+//! One models (Jev) and from any backend that speaks the same wire.
 //!
-//! TypeSafe's model, Jev, does not generate text. It evaluates a `state` (any
-//! JSON) against typed questions and returns calibrated judgments:
+//! ## The problem
+//!
+//! A generative model asked to classify something answers in prose, or in JSON
+//! it was told to produce. A field named `confidence` in that JSON is generated
+//! text, not a measured probability. The answer drifts between runs and between
+//! prompt versions, a parse failure becomes a failure of the decision it was
+//! meant to inform, and the decision itself is buried in the prose. None of
+//! that can carry an action that pages someone at night.
+//!
+//! A System One model does not generate text. It evaluates a `state` (any JSON)
+//! against typed questions and returns calibrated answers:
 //!
 //! | Primitive | Question | Answer |
 //! |---|---|---|
@@ -14,8 +21,52 @@
 //! | [`Choice`] | one of a defined set | chosen option, full distribution, confidence |
 //! | [`Score`] | degree on ordered levels | weighted position, per-level distribution, confidence |
 //!
-//! Code owns the workflow; the model supplies the judgment. This crate keeps
-//! that boundary typed end to end:
+//! Calibrated means the probabilities can be measured against outcomes and
+//! held to account ([`eval`] does the measuring). That lets code own the
+//! workflow: the model supplies a number, and the threshold that turns the
+//! number into an action is written, tested and tuned in code, with no new
+//! inference when the threshold changes. The application this crate came from
+//! chose calibrated judgments over generated text for that reason; this crate
+//! is that choice made reusable.
+//!
+//! ## What this crate guarantees
+//!
+//! The wire is a map of `id -> question` going out and `id -> answer` coming
+//! back, and nothing on it ties an answer to the type of the question it
+//! answers. This crate closes that gap on the Rust side:
+//!
+//! * A question's handle fixes its answer's type. [`Questions::noul`],
+//!   [`Questions::choice`] and [`Questions::score`] return a [`Handle`] whose
+//!   type parameter is the answer type. [`Response::get`] checks the id and the
+//!   primitive, and maps a typed Choice's option key back to the enum. A
+//!   mismatch is an [`Error`], never a misread number.
+//! * Probabilities are validated newtypes. [`Probability`] and [`Confidence`]
+//!   refuse values outside `[0, 1]` on construction and on deserialisation,
+//!   and they are distinct types, so a caller cannot threshold one as the
+//!   other.
+//! * Limits are checked before sending. 255 options per Choice, 2 to 10 levels
+//!   per Score and unique ids are enforced by the builder, so a bad question is
+//!   an error naming the question, not a 422 after a round trip.
+//! * Retries mirror the official SDK. The defaults are the Python SDK's, so
+//!   behaviour matches across languages and the worst case is bounded; the
+//!   reasoning is on [`RetryPolicy`].
+//!
+//! ## What it deliberately is not
+//!
+//! * Not a sync client, and no batching or streaming. The API documents one
+//!   endpoint and one request shape, and one request already carries many
+//!   questions. A caller that must block can block on the future.
+//! * Not a metrics backend. A library must not choose one for the application
+//!   that embeds it. The crate emits `tracing` spans and hands token usage and
+//!   failed attempts to an [`Observer`]; the application counts them where it
+//!   counts everything else.
+//! * Not tied to the hosted model. [`SystemOne`] is a one-method trait, and
+//!   the code that consumes judgments never knows whether they came from the
+//!   hosted model, a [`Fake`] in a test or a [`Replay`] of recorded answers.
+//!   Should TypeSafe publish an official Rust SDK, it slots in as one more
+//!   backend behind the same trait.
+//!
+//! ## Walkthrough
 //!
 //! ```no_run
 //! use judgment::{Client, Questions, options};
@@ -45,20 +96,28 @@
 //! # Ok(()) }
 //! ```
 //!
+//! ## Modules
+//!
 //! * [`question`] builds requests; each question returns a typed [`Handle`].
 //! * [`answer`] validates probabilities and converts wire answers into typed
 //!   views through those handles.
-//! * [`client`] talks HTTP with SDK-equivalent defaults, retries and errors.
+//! * [`client`] (feature `http`, on by default) talks HTTP with
+//!   SDK-equivalent defaults, retries and errors.
+//! * [`http`] (feature `http`) is the retry loop and
+//!   [`RetryPolicy`], public so another client over
+//!   `reqwest` can share them.
+//! * [`error`] is one enum, grouped by what fixes each variant.
 //! * [`backend`] is where answers come from: [`SystemOne`] is the trait,
-//!   [`Client`] one implementation, [`Fake`], [`Recorder`] and [`Replay`]
-//!   the others, so a test or an offline run never needs the model.
+//!   [`Client`] one implementation, [`Fake`],
+//!   [`Recorder`] and [`Replay`] the others.
 //! * [`eval`] measures: recordings for replay, graded judgments, accuracy,
 //!   Brier score and calibration error per question.
 //! * [`observer`] is the seam an application uses to count tokens and failed
-//!   attempts in its own metrics; the crate itself only emits `tracing` spans.
+//!   attempts in its own metrics.
 //!
-//! Without the default `http` feature the crate is the question builder and
-//! the typed answers alone, for a project that brings its own transport.
+//! Without the `http` feature the crate is the question builder, the typed
+//! answers, the backends other than the client, and the recordings and
+//! metrics, for a project that brings its own transport.
 
 pub mod answer;
 pub mod backend;

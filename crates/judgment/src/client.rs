@@ -1,9 +1,52 @@
 //! HTTP client for `POST /v1/systemone` and `GET /v1/models`.
 //!
-//! Defaults mirror the official SDKs: `TYPESAFE_API_KEY`, base URL
-//! `https://api.typesafe.ai`, model `jev-latest`, 10 s per-request timeout,
-//! two retries with exponential backoff and jitter on 408/429/5xx and on
-//! transport errors, honouring `Retry-After`.
+//! # Defaults
+//!
+//! The defaults mirror the official SDKs, so a call behaves the same from
+//! Rust as from Python and an incident seen in one is reproducible in the
+//! other: the key from `TYPESAFE_API_KEY`, base URL `https://api.typesafe.ai`,
+//! model `jev-latest`, a 10 s timeout per attempt, and two retries with
+//! exponential backoff and jitter. The user agent is `judgment/<crate
+//! version>`, so the API's logs can tell this client from the SDKs and from
+//! the application embedding it.
+//!
+//! # Retries
+//!
+//! A transient failure must not fail a call that a second attempt would have
+//! completed, and a persistent one must surface quickly enough for the caller
+//! to fall back. [`RetryPolicy`] sits between those two costs; its defaults
+//! are the Python SDK's, and the reasoning behind each field is on that type.
+//! In short: 408, 429 and every 5xx (TypeSafe's 529 included) are retried
+//! because they are transient by definition; 401 and 422 are not, because a
+//! retry cannot fix a key or a request body; `Retry-After` wins over the
+//! backoff when present, only up to `retry_after_max` and only in its
+//! delay-seconds form; and with the defaults a call makes at most three
+//! attempts of 10 s each plus two waits, so a caller knows the bound before
+//! it adds a deadline of its own.
+//!
+//! Every failed attempt, retried or not, is reported to the process-wide
+//! [`Observer`] under the service label `typesafe`, because a retried failure
+//! is still load on the upstream and still a symptom. Token usage of every
+//! successful response goes to the client's own observer when one was set on
+//! the builder, otherwise to the same process-wide one.
+//!
+//! # Errors
+//!
+//! The final response is classified by status into [`Error`]: 401 is
+//! [`Error::Unauthorized`]; 422 is [`Error::InvalidRequest`] with the body;
+//! 429 after the retries is [`Error::RateLimited`] with the last
+//! `Retry-After`; 529 after the retries is [`Error::Overloaded`]; any other
+//! non-success status is [`Error::Http`]; and a transport failure after the
+//! retries is [`Error::Transport`]. Each carries the attempt count where one
+//! applies. The key is marked sensitive and redacted from `Debug` output, so a
+//! client or builder printed with `{:?}` cannot leak it.
+//!
+//! # `GET /v1/models`
+//!
+//! [`Client::list_models`] calls an endpoint the official SDKs expose but the
+//! HTTP API reference does not document. It is observed rather than
+//! documented and could change without notice. It stays because a readiness
+//! probe and a model listing need it; nothing else in the crate depends on it.
 
 use std::fmt;
 use std::sync::Arc;
@@ -131,8 +174,9 @@ impl ClientBuilder {
         self
     }
 
-    /// Where this client reports token usage and failed attempts. Without
-    /// one it reports to [`crate::observer::global`].
+    /// Where this client reports token usage. Without one it reports to
+    /// [`crate::observer::global`]. Failed attempts always go to the global
+    /// observer, from the shared retry loop in [`crate::http`].
     #[must_use]
     pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self {
         self.observer = Some(observer);
@@ -239,7 +283,8 @@ impl Client {
         Ok(response)
     }
 
-    /// List the model names this account may send.
+    /// List the models this account may send. Observed rather than
+    /// documented: the SDKs expose it, the HTTP API reference does not.
     #[tracing::instrument(name = "typesafe.list_models", skip_all)]
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let url = self.url("v1/models")?;
