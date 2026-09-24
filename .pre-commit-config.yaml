@@ -39,7 +39,7 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy (pedantic, -D warnings)
-        entry: env RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features
+        entry: env RUSTFLAGS=-Dwarnings cargo clippy --workspace --all-targets --all-features
         language: system
         types: [rust]
         pass_filenames: false
@@ -66,7 +66,7 @@ repos:
 
       - id: cargo-test
         name: cargo test (pre-push)
-        entry: cargo test --all-features
+        entry: cargo test --workspace --all-features
         language: system
         pass_filenames: false
         always_run: true

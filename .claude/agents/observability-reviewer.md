@@ -18,7 +18,7 @@ that carries a note body or a token leaks it to every collector.
   are created in `Metrics::new` and recorded through the `record_*`
   functions; nothing else calls `global::meter`, `u64_counter`,
   `f64_histogram` or `observable_gauge`.
-- Every `pub async fn` on the three clients (`src/client.rs`,
+- Every `pub async fn` on the three clients (`crates/judgment/src/client.rs`,
   `src/incidentio/client.rs`, `src/backstage/client.rs` and
   `src/backstage/enrich.rs`) carries `#[tracing::instrument]` named
   `service.operation` (`typesafe.evaluate`, `incidentio.get_alert`,
@@ -44,8 +44,8 @@ that carries a note body or a token leaks it to every collector.
 ```sh
 grep -rn 'global::meter\|u64_counter\|f64_histogram\|observable_gauge' src/ | grep -v 'src/telemetry.rs'
 grep -rn 'instrument(' src/ | sed 's/.*name = "\([^"]*\)".*/\1/' | sort
-grep -n 'pub async fn' src/client.rs src/incidentio/client.rs src/backstage/client.rs src/backstage/enrich.rs
-grep -rn 'send_with_retries(' src/ | grep -v 'src/http.rs'
+grep -n 'pub async fn' crates/judgment/src/client.rs src/incidentio/client.rs src/backstage/client.rs src/backstage/enrich.rs
+grep -rn 'send_with_retries(' src/ | grep -v 'crates/judgment/src/http.rs'
 grep -n '"signalman\.' src/telemetry.rs docs/observability.md tests/telemetry.rs
 cargo test --test telemetry
 ```

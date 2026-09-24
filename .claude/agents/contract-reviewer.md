@@ -1,6 +1,6 @@
 ---
 name: contract-reviewer
-description: Reviews changes to the TypeSafe, incident.io, Backstage or MCP boundary (src/client.rs, src/question.rs, src/answer.rs, src/incidentio/**, src/backstage/**, src/serve.rs, src/mcp.rs, src/mcp/**) against the live API documentation and the protocol specification. Use after editing any of those files and before opening or updating a pull request.
+description: Reviews changes to the TypeSafe, incident.io, Backstage or MCP boundary (crates/judgment/src/client.rs, crates/judgment/src/question.rs, crates/judgment/src/answer.rs, src/incidentio/**, src/backstage/**, src/serve.rs, src/mcp.rs, src/mcp/**) against the live API documentation and the protocol specification. Use after editing any of those files and before opening or updating a pull request.
 tools: Read, Grep, Glob, Bash, WebFetch, Skill
 model: inherit
 color: blue
@@ -25,7 +25,7 @@ Read the live documents before judging; never rely on memory of either API.
 4. Error mapping: status codes the docs list are handled; retry only on the statuses the docs call transient.
 5. Webhook verification: signed content is `id.timestamp.raw body`, secret decoding, header names, tolerance.
 6. MCP: every tool wraps a function the CLI already calls; the tool description tells a model when to call it and what the result means; `apply_qualification` re-derives writes from the caller's `Outcome` and is registered only when `mcp.allow_write` is true; the bearer check runs before rmcp; `GET`/`DELETE /mcp` answer 405.
-7. Tests: a changed shape has a matching change in `tests/client.rs`, `tests/incidentio.rs`, `tests/webhook_server.rs`, `tests/mcp_server.rs` or `tests/mcp_http.rs`.
+7. Tests: a changed shape has a matching change in `crates/judgment/tests/client.rs`, `tests/incidentio.rs`, `tests/webhook_server.rs`, `tests/mcp_server.rs` or `tests/mcp_http.rs`.
 
 ## Report
 

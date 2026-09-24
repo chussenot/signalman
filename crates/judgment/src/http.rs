@@ -1,6 +1,7 @@
-//! HTTP plumbing shared by the TypeSafe and incident.io clients: retry policy,
-//! backoff, `Retry-After` parsing and a send loop that retries transient
-//! failures. Each client classifies the final response into its own error.
+//! HTTP plumbing any client over `reqwest` can share: retry policy, backoff,
+//! `Retry-After` parsing and a send loop that retries transient failures. The
+//! TypeSafe client uses it; signalman's incident.io and Backstage clients do
+//! too. Each client classifies the final response into its own error.
 
 use std::time::Duration;
 
@@ -97,9 +98,10 @@ pub struct Exhausted {
 ///
 /// Successful and non-retryable statuses return `Ok(Completed)` so the caller
 /// maps them; transport errors after the last retry return `Err(Exhausted)`.
-/// `service` labels every failed attempt in `signalman.upstream.errors`
-/// (`typesafe`, `incidentio`, `backstage`); the loop is the one place all
-/// three clients pass through, so it is where the count lives.
+/// `service` labels every failed attempt reported to the global
+/// [`crate::Observer`] (an application passes its own upstream names); the
+/// loop is the one place every client passes through, so it is where the
+/// count lives.
 pub async fn send_with_retries(
     policy: &RetryPolicy,
     service: &'static str,
@@ -113,12 +115,12 @@ pub async fn send_with_retries(
                 let status = resp.status();
                 let retry_after = parse_retry_after(resp.headers());
                 if !status.is_success() {
-                    crate::telemetry::record_upstream_error(service, status.as_str());
+                    crate::observer::global().on_failed_attempt(service, status.as_str());
                 }
                 let body = match resp.text().await {
                     Ok(b) => b,
                     Err(source) => {
-                        crate::telemetry::record_upstream_error(service, "transport");
+                        crate::observer::global().on_failed_attempt(service, "transport");
                         if attempt <= policy.max_retries {
                             let delay = policy.delay(attempt, None);
                             tracing::warn!(attempt, ?delay, error = %source, "body read failed; retrying");
@@ -150,7 +152,7 @@ pub async fn send_with_retries(
                 });
             }
             Err(source) => {
-                crate::telemetry::record_upstream_error(service, "transport");
+                crate::observer::global().on_failed_attempt(service, "transport");
                 if attempt <= policy.max_retries {
                     let delay = policy.delay(attempt, None);
                     tracing::warn!(attempt, ?delay, error = %source, "transport error; retrying");
@@ -180,13 +182,7 @@ pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs_f64)
 }
 
-/// The `Retry-After` clause of a rate-limit error message, empty when the
-/// server sent none. Shared by the client error types.
-pub(crate) fn retry_after_suffix(retry_after: Option<Duration>) -> String {
-    retry_after
-        .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
-        .unwrap_or_default()
-}
+pub use crate::error::retry_after_suffix;
 
 /// Truncate a response body for inclusion in an error message.
 pub fn truncate(mut s: String) -> String {

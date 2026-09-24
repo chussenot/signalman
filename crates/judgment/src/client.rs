@@ -6,6 +6,7 @@
 //! transport errors, honouring `Retry-After`.
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Url;
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::answer::Response;
 use crate::error::{Error, Result};
 use crate::http::{self, Completed, Exhausted};
+use crate::observer::Observer;
 use crate::question::Questions;
 
 /// Environment variable holding the API key: the one secret this client
@@ -57,13 +59,27 @@ struct ModelsResponse {
 }
 
 /// Builder for [`Client`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClientBuilder {
     api_key: Option<String>,
     base_url: String,
     model: String,
     timeout: Duration,
     retry: RetryPolicy,
+    observer: Option<Arc<dyn Observer>>,
+}
+
+impl fmt::Debug for ClientBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientBuilder")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("timeout", &self.timeout)
+            .field("retry", &self.retry)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("observer", &self.observer.as_ref().map(|_| "set"))
+            .finish()
+    }
 }
 
 impl Default for ClientBuilder {
@@ -74,6 +90,7 @@ impl Default for ClientBuilder {
             model: DEFAULT_MODEL.to_owned(),
             timeout: DEFAULT_TIMEOUT,
             retry: RetryPolicy::default(),
+            observer: None,
         }
     }
 }
@@ -114,6 +131,14 @@ impl ClientBuilder {
         self
     }
 
+    /// Where this client reports token usage and failed attempts. Without
+    /// one it reports to [`crate::observer::global`].
+    #[must_use]
+    pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     /// Build the client. Reads `TYPESAFE_API_KEY` if no key was set.
     pub fn build(self) -> Result<Client> {
         let api_key = self
@@ -131,7 +156,7 @@ impl ClientBuilder {
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .timeout(self.timeout)
-            .user_agent(concat!("signalman/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("judgment/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::Transport {
                 attempts: 0,
@@ -142,6 +167,7 @@ impl ClientBuilder {
             base_url,
             model: self.model,
             retry: self.retry,
+            observer: self.observer,
         })
     }
 }
@@ -153,6 +179,7 @@ pub struct Client {
     base_url: Url,
     model: String,
     retry: RetryPolicy,
+    observer: Option<Arc<dyn Observer>>,
 }
 
 impl fmt::Debug for Client {
@@ -208,11 +235,7 @@ impl Client {
             .await?;
         let response: Response = serde_json::from_str(&text)?;
         tracing::Span::current().record("input_tokens", response.usage.input_tokens);
-        crate::telemetry::record_typesafe_usage(
-            &response.model,
-            response.usage.input_tokens,
-            response.usage.output_tokens,
-        );
+        self.observer().on_usage(&response.model, &response.usage);
         Ok(response)
     }
 
@@ -225,6 +248,13 @@ impl Client {
             .await?;
         let parsed: ModelsResponse = serde_json::from_str(&text)?;
         Ok(parsed.models)
+    }
+
+    /// This client's observer, or the process-wide one.
+    fn observer(&self) -> Arc<dyn Observer> {
+        self.observer
+            .clone()
+            .unwrap_or_else(crate::observer::global)
     }
 
     fn url(&self, path: &str) -> Result<Url> {

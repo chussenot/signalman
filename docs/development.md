@@ -41,7 +41,7 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
 
@@ -69,12 +69,15 @@ flowchart TD
 ## Layout
 
 ```
-src/
-  client.rs        TypeSafe HTTP client
-  http.rs          shared retry loop, backoff, Retry-After
-  question.rs      Questions builder, Options trait, options! macro, Handle<A>
-  answer.rs        Answer wire shape, Probability/Confidence, typed views
-  error.rs         TypeSafe-side error enum
+crates/judgment/   the judgment crate (decision 0010): the typed client, reusable on its own
+  src/client.rs    TypeSafe HTTP client
+  src/http.rs      shared retry loop, backoff, Retry-After (the other clients use it too)
+  src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
+  src/answer.rs    Answer wire shape, Probability/Confidence, typed views
+  src/error.rs     TypeSafe-side error enum
+  src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
+  tests/client.rs  the client against a mock TypeSafe API
+src/               the signalman application, depending on judgment by path
   triage/          Alert state, owner candidates, questions, Decision policy
   eval/            evaluation harness: cases, grading, metrics, record and replay
   changes/         change feed: window and matching, Argo CD and GitLab adapters

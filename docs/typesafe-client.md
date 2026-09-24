@@ -2,13 +2,13 @@
 title: TypeSafe client
 description: How the Rust client implements the TypeSafe System One contract, ties each question to the type of its answer, validates probabilities, and retries transient failures.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-24
 tags: [typesafe, library]
 ---
 
 # TypeSafe client
 
-TypeSafe's model, Jev, evaluates a `state` (any JSON) against typed questions and returns calibrated judgments rather than text. The [live documentation](https://docs.typesafe.ai/llms.txt) is the contract; this page describes how the crate implements it. There is no official Rust SDK; the client mirrors the Python SDK's defaults so behaviour matches across languages.
+TypeSafe's model, Jev, evaluates a `state` (any JSON) against typed questions and returns calibrated judgments rather than text. The [live documentation](https://docs.typesafe.ai/llms.txt) is the contract; this page describes how the client implements it. Since [decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md) that client is its own crate, `judgment` (`crates/judgment/`), which signalman depends on by path and re-exports, so `signalman::Client` and `judgment::Client` are the same type; the module paths below are the crate's. There is no official Rust SDK; the client mirrors the Python SDK's defaults so behaviour matches across languages.
 
 | Primitive | Question | Answer |
 |---|---|---|
@@ -81,7 +81,7 @@ The `options!` macro writes the `Options` implementation from one definition: th
 
 A transient failure upstream (a timeout, a 429, a 5xx) must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The retry policy sits between those two costs.
 
-All three clients share one loop in `src/http.rs`, so the retry rules and the error counting are written once and every upstream behaves the same way under failure.
+All three clients share one loop in `crates/judgment/src/http.rs`, so the retry rules and the error counting are written once and every upstream behaves the same way under failure.
 
 ```mermaid
 flowchart TD

@@ -1289,6 +1289,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "judgment"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2278,11 +2292,11 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
- "fastrand",
  "hmac",
  "http-body-util",
  "jiff",
  "jsonschema",
+ "judgment",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

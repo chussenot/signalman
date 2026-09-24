@@ -1,7 +1,7 @@
 ---
 title: 0010 Extract the judgment core into a reusable crate
 description: The typed question and answer layer over System One models (Jev, Laya) becomes its own crate, a workspace member of this repository first and a published crate when a second consumer exists, so other Rust projects can build on calibrated judgments without carrying the alert-triage application.
-status: proposed
+status: accepted
 date: 2026-09-24
 decision-makers: []
 consulted: []
@@ -68,13 +68,13 @@ Chosen option: "A workspace member in this repository, published later", because
 
 Concretely:
 
-- The repository becomes a workspace whose root package stays `signalman`, so no path in `docs/`, `mise.toml`, the workflow or the harness moves. The new member lives at `crates/<name>/`, with `[workspace.package]` for edition, `rust-version` and licence, `[workspace.dependencies]` for shared versions and `[workspace.lints]` for the pedantic set, so both crates are held to the same bar.
+- The repository becomes a workspace whose root package stays `signalman`, so no path in `docs/`, `mise.toml`, the workflow or the harness moves. The new member lives at `crates/judgment/`, with `[workspace.package]` for edition, `rust-version` and licence, `[workspace.dependencies]` for shared versions and `[workspace.lints]` for the pedantic set, so both crates are held to the same bar.
 - The core's dependency footprint is the wire and nothing else: serde, serde_json, thiserror, tracing, and behind a default `http` feature reqwest with rustls, tokio (for the retry sleep) and fastrand. Without `http`, the questions, answers, recordings and metrics compile alone, for a project that brings its own transport.
 - The core gains one trait, `SystemOne`, with a single `evaluate`, implemented by `Client`, by a `Replay` backend over recordings and by a `Fake` for tests. signalman's `Triager` keeps holding a `Client` until a second backend is needed in the product; the trait exists so that an official SDK, a local model behind a different wire, or a shadow backend can be slotted in without touching consumers. This is the one place where the option-1 crates are ahead of us and where the extraction should close the gap.
 - The `options!` macro, `Handle<A>`, `Response::get`, the newtypes and the error enum keep their names: they are the interface [decision 0003](0003-typed-handles-between-questions-and-answers.md) argued for, and the crate-level doctest in `src/lib.rs` is the intended experience. Breaking changes are free until the first publish, so the extraction is also the moment to settle what `list_models` is (the endpoint is not in the documented API; it stays, marked as observed rather than documented, because `signalman models` and the readiness probe use it).
-- The name is decided before the move so paths do not churn twice. It must not contain `typesafe` or `jev`, and it must be free on crates.io: `judgment`, `judgments`, `calibrated` and `typed-judgment` were free on 2026-09-24. The record is written for `judgment`; the choice is the decision-maker's.
+- The name is decided before the move so paths do not churn twice. It must not contain `typesafe` or `jev`, and it must be free on crates.io: `judgment`, `judgments`, `calibrated` and `typed-judgment` were free on 2026-09-24. The name chosen on 2026-09-24 is `judgment`.
 - signalman re-exports the core (`pub use judgment::{Client, Questions, options, ...}`) for one release so nothing downstream of this repository breaks, then drops the re-exports.
-- Versioning: `0.1.0` at extraction, path dependency from signalman, git dependency (`rev` or tag) for other projects until publication. Publication (option 3's second half) happens in this repository with `cargo publish -p <name>`: one repository, two crates, the application always built against the version it ships with.
+- Versioning: `0.1.0` at extraction, path dependency from signalman, git dependency (`rev` or tag) for other projects until publication. Publication (option 3's second half) happens in this repository with `cargo publish -p judgment`: one repository, two crates, the application always built against the version it ships with.
 
 ### Consequences
 
@@ -89,8 +89,8 @@ Concretely:
 ### Confirmation
 
 - `cargo test --workspace` passes with the same test counts before and after; `tests/client.rs` runs from the core crate; the recordings under `examples/eval/runs/` replay to the same report
-- `cargo tree -p <name> --edges normal` shows only serde, serde_json, thiserror, tracing, and under `http` reqwest, tokio, fastrand
-- `grep -rn 'crate::telemetry' crates/<name>` finds nothing; `src/telemetry.rs` implements `Observer`
+- `cargo tree -p judgment --edges normal` shows only serde, serde_json, thiserror, tracing, and under `http` reqwest, tokio, fastrand
+- `grep -rn 'crate::telemetry' crates/judgment` finds nothing; `src/telemetry.rs` implements `Observer`
 - A throwaway binary outside this repository depending on the crate by git compiles the crate-level doctest unchanged
 
 ## Pros and cons of the options
@@ -131,4 +131,4 @@ Concretely:
 
 The `SystemOne` trait's shape: one method, `evaluate(&self, request: &Request<'_, impl Serialize>) -> impl Future<Output = Result<Response>>`; for dynamic dispatch a boxed-future variant so `Arc<dyn SystemOne>` works, which is what a `Triager` shared across the receiver and the MCP server needs. `Client` implements it; `Replay` (a directory of recordings keyed by case id) and `Fake` (fixed answers per question id, with request inspection) are the two other implementations the harness and the tests need. Sync clients, streaming and batching are not added: the API documents one endpoint and one request shape, and no consumer has asked.
 
-Migration, in the order that keeps the gate green after each step: (1) workspace scaffold, move the five modules and `tests/client.rs`, re-export from signalman, no behaviour change; (2) the `Observer` trait replaces the two telemetry calls; (3) the `SystemOne` trait with `Replay` and `Fake`, and the generic half of `eval` moves; (4) the crate README and a rustdoc pass that explains the why, `docs/typesafe-client.md` becomes a pointer, this record becomes accepted; (5) when a second consumer exists, `cargo publish -p <name>`, a tag and a changelog. Beads for the steps are filed once the name is chosen.
+Migration, in the order that keeps the gate green after each step: (1) workspace scaffold, move the five modules and `tests/client.rs`, re-export from signalman, no behaviour change; (2) the `Observer` trait replaces the two telemetry calls; (3) the `SystemOne` trait with `Replay` and `Fake`, and the generic half of `eval` moves; (4) the crate README and a rustdoc pass that explains the why, `docs/typesafe-client.md` becomes a pointer, this record becomes accepted; (5) when a second consumer exists, `cargo publish -p judgment`, a tag and a changelog. Beads: epic `signalman-cuo`, one child per step.

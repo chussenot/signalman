@@ -1,7 +1,8 @@
 //! # signalman
 //!
-//! A typed Rust client for the [TypeSafe](https://docs.typesafe.ai) System One
-//! API, plus a worked alert-triage application built on it.
+//! An alert-triage application built on [`judgment`], the typed client for
+//! the [TypeSafe](https://docs.typesafe.ai) System One API that this crate
+//! re-exports (decision 0010).
 //!
 //! TypeSafe's model, Jev, does not generate text. It evaluates a `state` (any
 //! JSON) against typed questions and returns calibrated judgments:
@@ -43,10 +44,8 @@
 //! # Ok(()) }
 //! ```
 //!
-//! * [`question`] builds requests; each question returns a typed [`Handle`].
-//! * [`answer`] validates probabilities and converts wire answers into typed
-//!   views through those handles.
-//! * [`client`] talks HTTP with SDK-equivalent defaults, retries and errors.
+//! * [`question`], [`answer`] and [`client`] are [`judgment`]'s, re-exported:
+//!   requests with typed handles, validated answers, SDK-equivalent retries.
 //! * [`triage`] is the application: speculative fan-out over an alert, then a
 //!   routing policy with risk-scaled confidence thresholds.
 //! * [`backstage`] resolves the alerting component in the software catalog,
@@ -59,27 +58,23 @@
 //!   was started: one document per alert, schema committed and drift-tested.
 //! * [`serve`] is the webhook receiver.
 
-pub mod answer;
 pub mod backstage;
 pub mod changes;
-pub mod client;
 pub mod config;
-pub mod error;
 pub mod eval;
-pub mod http;
 pub mod incidentio;
 pub mod mcp;
 pub mod outcome;
-pub mod question;
 pub mod readiness;
 pub mod serve;
 pub mod telemetry;
 pub mod triage;
 
-pub use answer::{
-    Answer, Choice, Confidence, FromAnswer, Noul, Probability, Response, Score, Usage,
+// The judgment core, re-exported so `signalman::Client`, `signalman::options!`
+// and `crate::answer::..` keep working for this crate and its tests.
+pub use judgment::{
+    Answer, Choice, Client, ClientBuilder, Confidence, Error, FromAnswer, Handle, ModelInfo, Noul,
+    NoulCriteria, Options, Probability, Question, Questions, Request, Response, Result,
+    RetryPolicy, Score, Usage, answer, client, error, http, options, question,
 };
-pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
-pub use error::{Error, Result};
 pub use outcome::Outcome;
-pub use question::{Handle, NoulCriteria, Options, Question, Questions};

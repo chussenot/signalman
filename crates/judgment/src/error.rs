@@ -18,7 +18,7 @@ pub enum Error {
         detail: String,
     },
     /// Rate limited (HTTP 429) and retries were exhausted.
-    #[error("rate limited (429) after {attempts} attempts{}", crate::http::retry_after_suffix(*.retry_after))]
+    #[error("rate limited (429) after {attempts} attempts{}", crate::error::retry_after_suffix(*.retry_after))]
     RateLimited {
         /// Total attempts made, including the first.
         attempts: u32,
@@ -40,6 +40,7 @@ pub enum Error {
         body: String,
     },
     /// Network failure, TLS failure or timeout, after retries.
+    #[cfg(feature = "http")]
     #[error("transport error after {attempts} attempts: {source}")]
     Transport {
         /// Total attempts made, including the first.
@@ -105,3 +106,12 @@ pub enum Error {
 
 /// Convenience alias.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// The `Retry-After` clause of a rate-limit error message, empty when the
+/// server sent none. Shared with the error types of other clients built on
+/// [`crate::http`].
+pub fn retry_after_suffix(retry_after: Option<Duration>) -> String {
+    retry_after
+        .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
+        .unwrap_or_default()
+}

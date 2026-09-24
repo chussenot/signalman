@@ -1,0 +1,42 @@
+[package]
+name = "judgment"
+version = "0.1.0"
+description = "Typed, calibrated judgments from TypeSafe System One models (Jev) and compatible backends: questions with typed handles, validated probabilities, SDK-equivalent retries"
+readme = "README.md"
+keywords = ["typesafe", "system-one", "jev", "classification", "calibration"]
+categories = ["api-bindings", "web-programming::http-client"]
+# Published from this workspace when a second consumer exists (decision 0010).
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["http"]
+# The HTTP client and the retry loop. Without it the crate is the question
+# builder, the typed answers and the recordings, for a project that brings its
+# own transport.
+http = ["dep:reqwest", "dep:tokio", "dep:fastrand"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
+fastrand = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock = { workspace = true }
+
+# The client tests need the HTTP feature; the rest of the crate is tested
+# with `--no-default-features` too.
+[[test]]
+name = "client"
+required-features = ["http"]
+
+[lints]
+workspace = true
