@@ -21,6 +21,7 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0007](0007-changes-are-pushed-not-polled.md) | Changes are pushed to signalman, not polled from delivery tools | accepted | `signalman-ufg.3` |
 | [0008](0008-signalman-is-a-tool-for-agents.md) | signalman is a tool for agents, not an agent | accepted | `signalman-4gp.1` |
 | [0009](0009-readiness-depends-on-the-upstreams.md) | Readiness depends on the upstreams | accepted | `signalman-m28.3` |
+| [0010](0010-extract-the-judgment-core-into-a-crate.md) | Extract the judgment core into a reusable crate | proposed | |
 
 ## Status notes
 
