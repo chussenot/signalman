@@ -105,6 +105,10 @@ impl Providers {
     /// by `RUST_LOG`, plus the OpenTelemetry layer when exporting) and the
     /// global meter provider. Call once, before any span or measurement.
     pub fn init(settings: &Settings) -> Result<Self, Error> {
+        // Before the first client exists: a client without its own observer
+        // reads the global one lazily, but installing first keeps the order
+        // obvious. Idempotent, so a second `init` (refused below) is harmless.
+        judgment::observer::set_global(std::sync::Arc::new(Observer));
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
         let text = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
@@ -306,6 +310,23 @@ pub fn record_triage(
     if let Some(ttq) = time_to_qualify {
         m.time_to_qualify
             .record(ttq.as_secs_f64(), std::slice::from_ref(&decision_attr));
+    }
+}
+
+/// signalman's [`judgment::Observer`]: the judgment crate reports token usage
+/// and failed attempts here, and this module turns them into the instruments
+/// above. Installed once by [`Providers::init`] as the process-wide observer,
+/// so every client built anywhere in the process reports without wiring.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Observer;
+
+impl judgment::Observer for Observer {
+    fn on_usage(&self, model: &str, usage: &judgment::Usage) {
+        record_typesafe_usage(model, usage.input_tokens, usage.output_tokens);
+    }
+
+    fn on_failed_attempt(&self, service: &'static str, status: &str) {
+        record_upstream_error(service, status);
     }
 }
 

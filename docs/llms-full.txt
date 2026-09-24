@@ -27,7 +27,8 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | How webhooks are verified and what is written back | [incident.io integration](incidentio.md) |
 | How deploys and configuration changes reach the triage | [Change feed](changes.md) |
 | How an agent calls signalman's judgments | [MCP server](mcp.md) |
-| How the typed client works and its defaults | [TypeSafe client](typesafe-client.md) |
+| Why the typed client is the `judgment` crate, separate from the triager, and how signalman uses it | [TypeSafe client](typesafe-client.md) |
+| How to use the judgment core in another project | [TypeSafe client](typesafe-client.md), the crate README |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |
@@ -235,17 +236,19 @@ Among the community plugin workspaces, `firehydrant`, `ilert` and `healert` cove
 
 # TypeSafe client
 
-TypeSafe's model, Jev, evaluates a `state` (any JSON) against typed questions and returns calibrated judgments rather than text. The [live documentation](https://docs.typesafe.ai/llms.txt) is the contract; this page describes how the crate implements it. There is no official Rust SDK; the client mirrors the Python SDK's defaults so behaviour matches across languages.
+A second project that wanted calibrated judgments from a TypeSafe System One model had to depend on the whole triager: axum, rmcp, two other API clients, OpenTelemetry and a configuration model shaped for one deployment. [Decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md) moved the typed client into its own crate, `judgment`, a member of this workspace at `crates/judgment/`, which signalman depends on by path and re-exports; it is published when a second consumer exists, not before.
 
-| Primitive | Question | Answer |
-|---|---|---|
-| Noul | yes or no | probability of yes |
-| Choice | one of a defined set | chosen option, probability per option, confidence |
-| Score | degree on ordered levels | weighted position, probability per level, confidence |
+Where to read about the crate itself:
+
+- `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
+- `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
+- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate mirrors the Python SDK's defaults so a failure looks the same from either language.
+
+This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
 
 ## Typed handles
 
-On the wire, questions and answers are two maps keyed by the same ids, and nothing ties a Noul question to a Noul answer. The client closes that gap at compile time.
+On the wire, questions and answers are two maps keyed by the same ids, and nothing ties a Noul question to a Noul answer. The crate closes that gap at compile time ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md)): adding a question returns a handle that fixes the answer's type, and reading through the handle yields a Rust enum, a probability or a score, or an error naming what did not fit. The error table and the `options!` macro are documented in the crate's rustdoc.
 
 ```mermaid
 sequenceDiagram
@@ -265,50 +268,9 @@ sequenceDiagram
     R-->>Code: Noul{yes: 0.95}
 ```
 
-```rust
-use signalman::{Client, Questions, options};
-
-options! {
-    enum Department {
-        Billing = "billing" => "Payments, invoicing, refunds",
-        Technical = "technical" => "Bugs, outages, integrations",
-        Sales = "sales" => "Pricing, upgrades, new accounts",
-    }
-}
-
-let mut questions = Questions::new();
-let dept = questions.choice::<Department>("department", "Which team should handle `message`?")?;
-let urgent = questions.noul("is_urgent", "Does `message` convey urgency?", None)?;
-
-let client = Client::from_env()?;
-let state = serde_json::json!({ "message": "Help! My payouts have been failing for 3 days." });
-let response = client.system_one(&state, &questions).await?;
-
-let dept = response.get(&dept)?;      // Choice<Department>
-let urgent = response.get(&urgent)?;  // Noul
-```
-
-What the handle rules out:
-
-| Situation | Result |
-|---|---|
-| Reading a Score where a Noul was asked | `Error::AnswerTypeMismatch` naming the id and both primitives |
-| An option string the enum does not know | `Error::UnknownOption`, never a silent default |
-| A probability or confidence outside `[0, 1]` | `Error::NotAProbability` at deserialisation; `Probability` and `Confidence` are distinct validated newtypes |
-| An answer missing from the response | `Error::MissingAnswer` |
-| An answer of the right primitive that does not fit its question, such as a Score on a scale the question never sent | `Error::InvalidAnswer` naming the id and the reason |
-
-The `options!` macro writes the `Options` implementation from one definition: the wire keys, the rubric text sent as `criteria`, and the reverse lookup. For option sets known only at runtime, `Questions::dynamic_choice` takes `(key, description)` pairs and returns `Handle<Choice<String>>`; the triage uses it for incident references and catalog groups.
-
-## Building questions
-
-`Questions::noul`, `choice`, `dynamic_choice` and `score` reject what the API would reject before a request is sent: duplicate ids, fewer than two options, more than 255 options, fewer than two or more than ten levels. Instructions accept any JSON value, so structured instructions with a `question` field and reference data are supported as the documentation recommends.
-
 ## Retries
 
-A transient failure upstream (a timeout, a 429, a 5xx) must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The retry policy sits between those two costs.
-
-All three clients share one loop in `src/http.rs`, so the retry rules and the error counting are written once and every upstream behaves the same way under failure.
+A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs; the defaults (two retries, 0.5 s doubling to 5 s with jitter, `Retry-After` honoured up to 30 s, 408, 429 and 5xx retried) and the reasons for each are in the rustdoc of `RetryPolicy`.
 
 ```mermaid
 flowchart TD
@@ -324,29 +286,23 @@ flowchart TD
     SLEEP1 & SLEEP2 --> S
 ```
 
-| Setting | Default | Override |
-|---|---|---|
-| API key | `TYPESAFE_API_KEY` | `Client::builder().api_key(..)` |
-| Base URL | `https://api.typesafe.ai` | `.base_url(..)`; the binary takes `typesafe.base_url` from the [configuration](configuration.md); any server speaking the System One shape works, see [Laya](laya.md) |
-| Model | `jev-latest` | `.model(..)`; the binary takes `typesafe.model`, `TYPESAFE_DEFAULT_MODEL` or `--model` |
-| Timeout | 10 s per attempt | `.timeout(..)` |
-| Retries | 2; backoff 0.5 s doubling to 5 s; ±25 % jitter | `.retry(RetryPolicy { .. })` |
-| Retry on | 408, 429, 5xx (including 529), transport errors | |
-| `Retry-After` | honoured up to 30 s, delay-seconds form only | `retry_after_max` |
+Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
 
-Why these values:
+## How signalman uses it
 
-- **Two retries** is the TypeSafe Python SDK's default, and the client mirrors the SDK so a failure looks the same from Rust and from Python. The cost is bounded: three attempts of at most 10 s each plus two backoffs is how long a dead upstream holds a triage before the error surfaces. More retries would hold a webhook slot longer ([Operations](operations.md#backpressure)); fewer would fail on a single dropped connection.
-- **`Retry-After` is honoured only up to 30 s.** The server knows better than the client how long to wait, so the header wins when it is present, but a hostile or misconfigured header must not stall a triage for minutes; above the cap the client's own backoff applies instead. Only the delay-seconds form is read. The HTTP-date form needs a clock comparison against a server whose clock may not match, and the backoff is a safe fallback, so the code ignores it rather than trust the arithmetic.
-- **Every failed attempt is counted**, retried or not, in `signalman.upstream.errors` with the service label. A retry that succeeds hides the failure from the caller, but the failed attempt was still load on the upstream and still a symptom, so the metric sees it ([Observability](observability.md#metrics)).
+- `signalman::Client` is a re-export of `judgment::Client`, the same type; the re-exports exist so nothing built against signalman breaks during the extraction and are dropped after one release.
+- The binary builds the client from `typesafe.base_url`, `typesafe.model` and `typesafe.timeout_seconds` ([Configuration](configuration.md)); the key comes from `TYPESAFE_API_KEY` and nowhere else. Any server that speaks the System One wire works, which is how [Laya](laya.md) was run with no code change.
+- signalman implements `judgment::Observer` in `src/telemetry.rs` and installs it as the process-wide observer in `Providers::init`, before the first client exists. That is why the crate's token usage and failed attempts appear as `signalman.typesafe.tokens` and `signalman.upstream.errors` ([Observability](observability.md#metrics)) while the crate names no instrument.
+- The incident.io and Backstage clients call `judgment::http::send_with_retries` with their own service label, so all three upstreams retry the same way and every failed attempt is counted once.
+- The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and `Texts` makes the wording data that can be tuned without touching the handles ([Triage](triage.md)).
+- The [evaluation harness](evaluation.md) grades through `judgment::eval`: recordings, per-question grading and the calibration metrics are the crate's; the labels and the decision are signalman's.
 
-`evaluate` runs inside a `typesafe.evaluate` span carrying the `model` requested and, once the response arrives, the `input_tokens` it reports; the same numbers feed the `signalman.typesafe.tokens` counter, where `input` is the billed direction. The state and the questions are never put in a span field ([Observability](observability.md)).
+## What the crate does not do
 
-The response's `model` field is the versioned id that answered (for example `jev-1.13.0`) even when an alias was requested. It is logged and returned in every outcome. Thresholds tuned against one version should pin that version.
-
-## Errors
-
-A caller has to pick a remedy from the error alone, so `signalman::Error` separates failures by what fixes them rather than by status code. `MissingApiKey` and `Unauthorized` (401) mean the configuration is wrong. `InvalidRequest` (422, with the body) means the request is wrong and no retry will help; the body names the offending field. `RateLimited` (429) and `Overloaded` (TypeSafe's 529) are both returned only after the retries ran out and both carry the attempt count, but they are kept apart because the remedies differ: 429 is the account's rate limit, the remedy is to slow down, and the error carries the server's `Retry-After` when it sent one; 529 is TypeSafe's service being overloaded, there is no `Retry-After` to carry, and the remedy is to wait and try again later. `Http` (any other status, with the truncated body), `Transport` (network, TLS or timeout, after retries) and `Decode` (a body that is not the documented shape) cover the rest, plus the typed-layer errors above. The API key is marked sensitive and redacted from `Debug` output, so an error printed with `{:?}` cannot leak it.
+- No sync client: the API documents one endpoint and every consumer so far is async.
+- No batching or streaming: the API documents one request shape, and no consumer has asked.
+- No metrics backend: a library that named instruments would force its telemetry stack on every consumer; the `Observer` trait hands the numbers to whoever owns the instruments.
+- No second backend in the product yet: the crate has a `SystemOne` trait with `Fake` and `Replay` implementations, but signalman's `Triager` holds a concrete `Client` rather than a `dyn SystemOne` until a second backend is needed there. The trait is the seam an official SDK or a local model would plug into.
 
 
 <!-- source: docs/laya.md -->
@@ -806,7 +762,7 @@ Policy tests build answers by round-tripping a fake API response through the rea
 
 # Evaluation harness
 
-Thresholds, wording and the fallback team list are configuration; the model's calibration in this domain is an empirical question. `signalman eval` answers it with numbers: it replays labelled alerts through the same questions the webhook flow asks, grades every judgment against what a responder said, applies the policy, and reports how often the decision would have been right.
+Thresholds, wording and the fallback team list are configuration; the model's calibration in this domain is an empirical question. `signalman eval` answers it with numbers: it replays labelled alerts through the same questions the webhook flow asks, grades every judgment against what a responder said, applies the policy, and reports how often the decision would have been right. The measuring itself, recordings, per-question grading and the calibration metrics, lives in the `judgment` crate ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)) so any project built on it can grade its own judgments the same way; this page describes the harness signalman builds on top: its labels, its question-to-label mapping and the decision it grades.
 
 ```mermaid
 flowchart LR
@@ -1870,7 +1826,9 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+
+The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and nothing in the default gate exercises that configuration. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
 
@@ -1898,12 +1856,17 @@ flowchart TD
 ## Layout
 
 ```
-src/
-  client.rs        TypeSafe HTTP client
-  http.rs          shared retry loop, backoff, Retry-After
-  question.rs      Questions builder, Options trait, options! macro, Handle<A>
-  answer.rs        Answer wire shape, Probability/Confidence, typed views
-  error.rs         TypeSafe-side error enum
+crates/judgment/   the judgment crate (decision 0010): the typed client, reusable on its own
+  src/client.rs    TypeSafe HTTP client
+  src/http.rs      shared retry loop, backoff, Retry-After (the other clients use it too)
+  src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
+  src/answer.rs    Answer wire shape, Probability/Confidence, typed views
+  src/error.rs     TypeSafe-side error enum
+  src/backend.rs   SystemOne: the trait; Client, Fake, Recorder and Replay implement it
+  src/eval/        recordings, one Judgment per answer and label, per-question metrics
+  src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
+  tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
+src/               the signalman application, depending on judgment by path
   triage/          Alert state, owner candidates, questions, Decision policy
   eval/            evaluation harness: cases, grading, metrics, record and replay
   changes/         change feed: window and matching, Argo CD and GitLab adapters
@@ -2095,16 +2058,16 @@ flowchart LR
 | Triage types | `src/triage/mod.rs` | The alert, candidate and answer types that questions, policy and note share, and the built-in team list used when no catalog is configured |
 | Outcome contract | `src/outcome.rs` | One versioned JSON document per triage, so scripts, log pipelines and agents index fields instead of parsing prose; schema committed and drift-tested |
 | MCP server | `src/mcp.rs`, `src/mcp/http.rs` | Lets agents call the judgments the CLI already exposes: five read-only tools plus the gated `apply_qualification`, over one dry-run `Triager`, on stdio or Streamable HTTP behind a bearer token ([MCP](mcp.md)) |
-| Evaluation harness | `src/eval/` | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model |
-| TypeSafe client | `src/client.rs`, `src/question.rs`, `src/answer.rs`, `src/error.rs` | The wire contract, typed handles and validated probabilities: wire strings become Rust types at one place |
+| Evaluation harness | `src/eval/`, `crates/judgment/src/eval/` | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model The measuring (recordings, per-question grading, accuracy, Brier, calibration error) is the judgment crate's; the labels, the question-to-label mapping and the decision are signalman's |
+| TypeSafe client | `crates/judgment/src/client.rs`, `crates/judgment/src/question.rs`, `crates/judgment/src/answer.rs`, `crates/judgment/src/error.rs` | The wire contract, typed handles and validated probabilities: wire strings become Rust types at one place |
 | incident.io client | `src/incidentio/client.rs`, `types.rs`, `error.rs` | Incidents, alerts, tags, attachments, notes and alert-source events; wire types ignore unknown fields so an API addition is not an outage |
 | Backstage client | `src/backstage/client.rs`, `types.rs`, `error.rs` | Catalog queries, the TechDocs search index and notifications; lenient entity types so catalog drift is a named `Decode` error, not a panic |
-| Shared HTTP | `src/http.rs` | One retry loop for all three clients, so transient statuses are handled the same way everywhere and every failed attempt is counted once |
+| Shared HTTP | `crates/judgment/src/http.rs` | One retry loop for all three clients, so transient statuses are handled the same way everywhere and every failed attempt is counted once |
 | Telemetry | `src/telemetry.rs` | The `tracing` subscriber, OTLP/HTTP export of spans and metrics when an endpoint is set, and the one place that names an instrument, so the table in [Observability](observability.md) has a single source |
 | Configuration | `src/config.rs` | One function resolves default, file, environment and flag, so the precedence table in [Configuration](configuration.md) describes code rather than approximating it |
 | CLI | `src/main.rs` | `triage`, `eval`, `serve`, `mcp`, `models`, `incidentio`, `backstage`, `config`, `schema`; builds every client and the flow from the resolved configuration |
 
-Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. `src/config.rs` is the only module that reads a non-secret environment variable. Secrets are refused from the file and read by the module that uses them, so a reviewed `ConfigMap` cannot be persuaded into holding one ([decision 0006](decisions/0006-layered-configuration.md)). Those reads are `TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY` and `BACKSTAGE_TOKEN` in the three clients, `INCIDENTIO_WEBHOOK_SECRET` in the webhook verifier, `SIGNALMAN_CHANGES_TOKEN` in the change feed, `SIGNALMAN_MCP_TOKEN` in the MCP HTTP endpoint, and `OTEL_EXPORTER_OTLP_HEADERS` in the OpenTelemetry exporter. One read sits outside the rule: the CLI's forwarding mode takes `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` and `INCIDENTIO_ALERT_SOURCE_TOKEN` directly in `main`, and the id, which is not a secret, has no `Settings` field.
+Configuration enters once: `config::Config` resolves defaults, the TOML file, environment variables and flags in that order at start-up, and `main` builds every client and the flow from it. `src/config.rs` is the only module that reads a non-secret environment variable. Secrets are refused from the file and read by the module that uses them, so a reviewed `ConfigMap` cannot be persuaded into holding one ([decision 0006](decisions/0006-layered-configuration.md)). Those reads are `TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY` and `BACKSTAGE_TOKEN` in the three clients, `INCIDENTIO_WEBHOOK_SECRET` in the webhook verifier, `SIGNALMAN_CHANGES_TOKEN` in the change feed, `SIGNALMAN_MCP_TOKEN` in the MCP HTTP endpoint, and `OTEL_EXPORTER_OTLP_HEADERS` in the OpenTelemetry exporter. The alert source token for `triage --forward-to-incidentio`, `INCIDENTIO_ALERT_SOURCE_TOKEN`, is read by the incident.io client too; the source's id is ordinary configuration (`incidentio.alert_source_config_id`) and goes through `config.rs` like every other setting.
 
 ## The path of one alert
 
@@ -2407,13 +2370,15 @@ Each record captures one architecturally significant decision: the problem, the 
 | [0007](0007-changes-are-pushed-not-polled.md) | Changes are pushed to signalman, not polled from delivery tools | accepted | `signalman-ufg.3` |
 | [0008](0008-signalman-is-a-tool-for-agents.md) | signalman is a tool for agents, not an agent | accepted | `signalman-4gp.1` |
 | [0009](0009-readiness-depends-on-the-upstreams.md) | Readiness depends on the upstreams | accepted | `signalman-m28.3` |
+| [0010](0010-extract-the-judgment-core-into-a-crate.md) | Extract the judgment core into a reusable crate | accepted | `signalman-cuo` |
 
 ## Status notes
 
 Records are not edited after acceptance, so a fact that has moved since a record was written is noted here rather than in the record. Each note is checked against the code, not against the record.
 
-- 0006's confirmation counts four secret reads outside `src/config.rs`. There are now eight, in seven files: the TypeSafe, incident.io and Backstage clients read their API key or token, the webhook verifier reads the signing secret, `src/changes/mod.rs` reads `SIGNALMAN_CHANGES_TOKEN`, `src/mcp/http.rs` reads `SIGNALMAN_MCP_TOKEN`, and `src/main.rs` reads `INCIDENTIO_ALERT_SOURCE_CONFIG_ID` and `INCIDENTIO_ALERT_SOURCE_TOKEN` for `triage --forward-to-incidentio`. Every one is a secret listed in [Configuration](../configuration.md#secrets); the rule the record states, that only `config.rs` reads a non-secret variable, still holds.
+- 0006's confirmation counts four secret reads outside `src/config.rs`. There are now seven, in six files: the TypeSafe, incident.io and Backstage clients read their API key or token, the incident.io client also reads `INCIDENTIO_ALERT_SOURCE_TOKEN` for `triage --forward-to-incidentio`, the webhook verifier reads the signing secret, `src/changes/mod.rs` reads `SIGNALMAN_CHANGES_TOKEN`, and `src/mcp/http.rs` reads `SIGNALMAN_MCP_TOKEN`. Every one is a secret listed in [Configuration](../configuration.md#secrets); the rule the record states, that only `config.rs` reads a non-secret variable, holds again since the alert source id became the setting `incidentio.alert_source_config_id` (2026-09-23).
 - 0007's confirmation names `src/changes.rs`. The module is now the directory `src/changes/`: `mod.rs` holds the window and matching, `argocd.rs` and `gitlab.rs` the native adapters the record describes as translations of documented payloads.
+- 0010 puts the `Observer` on the client builder. The builder takes one (`ClientBuilder::observer`), but the retry loop the record keeps in the crate is a free function that the incident.io and Backstage clients call with no builder in reach, so failed attempts are reported through a process-wide observer instead: `judgment::observer::set_global`, installed once by `Providers::init` before any client exists. A client with no observer of its own reports usage to the global one too.
 - 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record
@@ -3059,3 +3024,130 @@ Probe settings should tolerate a blip rather than react to one: `periodSeconds: 
 ## More information
 
 [Operations](../operations.md#readiness) documents the endpoint, the body and the settings; [Observability](../observability.md#spans) the `readiness.check` span and the `signalman.upstream.errors` counter a failed probe increments. Beads: `signalman-m28.3`. Like the rest of the receiver, the endpoint has been tested against wiremock only, never against a live account.
+
+
+<!-- source: docs/decisions/0010-extract-the-judgment-core-into-a-crate.md -->
+
+
+# 0010 Extract the judgment core into a reusable crate
+
+## Context and problem statement
+
+signalman is two things in one package: a typed client for the TypeSafe System One API, and an alert-triage application built on it. The client half is generic. It knows nothing about alerts: it builds questions, returns a typed handle per question, validates the probabilities that come back and reads them through those handles ([TypeSafe client](../typesafe-client.md), [decision 0003](0003-typed-handles-between-questions-and-answers.md)). It has now been exercised against the hosted model and against Laya through a shim ([Laya](../laya.md)), and it carries the retry policy, the recording and replay of raw responses, and the per-question metrics the [evaluation harness](../evaluation.md) is built on.
+
+A second project that wants calibrated judgments from a System One model today has to depend on the whole of signalman: axum, rmcp, the incident.io and Backstage clients, OpenTelemetry, and a configuration layer shaped for one deployment. How do we make the judgment layer a core other Rust projects can build on, without losing what makes it trustworthy here (the gate, the live verification, the tests) and without turning signalman into a library-maintenance project?
+
+Five crates for the same API appeared on crates.io in the week of 16 to 22 September 2026: `typesafe-ai`, `typesafe-client`, `systemone`, `jev` and `system-one`. All are 0.1.x, single-author, between 14 and 116 downloads. Two overlap with this decision directly: `typesafe-client` (typed keys, a `RetryPolicy` with the same SDK defaults as ours, a `SystemOne` transport trait, a `fake` backend, an `http` feature) and `system-one` (a `DecisionBackend` trait with mock, replay, local-logprob and shadow backends, derive macros, cost-matrix decisions, calibration reports). TypeSafe itself publishes SDKs for Python and JavaScript only.
+
+## Decision drivers
+
+- A second consumer must get the typed judgment layer and nothing else: no HTTP server, no incident tooling, no configuration model
+- What has been verified live (the wire shape, the retry behaviour, the recordings under `examples/eval/runs/`) must stay verified: the extraction must not change behaviour, and the gate must keep covering it
+- One place to fix a contract drift: the client, its tests and its docs move together
+- The team is small; a second repository, a release process and semver discipline are costs paid on every change, not once
+- TypeSafe may publish an official Rust SDK; the core should be small enough that becoming an adapter over it is a contained change
+- Names on crates.io are first come; `typesafe*`, `systemone`, `system-one` and `jev` are taken, and a name containing the vendor's trademark is a liability
+
+## What is generic and what is not
+
+Read from the module dependency graph, not from intent:
+
+| Moves to the core | Lines | Depends on |
+|---|---|---|
+| `src/question.rs`: `Question`, `NoulCriteria`, `Options`, `options!`, `Handle<A>`, `Questions`, the 255 and 10 limits | 391 | serde, serde_json |
+| `src/answer.rs`: `Probability`, `Confidence`, `Answer`, `Usage`, `Response::get`, `FromAnswer`, `Noul`, `Choice<K>`, `Score` | 464 | serde |
+| `src/client.rs`: `ClientBuilder`, `Client`, `Request`, `ModelInfo`, `system_one`, `evaluate`, `list_models` | 282 | reqwest, tracing |
+| `src/error.rs`: the TypeSafe error enum | 110 | thiserror |
+| `src/http.rs`: `RetryPolicy`, `send_with_retries`, `parse_retry_after`, `truncate` | 241 | reqwest, tokio (sleep), fastrand |
+| `src/eval/metrics.rs` and the generic half of `src/eval/mod.rs`: `Recording`, recording to and replaying from a directory, per-question `Judgment` grading, accuracy, Brier, ECE bins | ~250 | serde |
+| `tests/client.rs` (all but the triage end-to-end case), the unit tests of the modules above, the crate-level doctest | ~230 | wiremock |
+
+| Stays in signalman | Why |
+|---|---|
+| `src/triage/`: the question set, `Texts`, `Policy`, `decide` | The application's judgments and its routing policy; the pattern every consumer writes for itself |
+| `src/outcome.rs`, `src/incidentio/`, `src/backstage/`, `src/changes/`, `src/serve.rs`, `src/mcp/`, `src/readiness.rs`, `src/config.rs`, `src/main.rs` | The product |
+| `src/telemetry.rs` | Names signalman's instruments; the core must not (see below) |
+| The signalman half of `eval`: `Case`, `Expected`, `Graded`, decision agreement, the CLI | Labels and the policy are the application's |
+
+Two couplings have to be cut, both in the generic modules and both small:
+
+- `client.rs` and `http.rs` call `crate::telemetry::record_typesafe_usage` and `record_upstream_error`. The core gets an `Observer` trait (`on_usage(model, &Usage)`, `on_failed_attempt(service, status)`) with a no-op default, set on the builder; signalman implements it in `src/telemetry.rs`, which keeps the rule that one module names every instrument. Spans stay: the core keeps its `tracing::instrument` attributes, and `tracing` is the one observability dependency a library should have.
+- `http.rs` is also used by the incident.io and Backstage clients. It stays public in the core (`RetryPolicy` is part of the client's public surface anyway) and signalman keeps using it from there.
+
+## Considered options
+
+1. Adopt an existing crate and delete our client
+2. A workspace member in this repository, consumed by path here and by git dependency elsewhere, published later
+3. A separate repository, published on crates.io from the start
+4. Keep the single crate and tell other projects to depend on signalman with default features off
+
+## Decision outcome
+
+Chosen option: "A workspace member in this repository, published later", because it gives a second project a dependency this week, keeps one gate and one live-verification history over the code that matters most, and defers the release machinery to the moment a second consumer proves it is needed. The trigger to publish is that consumer, not a date.
+
+Concretely:
+
+- The repository becomes a workspace whose root package stays `signalman`, so no path in `docs/`, `mise.toml`, the workflow or the harness moves. The new member lives at `crates/judgment/`, with `[workspace.package]` for edition, `rust-version` and licence, `[workspace.dependencies]` for shared versions and `[workspace.lints]` for the pedantic set, so both crates are held to the same bar.
+- The core's dependency footprint is the wire and nothing else: serde, serde_json, thiserror, tracing, and behind a default `http` feature reqwest with rustls, tokio (for the retry sleep) and fastrand. Without `http`, the questions, answers, recordings and metrics compile alone, for a project that brings its own transport.
+- The core gains one trait, `SystemOne`, with a single `evaluate`, implemented by `Client`, by a `Replay` backend over recordings and by a `Fake` for tests. signalman's `Triager` keeps holding a `Client` until a second backend is needed in the product; the trait exists so that an official SDK, a local model behind a different wire, or a shadow backend can be slotted in without touching consumers. This is the one place where the option-1 crates are ahead of us and where the extraction should close the gap.
+- The `options!` macro, `Handle<A>`, `Response::get`, the newtypes and the error enum keep their names: they are the interface [decision 0003](0003-typed-handles-between-questions-and-answers.md) argued for, and the crate-level doctest in `src/lib.rs` is the intended experience. Breaking changes are free until the first publish, so the extraction is also the moment to settle what `list_models` is (the endpoint is not in the documented API; it stays, marked as observed rather than documented, because `signalman models` and the readiness probe use it).
+- The name is decided before the move so paths do not churn twice. It must not contain `typesafe` or `jev`, and it must be free on crates.io: `judgment`, `judgments`, `calibrated` and `typed-judgment` were free on 2026-09-24. The name chosen on 2026-09-24 is `judgment`.
+- signalman re-exports the core (`pub use judgment::{Client, Questions, options, ...}`) for one release so nothing downstream of this repository breaks, then drops the re-exports.
+- Versioning: `0.1.0` at extraction, path dependency from signalman, git dependency (`rev` or tag) for other projects until publication. Publication (option 3's second half) happens in this repository with `cargo publish -p judgment`: one repository, two crates, the application always built against the version it ships with.
+
+### Consequences
+
+- Good, because a second Rust project depends on a crate with four runtime dependencies instead of the whole application, and gets the typed handles, the validated probabilities, the SDK-equivalent retries and the recording and replay tooling that have already been run against Jev and Laya
+- Good, because the client, its tests, its docs and its live-verification recordings stay in one repository under one gate; a contract drift found by `contract-reviewer` is fixed in one place
+- Good, because the `Observer` trait removes the last reason a library module reads signalman's telemetry, and the `SystemOne` trait gives the evaluation harness its replay backend for free
+- Bad, because a workspace adds a second `Cargo.toml` to keep in step and a second set of docs (rustdoc for the crate; `docs/typesafe-client.md` becomes its README source); `refactor-scout` and `docs-auditor` must learn the second crate
+- Bad, because a git dependency is weaker than a published one: no docs.rs, no semver from Cargo's point of view, and a consumer pins a commit. Accepted until a second consumer exists; then publish
+- Bad, because five other crates already compete for the same users and an official SDK may arrive; the core is kept small so that either outcome costs an adapter, not a rewrite
+- Neutral: signalman's own behaviour does not change; the extraction is validated by the existing test suites passing unchanged, with the same counts
+
+### Confirmation
+
+- `cargo test --workspace` passes with the same test counts before and after; `tests/client.rs` runs from the core crate; the recordings under `examples/eval/runs/` replay to the same report
+- `cargo tree -p judgment --edges normal` shows only serde, serde_json, thiserror, tracing, and under `http` reqwest, tokio, fastrand
+- `grep -rn 'crate::telemetry' crates/judgment` finds nothing; `src/telemetry.rs` implements `Observer`
+- A throwaway binary outside this repository depending on the crate by git compiles the crate-level doctest unchanged
+
+## Pros and cons of the options
+
+### Adopt an existing crate
+
+`typesafe-client` is the closest to ours: the same retry defaults (theirs caps `Retry-After` at 60 s and adds a 30 s overall deadline), typed keys, a transport trait, a fake backend, an `http` feature. `system-one` has the richer idea: pluggable backends including replay and a local-logprob server, cost-matrix decisions instead of thresholds, calibration reports.
+
+- Good, because it deletes 1,500 lines we maintain, and `system-one`'s cost-matrix decisions are a better policy primitive than fixed thresholds
+- Bad, because every candidate is between two and eight days old, single-author, 0.1.0, with a live API "exercised by hand" at best; ours has two recorded live runs and a product on top
+- Bad, because adopting one means re-verifying the wire and the retry behaviour and rewriting the harness's recordings, to arrive where we are
+- Bad, because their APIs will move; being one of a dozen users of a week-old crate is the position this record exists to avoid
+- Rejected now. Revisit in six months, or when TypeSafe publishes a Rust SDK: at that point the `SystemOne` trait is the seam, and the candidate becomes a backend, not a replacement
+
+### A workspace member, published later
+
+- Good, because it is the smallest change that yields a dependency another project can use this week
+- Good, because one repository keeps one gate, one live-verification history and one harness over the code
+- Bad, because a git dependency has no docs.rs and no semver in Cargo's eyes; consumers pin a commit
+- Bad, because a second crate needs its own README and rustdoc, and the harness agents need to know it exists
+
+### A separate repository, published from the start
+
+- Good, because discoverability and semver are real from day one, and the boundary cannot erode
+- Bad, because CI in this account has never run ([roadmap](../roadmap.md#ci)); a second repository doubles a blocked pipeline, the release process and the pull-request traffic for a team of one
+- Bad, because signalman's live verification and the harness would need to be duplicated or lost to the core, and the two repositories drift in Rust version, lint set and conventions
+- Bad, because the name must be chosen and published now, into a crowded namespace, before the API has a second consumer to settle it
+- Deferred, not rejected: publication from the workspace gives the discoverability without the second repository
+
+### Keep one crate with features
+
+- Good, because nothing moves
+- Bad, because default features off still pulls the whole dependency tree into the lockfile and every module into the build; a consumer reads `signalman` in their `Cargo.toml` and wonders what an alert triager is doing there
+- Bad, because the coupling to `telemetry` and the unclear boundary stay; features hide a boundary, they do not create one
+- Rejected
+
+## More information
+
+The `SystemOne` trait's shape: one method, `evaluate(&self, request: &Request<'_, impl Serialize>) -> impl Future<Output = Result<Response>>`; for dynamic dispatch a boxed-future variant so `Arc<dyn SystemOne>` works, which is what a `Triager` shared across the receiver and the MCP server needs. `Client` implements it; `Replay` (a directory of recordings keyed by case id) and `Fake` (fixed answers per question id, with request inspection) are the two other implementations the harness and the tests need. Sync clients, streaming and batching are not added: the API documents one endpoint and one request shape, and no consumer has asked.
+
+Migration, in the order that keeps the gate green after each step: (1) workspace scaffold, move the five modules and `tests/client.rs`, re-export from signalman, no behaviour change; (2) the `Observer` trait replaces the two telemetry calls; (3) the `SystemOne` trait with `Replay` and `Fake`, and the generic half of `eval` moves; (4) the crate README and a rustdoc pass that explains the why, `docs/typesafe-client.md` becomes a pointer, this record becomes accepted; (5) when a second consumer exists, `cargo publish -p judgment`, a tag and a changelog. Beads: epic `signalman-cuo`, one child per step.

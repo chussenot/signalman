@@ -1,24 +1,26 @@
 ---
 title: TypeSafe client
-description: How the Rust client implements the TypeSafe System One contract, ties each question to the type of its answer, validates probabilities, and retries transient failures.
+description: The typed TypeSafe client is the judgment crate; this page says why it is a separate crate, how signalman uses it, and where its own documentation lives.
 status: current
-last_reviewed: 2026-09-23
-tags: [typesafe, library]
+last_reviewed: 2026-09-24
+tags: [typesafe, library, judgment]
 ---
 
 # TypeSafe client
 
-TypeSafe's model, Jev, evaluates a `state` (any JSON) against typed questions and returns calibrated judgments rather than text. The [live documentation](https://docs.typesafe.ai/llms.txt) is the contract; this page describes how the crate implements it. There is no official Rust SDK; the client mirrors the Python SDK's defaults so behaviour matches across languages.
+A second project that wanted calibrated judgments from a TypeSafe System One model had to depend on the whole triager: axum, rmcp, two other API clients, OpenTelemetry and a configuration model shaped for one deployment. [Decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md) moved the typed client into its own crate, `judgment`, a member of this workspace at `crates/judgment/`, which signalman depends on by path and re-exports; it is published when a second consumer exists, not before.
 
-| Primitive | Question | Answer |
-|---|---|---|
-| Noul | yes or no | probability of yes |
-| Choice | one of a defined set | chosen option, probability per option, confidence |
-| Score | degree on ordered levels | weighted position, probability per level, confidence |
+Where to read about the crate itself:
+
+- `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
+- `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
+- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate mirrors the Python SDK's defaults so a failure looks the same from either language.
+
+This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
 
 ## Typed handles
 
-On the wire, questions and answers are two maps keyed by the same ids, and nothing ties a Noul question to a Noul answer. The client closes that gap at compile time.
+On the wire, questions and answers are two maps keyed by the same ids, and nothing ties a Noul question to a Noul answer. The crate closes that gap at compile time ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md)): adding a question returns a handle that fixes the answer's type, and reading through the handle yields a Rust enum, a probability or a score, or an error naming what did not fit. The error table and the `options!` macro are documented in the crate's rustdoc.
 
 ```mermaid
 sequenceDiagram
@@ -38,50 +40,9 @@ sequenceDiagram
     R-->>Code: Noul{yes: 0.95}
 ```
 
-```rust
-use signalman::{Client, Questions, options};
-
-options! {
-    enum Department {
-        Billing = "billing" => "Payments, invoicing, refunds",
-        Technical = "technical" => "Bugs, outages, integrations",
-        Sales = "sales" => "Pricing, upgrades, new accounts",
-    }
-}
-
-let mut questions = Questions::new();
-let dept = questions.choice::<Department>("department", "Which team should handle `message`?")?;
-let urgent = questions.noul("is_urgent", "Does `message` convey urgency?", None)?;
-
-let client = Client::from_env()?;
-let state = serde_json::json!({ "message": "Help! My payouts have been failing for 3 days." });
-let response = client.system_one(&state, &questions).await?;
-
-let dept = response.get(&dept)?;      // Choice<Department>
-let urgent = response.get(&urgent)?;  // Noul
-```
-
-What the handle rules out:
-
-| Situation | Result |
-|---|---|
-| Reading a Score where a Noul was asked | `Error::AnswerTypeMismatch` naming the id and both primitives |
-| An option string the enum does not know | `Error::UnknownOption`, never a silent default |
-| A probability or confidence outside `[0, 1]` | `Error::NotAProbability` at deserialisation; `Probability` and `Confidence` are distinct validated newtypes |
-| An answer missing from the response | `Error::MissingAnswer` |
-| An answer of the right primitive that does not fit its question, such as a Score on a scale the question never sent | `Error::InvalidAnswer` naming the id and the reason |
-
-The `options!` macro writes the `Options` implementation from one definition: the wire keys, the rubric text sent as `criteria`, and the reverse lookup. For option sets known only at runtime, `Questions::dynamic_choice` takes `(key, description)` pairs and returns `Handle<Choice<String>>`; the triage uses it for incident references and catalog groups.
-
-## Building questions
-
-`Questions::noul`, `choice`, `dynamic_choice` and `score` reject what the API would reject before a request is sent: duplicate ids, fewer than two options, more than 255 options, fewer than two or more than ten levels. Instructions accept any JSON value, so structured instructions with a `question` field and reference data are supported as the documentation recommends.
-
 ## Retries
 
-A transient failure upstream (a timeout, a 429, a 5xx) must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The retry policy sits between those two costs.
-
-All three clients share one loop in `src/http.rs`, so the retry rules and the error counting are written once and every upstream behaves the same way under failure.
+A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs; the defaults (two retries, 0.5 s doubling to 5 s with jitter, `Retry-After` honoured up to 30 s, 408, 429 and 5xx retried) and the reasons for each are in the rustdoc of `RetryPolicy`.
 
 ```mermaid
 flowchart TD
@@ -97,26 +58,20 @@ flowchart TD
     SLEEP1 & SLEEP2 --> S
 ```
 
-| Setting | Default | Override |
-|---|---|---|
-| API key | `TYPESAFE_API_KEY` | `Client::builder().api_key(..)` |
-| Base URL | `https://api.typesafe.ai` | `.base_url(..)`; the binary takes `typesafe.base_url` from the [configuration](configuration.md); any server speaking the System One shape works, see [Laya](laya.md) |
-| Model | `jev-latest` | `.model(..)`; the binary takes `typesafe.model`, `TYPESAFE_DEFAULT_MODEL` or `--model` |
-| Timeout | 10 s per attempt | `.timeout(..)` |
-| Retries | 2; backoff 0.5 s doubling to 5 s; ±25 % jitter | `.retry(RetryPolicy { .. })` |
-| Retry on | 408, 429, 5xx (including 529), transport errors | |
-| `Retry-After` | honoured up to 30 s, delay-seconds form only | `retry_after_max` |
+Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
 
-Why these values:
+## How signalman uses it
 
-- **Two retries** is the TypeSafe Python SDK's default, and the client mirrors the SDK so a failure looks the same from Rust and from Python. The cost is bounded: three attempts of at most 10 s each plus two backoffs is how long a dead upstream holds a triage before the error surfaces. More retries would hold a webhook slot longer ([Operations](operations.md#backpressure)); fewer would fail on a single dropped connection.
-- **`Retry-After` is honoured only up to 30 s.** The server knows better than the client how long to wait, so the header wins when it is present, but a hostile or misconfigured header must not stall a triage for minutes; above the cap the client's own backoff applies instead. Only the delay-seconds form is read. The HTTP-date form needs a clock comparison against a server whose clock may not match, and the backoff is a safe fallback, so the code ignores it rather than trust the arithmetic.
-- **Every failed attempt is counted**, retried or not, in `signalman.upstream.errors` with the service label. A retry that succeeds hides the failure from the caller, but the failed attempt was still load on the upstream and still a symptom, so the metric sees it ([Observability](observability.md#metrics)).
+- `signalman::Client` is a re-export of `judgment::Client`, the same type; the re-exports exist so nothing built against signalman breaks during the extraction and are dropped after one release.
+- The binary builds the client from `typesafe.base_url`, `typesafe.model` and `typesafe.timeout_seconds` ([Configuration](configuration.md)); the key comes from `TYPESAFE_API_KEY` and nowhere else. Any server that speaks the System One wire works, which is how [Laya](laya.md) was run with no code change.
+- signalman implements `judgment::Observer` in `src/telemetry.rs` and installs it as the process-wide observer in `Providers::init`, before the first client exists. That is why the crate's token usage and failed attempts appear as `signalman.typesafe.tokens` and `signalman.upstream.errors` ([Observability](observability.md#metrics)) while the crate names no instrument.
+- The incident.io and Backstage clients call `judgment::http::send_with_retries` with their own service label, so all three upstreams retry the same way and every failed attempt is counted once.
+- The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and `Texts` makes the wording data that can be tuned without touching the handles ([Triage](triage.md)).
+- The [evaluation harness](evaluation.md) grades through `judgment::eval`: recordings, per-question grading and the calibration metrics are the crate's; the labels and the decision are signalman's.
 
-`evaluate` runs inside a `typesafe.evaluate` span carrying the `model` requested and, once the response arrives, the `input_tokens` it reports; the same numbers feed the `signalman.typesafe.tokens` counter, where `input` is the billed direction. The state and the questions are never put in a span field ([Observability](observability.md)).
+## What the crate does not do
 
-The response's `model` field is the versioned id that answered (for example `jev-1.13.0`) even when an alias was requested. It is logged and returned in every outcome. Thresholds tuned against one version should pin that version.
-
-## Errors
-
-A caller has to pick a remedy from the error alone, so `signalman::Error` separates failures by what fixes them rather than by status code. `MissingApiKey` and `Unauthorized` (401) mean the configuration is wrong. `InvalidRequest` (422, with the body) means the request is wrong and no retry will help; the body names the offending field. `RateLimited` (429) and `Overloaded` (TypeSafe's 529) are both returned only after the retries ran out and both carry the attempt count, but they are kept apart because the remedies differ: 429 is the account's rate limit, the remedy is to slow down, and the error carries the server's `Retry-After` when it sent one; 529 is TypeSafe's service being overloaded, there is no `Retry-After` to carry, and the remedy is to wait and try again later. `Http` (any other status, with the truncated body), `Transport` (network, TLS or timeout, after retries) and `Decode` (a body that is not the documented shape) cover the rest, plus the typed-layer errors above. The API key is marked sensitive and redacted from `Debug` output, so an error printed with `{:?}` cannot leak it.
+- No sync client: the API documents one endpoint and every consumer so far is async.
+- No batching or streaming: the API documents one request shape, and no consumer has asked.
+- No metrics backend: a library that named instruments would force its telemetry stack on every consumer; the `Observer` trait hands the numbers to whoever owns the instruments.
+- No second backend in the product yet: the crate has a `SystemOne` trait with `Fake` and `Replay` implementations, but signalman's `Triager` holds a concrete `Client` rather than a `dyn SystemOne` until a second backend is needed there. The trait is the seam an official SDK or a local model would plug into.

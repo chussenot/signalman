@@ -38,16 +38,16 @@ run = "cargo fmt --all --check"
 [tasks.lint]
 description = "Clippy on all targets; pedantic set, warnings are errors"
 env = { RUSTFLAGS = "-D warnings" }
-run = "cargo clippy --all-targets --all-features"
+run = "cargo clippy --workspace --all-targets --all-features"
 
 [tasks.test]
 description = "Unit, integration (wiremock) and doc tests; no network"
-run = "cargo test --all-features"
+run = "cargo test --workspace --all-features"
 
 [tasks.doc]
 description = "Build API docs; broken links are errors"
 env = { RUSTDOCFLAGS = "-D warnings" }
-run = "cargo doc --no-deps --document-private-items"
+run = "cargo doc --workspace --no-deps --document-private-items"
 
 [tasks."docs:check"]
 description = "Frontmatter on every page, and docs/llms.txt matches the nav and frontmatter"

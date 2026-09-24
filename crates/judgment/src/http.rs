@@ -1,13 +1,54 @@
-//! HTTP plumbing shared by the TypeSafe and incident.io clients: retry policy,
-//! backoff, `Retry-After` parsing and a send loop that retries transient
-//! failures. Each client classifies the final response into its own error.
+//! HTTP plumbing any client over `reqwest` can share: retry policy, backoff,
+//! `Retry-After` parsing and a send loop that retries transient failures.
+//!
+//! It is public so that one loop serves every upstream: the TypeSafe client
+//! uses it, and the application this crate was extracted from runs two more
+//! clients through it, so the retry rules and the failure counting are
+//! written once and every upstream behaves the same way under failure. The
+//! loop returns the last response; each client classifies it into its own
+//! error type.
 
 use std::time::Duration;
 
 use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 
-/// Retry behaviour. Defaults match the TypeSafe Python SDK's `RetryPolicy`.
+/// Retry behaviour: how many times, how long between, and how far to trust
+/// the server's `Retry-After`.
+///
+/// The defaults are the TypeSafe Python SDK's `RetryPolicy` (two retries,
+/// 0.5 s doubling to 5 s, ±25 % jitter), so a call behaves the same from
+/// Rust as from Python. Two retries also bound the worst case: three
+/// attempts, each under the client's per-attempt timeout, plus two waits of
+/// at most `retry_after_max` each when the server sends a header, or under
+/// two seconds of backoff when it does not.
+///
+/// What each field protects against, at its extremes:
+///
+/// * `max_retries` at 0 turns every blip into a failed call; set high, it
+///   keeps a caller waiting on an upstream that is down and multiplies load on
+///   one that is overloaded.
+/// * `backoff_initial` and `backoff_max` too small hammer an upstream that
+///   asked for room; too large make every recoverable failure slow.
+/// * `backoff_jitter` at 0 lets many clients retry in lockstep; the ±25 %
+///   default spreads them.
+/// * `retry_after_max` is the ceiling on how long the server may ask the
+///   client to wait. The server knows better than the client how long to back
+///   off, so the header wins when present, but a hostile or misconfigured
+///   header must not stall a caller for minutes; above the cap the client's
+///   own backoff applies instead.
+///
+/// Only the delay-seconds form of `Retry-After` is read. The HTTP-date form
+/// needs a comparison against a server clock that may not match this one,
+/// and the backoff is a safe fallback, so the date is ignored rather than
+/// trusted. The Python SDK also reads a `retry-after-ms` header; the HTTP API
+/// reference documents neither header, and this crate reads only the
+/// standard one.
+///
+/// There is no overall budget across attempts. The Python SDK has one (30 s
+/// by default); here the bound comes from the attempt count and the
+/// per-attempt timeout, and a caller that needs a hard deadline wraps the
+/// call in its own timeout, which composes with any policy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryPolicy {
     /// Retries after the first attempt; 0 disables retries.
@@ -18,8 +59,8 @@ pub struct RetryPolicy {
     pub backoff_max: Duration,
     /// Jitter as a fraction of the delay (0.25 means ±25 %).
     pub backoff_jitter: f64,
-    /// Longest `Retry-After` the client will honour before falling back to
-    /// its own backoff. Prevents a hostile or misconfigured header from
+    /// Longest `Retry-After` the client will honour; above it the client's
+    /// own backoff applies. Prevents a hostile or misconfigured header from
     /// stalling a caller for minutes.
     pub retry_after_max: Duration,
 }
@@ -45,7 +86,9 @@ impl RetryPolicy {
         }
     }
 
-    /// 408, 429 and every 5xx (which includes TypeSafe's 529) are transient.
+    /// 408, 429 and every 5xx (which includes TypeSafe's 529) are transient
+    /// by definition: a later attempt may succeed. 401 and 422 are not, since
+    /// a retry cannot fix a key or a request body and would only add load.
     pub fn is_retryable(status: StatusCode) -> bool {
         status == StatusCode::REQUEST_TIMEOUT
             || status == StatusCode::TOO_MANY_REQUESTS
@@ -97,9 +140,12 @@ pub struct Exhausted {
 ///
 /// Successful and non-retryable statuses return `Ok(Completed)` so the caller
 /// maps them; transport errors after the last retry return `Err(Exhausted)`.
-/// `service` labels every failed attempt in `signalman.upstream.errors`
-/// (`typesafe`, `incidentio`, `backstage`); the loop is the one place all
-/// three clients pass through, so it is where the count lives.
+/// `service` labels every failed attempt reported to the global
+/// [`crate::Observer`] (an application passes its own upstream names). Every
+/// failed attempt is reported, retried or not: a retry that succeeds hides
+/// the failure from the caller, but the attempt was still load on the
+/// upstream and still a symptom. The loop is the one place every client
+/// passes through, so it is where the count lives.
 pub async fn send_with_retries(
     policy: &RetryPolicy,
     service: &'static str,
@@ -113,12 +159,12 @@ pub async fn send_with_retries(
                 let status = resp.status();
                 let retry_after = parse_retry_after(resp.headers());
                 if !status.is_success() {
-                    crate::telemetry::record_upstream_error(service, status.as_str());
+                    crate::observer::global().on_failed_attempt(service, status.as_str());
                 }
                 let body = match resp.text().await {
                     Ok(b) => b,
                     Err(source) => {
-                        crate::telemetry::record_upstream_error(service, "transport");
+                        crate::observer::global().on_failed_attempt(service, "transport");
                         if attempt <= policy.max_retries {
                             let delay = policy.delay(attempt, None);
                             tracing::warn!(attempt, ?delay, error = %source, "body read failed; retrying");
@@ -150,7 +196,7 @@ pub async fn send_with_retries(
                 });
             }
             Err(source) => {
-                crate::telemetry::record_upstream_error(service, "transport");
+                crate::observer::global().on_failed_attempt(service, "transport");
                 if attempt <= policy.max_retries {
                     let delay = policy.delay(attempt, None);
                     tracing::warn!(attempt, ?delay, error = %source, "transport error; retrying");
@@ -166,8 +212,9 @@ pub async fn send_with_retries(
     }
 }
 
-/// Parse `Retry-After` in delay-seconds form. HTTP-date form is ignored (the
-/// backoff policy applies instead).
+/// Parse `Retry-After` in delay-seconds form. The HTTP-date form is ignored
+/// and the backoff applies instead, since reading it needs a clock the
+/// client cannot trust to match the server's.
 pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     headers
         .get(RETRY_AFTER)?
@@ -180,13 +227,7 @@ pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs_f64)
 }
 
-/// The `Retry-After` clause of a rate-limit error message, empty when the
-/// server sent none. Shared by the client error types.
-pub(crate) fn retry_after_suffix(retry_after: Option<Duration>) -> String {
-    retry_after
-        .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
-        .unwrap_or_default()
-}
+pub use crate::error::retry_after_suffix;
 
 /// Truncate a response body for inclusion in an error message.
 pub fn truncate(mut s: String) -> String {

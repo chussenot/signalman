@@ -1,38 +1,74 @@
+[workspace]
+members = ["crates/judgment"]
+
+# Shared by every crate in the workspace, so the two are held to the same bar.
+[workspace.package]
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+repository = "https://github.com/chussenot/signalman"
+
+[workspace.dependencies]
+fastrand = "2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = "1"
+tracing = "0.1"
+wiremock = "0.6"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
 [package]
 name = "signalman"
 version = "0.3.0"
-edition = "2024"
-rust-version = "1.91"
-description = "Typed Rust client for the TypeSafe System One API, with an alert-triage example"
-license = "MIT"
+description = "Alert triage on calibrated judgments: incident.io, Backstage and the TypeSafe System One API, built on the judgment crate"
 publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "signalman"
 path = "src/main.rs"
 
 [dependencies]
+# The judgment core (decision 0010): questions, typed answers, the TypeSafe
+# client and its retries. A path dependency here; other projects take it by git.
+judgment = { path = "crates/judgment", version = "0.1.0" }
 axum = { version = "0.8", features = ["json", "tokio", "http1"], default-features = false }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-fastrand = "2"
 hmac = "0.12"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 schemars = "1.2"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
+reqwest = { workspace = true }
 # MCP server (decision 0008): the server macros, the stdio transport, and the
 # Streamable HTTP server as a tower service mounted on the axum router. No
 # client, no OAuth extras. The client features live under dev-dependencies
 # only, for in-process and over-HTTP tests — they never reach the binary.
 rmcp = { version = "3.4", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = "0.10"
 subtle = "2"
-thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "net", "signal", "sync"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "fs", "net", "signal", "sync"] }
 toml = "0.9"
-tracing = "0.1"
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # OpenTelemetry: spans over the triage flow and metrics for
 # the receiver, exported over OTLP/HTTP (protobuf) through the reqwest this
@@ -46,22 +82,12 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 # `json` only for the test clients; the crate serialises its own bodies.
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.57", default-features = false }
 rmcp = { version = "3.4", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 tower = { version = "0.5", features = ["util"] }
-wiremock = "0.6"
+wiremock = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_docs = "warn"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-unwrap_used = "warn"
-expect_used = "warn"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
+[lints]
+workspace = true

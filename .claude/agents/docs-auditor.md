@@ -33,6 +33,15 @@ records (`docs/decisions/`) are the canonical why; a page that repeats a
 decision's reasoning at length instead of linking it is a finding of the
 opposite kind.
 
+## The judgment crate
+
+Its documentation is `crates/judgment/README.md` and its rustdoc, not a
+page under `docs/`; `docs/typesafe-client.md` points there. Audit the
+README's claims against `crates/judgment/src` the same way, and run
+`RUSTDOCFLAGS="-D warnings" cargo doc -p judgment --no-deps` and
+`cargo test -p judgment --doc`: a doc example that no longer compiles is a
+finding. A why-gap in a module's `//!` doc counts as a why-gap.
+
 ## Structural checks
 
 ```sh

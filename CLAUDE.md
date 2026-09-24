@@ -15,6 +15,14 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 - Load the `typesafe:typesafe-ai` skill before touching questions, answers,
   the TypeSafe client or `src/triage/policy.rs`. The live docs are the
   contract; start at https://docs.typesafe.ai/llms.txt.
+- The typed client is its own crate, `crates/judgment` (decision 0010), a
+  workspace member signalman depends on by path and re-exports. It is
+  generic: nothing about alerts, incident.io, Backstage or signalman's
+  telemetry goes in there. It reports token usage and failed attempts
+  through `judgment::Observer`, which `src/telemetry.rs` implements and
+  `Providers::init` installs globally; it emits `tracing` spans and no
+  metrics of its own. Its `http` feature gates the client; the questions
+  and answers build without it. Gate and tests run with `--workspace`.
 - incident.io contract: OpenAPI v3 at https://api.incident.io/v1/openapiV3.json
   and https://docs.incident.io/llms.txt. Never create incidents directly
   (decision `signalman-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).
