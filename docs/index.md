@@ -2,7 +2,7 @@
 title: Documentation
 description: Map of the signalman documentation, what each page is for, and the conventions the pages follow.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-24
 tags: [index]
 ---
 
@@ -25,7 +25,8 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | How webhooks are verified and what is written back | [incident.io integration](incidentio.md) |
 | How deploys and configuration changes reach the triage | [Change feed](changes.md) |
 | How an agent calls signalman's judgments | [MCP server](mcp.md) |
-| How the typed client works and its defaults | [TypeSafe client](typesafe-client.md) |
+| Why the typed client is the `judgment` crate, separate from the triager, and how signalman uses it | [TypeSafe client](typesafe-client.md) |
+| How to use the judgment core in another project | [TypeSafe client](typesafe-client.md), the crate README |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |

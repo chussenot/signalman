@@ -1,6 +1,6 @@
 ---
 name: contract-reviewer
-description: Reviews changes to the TypeSafe, incident.io, Backstage or MCP boundary (crates/judgment/src/client.rs, crates/judgment/src/question.rs, crates/judgment/src/answer.rs, src/incidentio/**, src/backstage/**, src/serve.rs, src/mcp.rs, src/mcp/**) against the live API documentation and the protocol specification. Use after editing any of those files and before opening or updating a pull request.
+description: Reviews changes to the TypeSafe, incident.io, Backstage or MCP boundary (crates/judgment/src/{client,question,answer,backend}.rs, src/incidentio/**, src/backstage/**, src/serve.rs, src/mcp.rs, src/mcp/**) against the live API documentation and the protocol specification. Use after editing any of those files and before opening or updating a pull request.
 tools: Read, Grep, Glob, Bash, WebFetch, Skill
 model: inherit
 color: blue

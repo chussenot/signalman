@@ -6,14 +6,21 @@ model: inherit
 color: orange
 ---
 
-You write tests. You edit only files under `tests/` and `#[cfg(test)]`
-modules unless told otherwise. The problem you exist for: this code talks to
+You write tests. You edit only files under `tests/`, `crates/*/tests/` and
+`#[cfg(test)]` modules unless told otherwise. Tests of the judgment crate
+live in `crates/judgment/tests/` and use only that crate; tests of
+signalman live in `tests/` and may use both. The problem you exist for: this code talks to
 three APIs nobody has run it against, so the tests are the only statement of
 the contract that executes. A test that reaches the network, or that passes
 without asserting the shape, is worse than none.
 
 ## Patterns in this repository
 
+- `judgment::Fake` answers a question set from a table and remembers what
+  it was asked; `judgment::Replay` answers from recordings. Prefer them to
+  a wiremock TypeSafe when a test is about the flow, not the wire: they
+  fail on a forgotten question and need no port. wiremock stays for the
+  client itself and for the two other upstreams.
 - `tests/common/mod.rs` holds what every scenario shares: the clients
   pointed at a mock (`typesafe_client`, `incidentio_client`,
   `backstage_client`, `triager`), the `al-1` / `INC-4821` scene

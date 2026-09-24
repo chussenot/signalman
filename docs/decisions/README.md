@@ -2,7 +2,7 @@
 title: Decisions
 description: Architecture decision records for signalman in MADR form, the index of accepted decisions, and how to add one.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-24
 tags: [decisions, adr, madr]
 ---
 
@@ -29,6 +29,7 @@ Records are not edited after acceptance, so a fact that has moved since a record
 
 - 0006's confirmation counts four secret reads outside `src/config.rs`. There are now seven, in six files: the TypeSafe, incident.io and Backstage clients read their API key or token, the incident.io client also reads `INCIDENTIO_ALERT_SOURCE_TOKEN` for `triage --forward-to-incidentio`, the webhook verifier reads the signing secret, `src/changes/mod.rs` reads `SIGNALMAN_CHANGES_TOKEN`, and `src/mcp/http.rs` reads `SIGNALMAN_MCP_TOKEN`. Every one is a secret listed in [Configuration](../configuration.md#secrets); the rule the record states, that only `config.rs` reads a non-secret variable, holds again since the alert source id became the setting `incidentio.alert_source_config_id` (2026-09-23).
 - 0007's confirmation names `src/changes.rs`. The module is now the directory `src/changes/`: `mod.rs` holds the window and matching, `argocd.rs` and `gitlab.rs` the native adapters the record describes as translations of documented payloads.
+- 0010 puts the `Observer` on the client builder. The builder takes one (`ClientBuilder::observer`), but the retry loop the record keeps in the crate is a free function that the incident.io and Backstage clients call with no builder in reach, so failed attempts are reported through a process-wide observer instead: `judgment::observer::set_global`, installed once by `Providers::init` before any client exists. A client with no observer of its own reports usage to the global one too.
 - 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record

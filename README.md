@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-24
 tags: [overview]
 ---
 
@@ -34,7 +34,7 @@ incident.io remains the alert hub. signalman never creates incidents. It enriche
 - Triages an alert file from the CLI, optionally pulling live incidents as duplicate candidates, enriching from the catalog, and forwarding the enriched alert to an incident.io HTTP alert source.
 - Emits one JSON document per triaged alert: the judgments with their probabilities, the decision, the thresholds that produced it, and what was written back. The schema is committed and a test fails when the code and the file drift apart, so a script or an agent can read the document without reading the source.
 - Serves the same judgments as tools over the Model Context Protocol, over stdio or HTTP, so an agent can qualify an alert, list related alerts and open incidents, and look up an owner. Those tools are read-only; one optional write tool, off by default, applies a reviewed outcome back to incident.io.
-- Exposes the TypeSafe client as a library: a question returns a typed handle, and reading the answer through that handle yields a Rust enum, a probability, or a score. A response of the wrong shape is an error, not a misread number.
+- Keeps the typed TypeSafe client as its own crate, `judgment` (`crates/judgment`), usable by any Rust project without the triager: a question returns a typed handle, and reading the answer through that handle yields a Rust enum, a validated probability or a score, never a misread number.
 
 ## What it does not do
 
@@ -65,7 +65,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 |---|---|
 | [Architecture](docs/architecture.md) | Components, the path of one alert, boundaries, failure containment |
 | [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams; the container and component pages are reached from the context page |
-| [TypeSafe client](docs/typesafe-client.md) | Typed handles, `options!`, probabilities, defaults |
+| [TypeSafe client](docs/typesafe-client.md) | The `judgment` crate: why it is separate, how signalman uses it |
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
