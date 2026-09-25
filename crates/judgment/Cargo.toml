@@ -1,6 +1,6 @@
 [package]
 name = "judgment"
-version = "0.1.0"
+version = "0.2.0"
 description = "Typed, calibrated judgments from TypeSafe System One models (Jev) and compatible backends: questions with typed handles, validated probabilities, SDK-default retries, differences stated"
 readme = "README.md"
 keywords = ["typesafe", "system-one", "jev", "classification", "calibration"]

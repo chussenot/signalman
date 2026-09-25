@@ -55,7 +55,7 @@ Each test exists for one belief the mocks could not check.
 
 The eight tests of the first run, all but the two added with judgment 0.2, passed on 2026-09-24 against the two servers described above.
 
-With judgment 0.2 (unreleased), all ten passed on 2026-09-25 against the same two servers, `laya-serve` 0.3.20. What that run showed, beyond the assertions:
+With judgment 0.2.0, all ten passed on 2026-09-25 against the same two servers, `laya-serve` 0.3.20. What that run showed, beyond the assertions:
 
 - Structured levels are echoed verbatim: the object level came back as a JSON object and the array level as a JSON array, never as their compact JSON in a string, so `verify`'s second form has still not been observed.
 - The unknown extra field was answered, not refused.

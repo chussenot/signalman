@@ -124,7 +124,7 @@ Output of `signalman triage examples/alerts/crashloop.json --json` against a moc
 ```json
 {
   "schema_version": 1,
-  "signalman_version": "0.3.0",
+  "signalman_version": "0.4.0",
   "decided_at": "2026-09-22T06:14:28.206474153Z",
   "time_to_qualify_seconds": null,
   "alert": {

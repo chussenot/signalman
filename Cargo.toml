@@ -44,7 +44,7 @@ missing_errors_doc = "allow"
 
 [package]
 name = "signalman"
-version = "0.3.0"
+version = "0.4.0"
 description = "Alert triage on calibrated judgments: incident.io, Backstage and the TypeSafe System One API, built on the judgment crate"
 publish = false
 edition.workspace = true
@@ -59,7 +59,7 @@ path = "src/main.rs"
 [dependencies]
 # The judgment core (decision 0010): questions, typed answers, the TypeSafe
 # client and its retries. A path dependency here; other projects take it by git.
-judgment = { path = "crates/judgment", version = "0.1.0" }
+judgment = { path = "crates/judgment", version = "0.2.0" }
 axum = { version = "0.8", features = ["json", "tokio", "http1"], default-features = false }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }

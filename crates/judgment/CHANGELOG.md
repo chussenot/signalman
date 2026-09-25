@@ -4,7 +4,7 @@ All notable changes to the `judgment` crate. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate follows
 [Semantic Versioning](https://semver.org/) (0.x: a minor bump may break).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-09-25
 
 Hardens the wire and closes the gaps against the official TypeSafe SDKs that
 the [System One client survey](../../docs/research/system-one-client-libraries.md)
@@ -109,7 +109,7 @@ document (0.2.0) and the SDK references.
 - `Error::Unauthorized` is a struct variant with `request_id` (S1).
 - `Error::RateLimited`, `Overloaded` and `Http` gain `request_id` (S1).
 - `Error::Http` gains `attempts`, and its message names the attempt count and
-  reads `no body` for an empty body.
+  reads `no body` for an empty body (S1).
 - `Error::Decode` is a struct variant `{ source, request_id }` with a
   `From<serde_json::Error>` impl (S1).
 - `http::Completed` is `#[non_exhaustive]` with a new `headers` field (S1).
@@ -154,3 +154,4 @@ document (0.2.0) and the SDK references.
   `Fake::score`'s legend is the question's levels (S6).
 - `Replay` refuses a recording that does not fit; `Recorder` writes nothing
   for such a response (S6).
+- Version 0.1.0 becomes 0.2.0 (S8).

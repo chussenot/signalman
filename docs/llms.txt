@@ -38,7 +38,7 @@ This index is generated from the documentation nav (`mkdocs.yml`) and each page'
 ## Research
 
 - [Open System One models](https://raw.githubusercontent.com/chussenot/signalman/main/docs/research/open-system-one-models.md): What the open reproductions of TypeSafe's Jev, the Jev Decision Index leaderboard and the Laya project establish, and the engineering decisions for judgment and signalman that follow from it: provider portability, self-hosting economics, question design rules, calibration policy and evaluation method.
-- [System One client libraries](https://raw.githubusercontent.com/chussenot/signalman/main/docs/research/system-one-client-libraries.md): A survey of the twenty-five community Rust clients for the TypeSafe System One wire, the official Python and JavaScript SDKs and the live OpenAPI document, what each does that judgment does not, and the ranked changes worth making to the crate, with the ones rejected and why.
+- [System One client libraries](https://raw.githubusercontent.com/chussenot/signalman/main/docs/research/system-one-client-libraries.md): A survey of the twenty-five community Rust clients for the TypeSafe System One wire, the official Python and JavaScript SDKs and the live OpenAPI document, what each did that judgment 0.1 did not, the ranked changes worth making to the crate, the ones rejected and why, and what judgment 0.2.0 shipped of them.
 
 ## Decisions
 

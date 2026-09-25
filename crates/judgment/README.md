@@ -242,7 +242,9 @@ for.
 
 ## Status
 
-`0.1.0`, a workspace member of the signalman repository, not yet on crates.io.
+`0.2.0`, a workspace member of the signalman repository, not yet on crates.io.
+What changed in each release, breaking changes listed, is in
+[CHANGELOG.md](CHANGELOG.md).
 Take it by git until a second consumer settles the API:
 
 ```toml
