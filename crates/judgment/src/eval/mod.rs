@@ -260,7 +260,12 @@ impl Judgment {
     /// and the confidence when wrong toward zero. That is accepted because
     /// the case is rare and loud: an unknown kind means this crate is older
     /// than the server, the client logs each one at `warn`, and the
-    /// `<kind>` it predicts stands out in the confusion matrix.
+    /// `<kind>` it predicts stands out in the confusion matrix. It is rarer
+    /// still because every backend verifies its response
+    /// ([`Response::verify`](crate::Response::verify)), which refuses an
+    /// unknown answer under an asked question: only an unverified response,
+    /// such as one read by case id with [`read_recording`] or built by hand,
+    /// or an answer to a question nobody asked, can bring one here.
     pub fn of_answer(answer: &Answer, expected: Option<&str>) -> Self {
         match answer {
             Answer::Unknown(_) => Self {

@@ -13,7 +13,11 @@
 //! observer when it has one and to the global one otherwise, the way
 //! `tracing` falls back to its global subscriber. Failed attempts always go
 //! to the global one: the retry loop in [`crate::http`] is shared with
-//! clients that carry no observer, so it has no client to ask.
+//! clients that carry no observer, so it has no client to ask. The loop
+//! reports every failed attempt by status, and the TypeSafe client also
+//! reports a 2xx it could not use, which the loop saw as a success: one
+//! whose body did not decode, or one that did not answer the questions it
+//! was sent.
 
 use std::sync::{Arc, OnceLock};
 
@@ -27,8 +31,13 @@ pub trait Observer: Send + Sync + 'static {
     }
 
     /// One attempt against `service` failed with `status`: an HTTP status
-    /// code, or `transport` when no response came back. Retried attempts are
-    /// reported too; they are load whether or not a later attempt succeeds.
+    /// code, `transport` when no response came back, or, from the TypeSafe
+    /// client, `decode` (a 2xx whose body did not decode) or `unfit` (a 2xx
+    /// that did not fit the questions sent, [`crate::Response::verify`]).
+    /// Retried attempts are reported too; they are load whether or not a
+    /// later attempt succeeds. `decode` and `unfit` are never retried, and a
+    /// `unfit` response's usage is reported through [`Observer::on_usage`]
+    /// as well, since it was billed.
     fn on_failed_attempt(&self, service: &'static str, status: &str) {
         let _ = (service, status);
     }

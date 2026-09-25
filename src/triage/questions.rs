@@ -339,6 +339,7 @@ impl TriageQuestions {
         let invalid = |reason: String| crate::Error::InvalidAnswer {
             id: self.impact.id().to_owned(),
             reason,
+            request_id: response.request_id.clone(),
         };
         if answer.levels.len() != levels {
             return Err(invalid(format!(
@@ -514,9 +515,20 @@ mod tests {
         .unwrap()
     }
 
+    /// The legend TypeSafe echoes for the impact question: its levels, as
+    /// sent, keyed by index.
+    fn impact_legend() -> serde_json::Value {
+        Impact::LEVELS
+            .iter()
+            .enumerate()
+            .map(|(i, level)| (i.to_string(), json!(level)))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+
     fn score_4() -> serde_json::Value {
         json!({ "type": "score", "score": 2.0,
-                "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "legend": impact_legend(),
                 "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 },
                 "confidence": 0.9 })
     }
@@ -581,7 +593,7 @@ mod tests {
                 "owner": { "type": "choice", "choice": "platform",
                            "probabilities": { "platform": 1.0 }, "confidence": 0.9 },
                 "impact": { "type": "score", "score": 4.0,
-                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "legend": impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 0.0, "3": 1.0 },
                             "confidence": 0.9 },
                 "actionable": { "type": "noul", "noul": 0.9 },
@@ -598,12 +610,14 @@ mod tests {
     #[test]
     fn a_score_on_a_different_scale_is_refused_rather_than_folded_onto_this_one() {
         let q = TriageQuestions::for_alert(&full_alert()).unwrap();
+        let mut five = impact_legend();
+        five["4"] = json!("A fifth level the question never sent");
         let err = q
             .read(&response(&json!({
                 "owner": { "type": "choice", "choice": "platform",
                            "probabilities": { "platform": 1.0 }, "confidence": 0.9 },
                 "impact": { "type": "score", "score": 4.0,
-                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d", "4": "e" },
+                            "legend": five,
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0, "4": 1.0 },
                             "confidence": 0.9 },
                 "actionable": { "type": "noul", "noul": 0.9 },

@@ -53,7 +53,8 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   `#[tracing::instrument]` on client methods and the flow, named
   `service.operation`; never put a note body, a request body or a secret in
   a span field. Every upstream call goes through `http::send_with_retries`
-  with its service label, which is where upstream errors are counted.
+  with its service label, which is where upstream errors are counted; the
+  TypeSafe client also counts a 2xx it cannot use as `decode` or `unfit`.
   `Providers::init` runs once in `main` before any span; export happens
   only when `telemetry.otlp_endpoint` is set, and `shutdown` must run on
   the way out or a CLI run exports nothing.

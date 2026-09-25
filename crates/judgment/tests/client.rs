@@ -7,8 +7,10 @@
 //! the models list, the request id carried from the
 //! `x-typesafe-request-id` header onto responses and errors, and per-call
 //! options (timeout, retry policy, headers, extra body fields) beside the
-//! builder's default headers, and the tolerant decoding of an answer kind
-//! this release does not know, undocumented fields and a missing `usage`.
+//! builder's default headers, the tolerant decoding of an answer kind this
+//! release does not know, undocumented fields and a missing `usage`, and the
+//! refusal, without a retry, of a response that does not answer the
+//! questions it was sent.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::{Read, Write};
@@ -20,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use judgment::client::{HeaderName, HeaderValue, REQUEST_ID_HEADER};
 use judgment::{
-    Answer, CallOptions, Client, Error, Questions, Recorder, Replay, Request, RetryPolicy,
-    SystemOne, TransportRetry, Usage, options,
+    Answer, CallOptions, Client, Error, Observer, Questions, Recorder, Replay, Request,
+    RetryPolicy, SystemOne, TransportRetry, Usage, options,
 };
 use serde_json::json;
 use wiremock::matchers::{body_json, body_partial_json, header, method, path};
@@ -1348,4 +1350,130 @@ async fn an_unknown_kind_extra_fields_and_no_usage_are_tolerated() {
     );
     assert_eq!(response.extra.len(), 1, "{:?}", response.extra);
     assert_eq!(response.request_id.as_deref(), Some("req_tolerant"));
+}
+
+/// A choice over [`Department`] and a four-level Score, and the body of a
+/// response that answers both as asked.
+fn choice_and_score() -> (Questions, serde_json::Value) {
+    let mut q = Questions::new();
+    q.choice::<Department>("dept", "Which team handles `message`?")
+        .unwrap();
+    q.score(
+        "impact",
+        "How bad is `message`?",
+        ["none", "minor", "major", "outage"],
+    )
+    .unwrap();
+    let body = json!({
+        "model": "jev-1.13.0",
+        "answers": {
+            "dept": { "type": "choice", "choice": "billing",
+                      "probabilities": { "billing": 0.9, "technical": 0.1 }, "confidence": 0.8 },
+            "impact": { "type": "score", "score": 1.0,
+                        "legend": { "0": "none", "1": "minor", "2": "major", "3": "outage" },
+                        "probabilities": { "0": 0.1, "1": 0.8, "2": 0.1, "3": 0.0 },
+                        "confidence": 0.7 }
+        },
+        "usage": { "input_tokens": 40, "output_tokens": 4 }
+    });
+    (q, body)
+}
+
+#[tokio::test]
+async fn the_client_refuses_a_choice_option_it_did_not_send() {
+    let (q, mut body) = choice_and_score();
+    body["answers"]["dept"] = json!({ "type": "choice", "choice": "sales",
+                                      "probabilities": { "billing": 0.2, "sales": 0.8 },
+                                      "confidence": 0.7 });
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(REQUEST_ID_HEADER, "req_sales")
+                .set_body_json(body),
+        )
+        // Once: an answer that does not fit is not retried.
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, fast_retries(3))
+        .system_one(&"s", &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::UnknownOption { id, option, request_id: Some(rid) }
+            if id == "dept" && option == "sales" && rid == "req_sales"),
+        "{err:?}"
+    );
+    assert!(err.is_unfit());
+    assert_eq!(
+        err.to_string(),
+        r#"answer "dept" names option "sales", which its question does not offer [request_id req_sales]"#
+    );
+}
+
+#[tokio::test]
+async fn the_client_refuses_a_score_legend_that_is_not_the_levels_sent() {
+    let (q, mut body) = choice_and_score();
+    body["answers"]["impact"]["legend"] = json!({ "0": "a", "1": "b", "2": "c", "3": "d" });
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, fast_retries(3))
+        .system_one(&"s", &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::InvalidAnswer { id, reason, request_id: None }
+            if id == "impact" && reason == "legend level 0 is not the level the question sent"),
+        "{err:?}"
+    );
+}
+
+/// Counts what a client's own observer is told.
+#[derive(Default)]
+struct CountingObserver {
+    usage: AtomicUsize,
+    input_tokens: AtomicUsize,
+}
+
+impl Observer for CountingObserver {
+    fn on_usage(&self, _model: &str, usage: &Usage) {
+        self.usage.fetch_add(1, Ordering::SeqCst);
+        self.input_tokens.fetch_add(
+            usize::try_from(usage.input_tokens).unwrap(),
+            Ordering::SeqCst,
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_is_reported_for_a_response_that_does_not_fit() {
+    let (q, mut body) = choice_and_score();
+    body["answers"].as_object_mut().unwrap().remove("impact");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let observer = Arc::new(CountingObserver::default());
+    let c = Client::builder()
+        .api_key("test-key")
+        .base_url(server.uri())
+        .retry(fast_retries(2))
+        .observer(observer.clone())
+        .build()
+        .unwrap();
+    let err = c.system_one(&"s", &q).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::MissingAnswer { id, .. } if id == "impact"),
+        "{err:?}"
+    );
+    // The tokens were spent, so they are reported, once.
+    assert_eq!(observer.usage.load(Ordering::SeqCst), 1);
+    assert_eq!(observer.input_tokens.load(Ordering::SeqCst), 40);
 }

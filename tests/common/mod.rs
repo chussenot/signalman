@@ -209,7 +209,7 @@ impl SystemOne {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.8, "platform": 0.2 },
                            "confidence": self.owner_confidence },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 },
                             "confidence": self.impact_confidence },
                 "actionable": { "type": "noul", "noul": 0.95 },
@@ -235,6 +235,18 @@ impl SystemOne {
             .mount(typesafe)
             .await;
     }
+}
+
+/// The legend TypeSafe echoes for the impact question: its levels as sent,
+/// keyed by index. The client checks the echo against the question
+/// (`Response::verify`), so a fixture legend must be the real levels.
+pub fn impact_legend() -> Value {
+    signalman::triage::Impact::LEVELS
+        .iter()
+        .enumerate()
+        .map(|(i, level)| (i.to_string(), json!(level)))
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
 }
 
 // ---------------------------------------------------------------------------

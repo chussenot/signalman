@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use serde_json::json;
-use signalman::triage::{Alert, Decision, OpenIncident, Policy, TriageQuestions, decide};
+use signalman::triage::{Alert, Decision, Impact, OpenIncident, Policy, TriageQuestions, decide};
 use signalman::{Client, RetryPolicy};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -19,6 +19,18 @@ fn client(server: &MockServer, retry: RetryPolicy) -> Client {
         .timeout(Duration::from_secs(2))
         .build()
         .unwrap()
+}
+
+/// The legend TypeSafe echoes for the impact question: its levels as sent,
+/// keyed by index. The client checks the echo against the question, so a
+/// fixture legend must be the real levels.
+fn impact_legend() -> serde_json::Value {
+    Impact::LEVELS
+        .iter()
+        .enumerate()
+        .map(|(i, level)| (i.to_string(), json!(level)))
+        .collect::<serde_json::Map<String, serde_json::Value>>()
+        .into()
 }
 
 #[tokio::test]
@@ -37,7 +49,7 @@ async fn triage_end_to_end_attaches_to_duplicate_incident() {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.7, "platform": 0.3 }, "confidence": 0.6 },
                 "impact": { "type": "score", "score": 2.1,
-                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "legend": impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.1, "2": 0.7, "3": 0.2 }, "confidence": 0.6 },
                 "actionable": { "type": "noul", "noul": 0.93 },
                 "duplicate_of": { "type": "choice", "choice": "INC-4821",

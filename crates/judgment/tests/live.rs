@@ -191,6 +191,60 @@ async fn a_structured_score_level_comes_back_decoded() {
 
 #[tokio::test]
 #[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
+async fn a_structured_score_level_is_echoed() {
+    // `Response::verify` accepts a structured level echoed as itself or as
+    // its compact JSON; only the first has been observed (Laya). This sends
+    // one, prints the legend exactly as the server echoed it, and checks it
+    // passes, so the rule can be tightened to what a server really does.
+    // The body is fetched directly, not through the client, so the echo is
+    // printed even when it does not verify.
+    let mut q = Questions::new();
+    q.score(
+        "severity",
+        "How severe is the problem in `message`?",
+        [
+            json!({ "what": "cosmetic", "examples": ["a typo in the invoice footer"] }),
+            json!(["degraded", "some users cannot pay"]),
+            json!("blocked"),
+        ],
+    )
+    .unwrap();
+    let base_url = std::env::var("JUDGMENT_LIVE_BASE_URL")
+        .expect("set JUDGMENT_LIVE_BASE_URL to a System One server (see the file comment)");
+    let state = json!({ "message": STATE_PAYOUTS });
+    let model = env_or("JUDGMENT_LIVE_MODEL", "typed-decisions");
+    let body = serde_json::to_vec(&Request {
+        state: &state,
+        model: &model,
+        questions: &q,
+    })
+    .unwrap();
+    let text = reqwest::Client::new()
+        .post(format!("{}/v1/systemone", base_url.trim_end_matches('/')))
+        .bearer_auth(env_or("JUDGMENT_LIVE_API_KEY", "unused"))
+        .header("content-type", "application/json")
+        .timeout(Duration::from_secs(120))
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let response: judgment::Response = serde_json::from_str(&text).unwrap();
+    match &response.answers["severity"] {
+        Answer::Score { legend, .. } => {
+            eprintln!("echoed legend: {}", serde_json::to_string(legend).unwrap());
+        }
+        other => eprintln!("not a score: {}", serde_json::to_string(other).unwrap()),
+    }
+    response.verify(&q).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
 async fn a_choice_option_without_a_description_is_accepted() {
     let mut q = Questions::new();
     let team = q

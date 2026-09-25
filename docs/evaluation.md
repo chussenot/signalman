@@ -2,7 +2,7 @@
 title: Evaluation harness
 description: How to replay labelled alerts through the triage questions, what the report measures (accuracy, Brier, calibration error, decision agreement, latency), how recording and replay separate inference from policy tuning, and how to use it to compare models.
 status: current
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [evaluation, triage, tuning, typesafe]
 ---
 
@@ -101,6 +101,15 @@ Replaying the same recordings with `suppress_below = 0.55` in `[policy]` moved d
 | decision `agreement` | share of labelled cases where the policy reached the expected action | the product metric: everything above feeds it |
 
 Confidence is the Choice or Score confidence for those primitives and `max(p, 1 - p)` for a Noul. The JSON report adds per-question confusion tables, the decision confusion table, and every graded case with its full distributions.
+
+### An answer that does not fit
+
+The TypeSafe client checks every response against the questions it was sent (`Response::verify` in the `judgment` crate): an answer for every question, of the right primitive, a Choice naming only options it was offered, a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error, not an answer to grade. A live run does not stop there: one such case would otherwise throw away the rest of a run that has already been paid for. The case is listed under `failed` in the JSON report, and after the mismatches in the text report, with the error naming the question and the option or level, and TypeSafe's request id to report it with. It is not graded and not written with `--record`, so every figure above is over the graded cases, and `cases` counts only those. Any other error (the network, the key, a case that does not parse) still stops the run. A report in which every case was graded has no `failed` key, so it reads as before.
+
+```
+failed (1), not graded: the answer did not fit the questions, so the figures above are over the 2 graded cases:
+  oom            answer "owner" names option "made-up-team", which its question does not offer [request_id req-…]
+```
 
 ## Tuning without re-running inference
 

@@ -1005,6 +1005,15 @@ Replaying the same recordings with `suppress_below = 0.55` in `[policy]` moved d
 
 Confidence is the Choice or Score confidence for those primitives and `max(p, 1 - p)` for a Noul. The JSON report adds per-question confusion tables, the decision confusion table, and every graded case with its full distributions.
 
+### An answer that does not fit
+
+The TypeSafe client checks every response against the questions it was sent (`Response::verify` in the `judgment` crate): an answer for every question, of the right primitive, a Choice naming only options it was offered, a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error, not an answer to grade. A live run does not stop there: one such case would otherwise throw away the rest of a run that has already been paid for. The case is listed under `failed` in the JSON report, and after the mismatches in the text report, with the error naming the question and the option or level, and TypeSafe's request id to report it with. It is not graded and not written with `--record`, so every figure above is over the graded cases, and `cases` counts only those. Any other error (the network, the key, a case that does not parse) still stops the run. A report in which every case was graded has no `failed` key, so it reads as before.
+
+```
+failed (1), not graded: the answer did not fit the questions, so the figures above are over the 2 graded cases:
+  oom            answer "owner" names option "made-up-team", which its question does not offer [request_id req-…]
+```
+
 ## Tuning without re-running inference
 
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
@@ -1884,7 +1893,7 @@ Names are OpenTelemetry dotted names with a unit. A Prometheus exporter renders 
 | `signalman.triage.duration` | histogram | `s` | `decision` | from the start of the triage to its decision and write-back done |
 | `signalman.alert.time_to_qualify` | histogram | `s` | `decision` | from the alert's creation in incident.io to signalman's decision; recorded only when the alert carried `created_at` |
 | `signalman.typesafe.tokens` | counter | `{token}` | `model`, `direction` (`input`, which is billed, or `output`) | TypeSafe token usage |
-| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, or `transport`) | every failed attempt, retried or not, counted in the shared retry loop |
+| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, `transport`, or for `typesafe` `decode` and `unfit`) | every failed attempt, retried or not, counted in the shared retry loop; a 2xx the TypeSafe client could not use is counted by the client as `decode` (the body did not decode) or `unfit` (the answers did not fit the questions sent), neither retried |
 | `signalman.webhook.deliveries` | counter | `{delivery}` | `result` (the `webhook.receive` values) | what the receiver did with each delivery |
 | `signalman.triage.inflight` | observable gauge | `{triage}` | `state` (`running` or `queued`) | this replica's in-flight triages, read at each export; registered by `serve` only |
 
@@ -2015,12 +2024,14 @@ crates/judgment/   the judgment crate (decision 0010): the typed client, reusabl
   src/client.rs    TypeSafe HTTP client
   src/http.rs      shared retry loop, backoff, the server's wait (the other clients use it too)
   src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
-  src/answer.rs    Answer wire shape, Probability/Confidence, typed views
+  src/answer.rs    Answer wire shape, Probability/Confidence, typed views, Response::verify
   src/error.rs     TypeSafe-side error enum
   src/backend.rs   SystemOne: the trait; Client, Fake, Recorder and Replay implement it
   src/eval/        recordings, one Judgment per answer and label, per-question metrics
   src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
   tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
+  tests/observer.rs what the client reports to the global observer; a target of its own
+                   because the global observer is set once per process
   tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
   examples/        typed_decisions.rs replays the typed-decisions benchmark; typed-decisions/ holds a sample and the export script
 src/               the signalman application, depending on judgment by path

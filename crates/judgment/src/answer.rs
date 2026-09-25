@@ -70,6 +70,81 @@
 //! logs a warning and skips such an answer; this crate keeps it, so a caller
 //! or a recording can still look at what the server sent.
 //!
+//! # What `Response::verify` checks
+//!
+//! Nothing on the wire ties a response to the request it answers: the
+//! answers come back as a map of id to answer, and a server can leave a
+//! question out, answer it with another primitive, choose an option it was
+//! never offered or describe a Score on another scale. Decoding cannot catch
+//! any of that, since it does not know the questions. [`Response::verify`]
+//! does: it holds a response against the [`Questions`] it was sent for, and
+//! every backend in this crate (the client, [`crate::Fake`],
+//! [`crate::Replay`] and [`crate::Recorder`]) calls it before it returns, so
+//! a response that reaches the caller answers what was asked. After it
+//! succeeds, [`Response::get`] with any handle from the same questions cannot
+//! fail.
+//!
+//! For each question, in id order, stopping at the first failure:
+//!
+//! * There is an answer under its id ([`Error::MissingAnswer`]).
+//! * The answer is of the question's primitive
+//!   ([`Error::AnswerTypeMismatch`]). An answer of a kind this release does
+//!   not know ([`Answer::Unknown`]) is a mismatch here, named by its escaped
+//!   kind: under an asked question it is an answer the caller cannot read.
+//! * A Choice names only options the question offered: the chosen option,
+//!   then every key of its distribution ([`Error::UnknownOption`]).
+//! * A Score is on the scale the question sent ([`Error::InvalidAnswer`]):
+//!   its legend has one entry per level, keyed `"0"` to `"n-1"`, each the
+//!   level as it was sent; its probabilities are keyed by those same indices
+//!   and nothing else (`"01"` is not a level); and its score lies within
+//!   `0..=n-1`, with a margin of `1e-9` for float error and nothing more. A
+//!   NaN score fails. The message never quotes a level's text.
+//!
+//! Every error carries the response's [`Response::request_id`], because a
+//! response that does not fit is a call TypeSafe can look up.
+//!
+//! What it leaves out, on purpose:
+//!
+//! * Sums. A distribution that sums to 0.97 or to 1.0002 is rounding, and
+//!   the API does not promise a tolerance to check it against.
+//! * An offered option missing from a Choice's distribution reads as zero
+//!   ([`Choice::probability_of`]), as it would if the server had sent it with
+//!   zero. That is a deliberate gap: the check is for keys the question never
+//!   offered, not for a response to a narrower question.
+//! * Which option is chosen. The chosen option is the most probable one on
+//!   the wire, but ties and rounding make the argmax a poor check.
+//! * Whether a Score's value is the expectation of its distribution. The
+//!   server rounds both (a recorded Jev answer reports 2.23 where its rounded
+//!   probabilities give 2.22), so only the scale is checked.
+//! * Answers under ids nobody asked, [`Response::extra`], the model name and
+//!   the usage.
+//!
+//! An off-list option fails rather than being read as the question's
+//! no-match option: an option nobody offered names nothing the code can act
+//! on, and reading it as another option would decide on an answer the model
+//! did not give. That is the rule the typed handles were designed around
+//! for a typed Choice, now applied to every question: an unknown option is
+//! an explicit error naming the question, never a default. Nothing is
+//! snapped or clamped either: a score of 3.001 on a four-level scale is
+//! refused, not read as 3.
+//!
+//! A structured level (an object or an array) may be echoed as itself or as
+//! the string of its compact JSON, which is what [`Score::levels`] labels it
+//! with. Only Laya's verbatim echo has been observed; the HTTP API reference
+//! types the legend as a map of strings while the OpenAPI document and the
+//! Python SDK allow any value, so the hosted API may stringify a structured
+//! level. A number that is written differently inside a structured level
+//! (`1.0` for `1`) still fails; the ignored live test
+//! `a_structured_score_level_is_echoed` prints what a server echoes, so the
+//! rule can be tightened once it has been seen. A string level must come back
+//! as that exact string.
+//!
+//! This goes beyond both official SDKs, which check the shape of each answer
+//! and not whether it answers the question it is filed under. The cost is a
+//! walk over the questions per response, and that a server which answers
+//! more loosely than it is asked fails where an SDK would have returned the
+//! answer.
+//!
 //! # What `Response::get` checks
 //!
 //! [`Response::get`] takes the handle a question was added with and returns
@@ -80,9 +155,11 @@
 //! ([`Answer::Unknown`], named by its escaped `type`); with
 //! [`Error::UnknownOption`] when a typed Choice's chosen option, or any key
 //! in its distribution, is not in the Rust option set; and with
-//! [`Error::Decode`] when a Score's legend keys are not level indices. A
+//! [`Error::Decode`] when a Score's legend keys are not level indices. Each
+//! of the first three carries the response's request id. A
 //! [`Choice<String>`] from a dynamic choice passes its keys through
-//! unchecked, since there is no set to check them against.
+//! unchecked, since there is no set to check them against; a verified
+//! response has had them checked against the options the question offered.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -93,7 +170,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
-use crate::question::Options;
+use crate::question::{Options, Question, Questions};
+
+/// How far a Score's value may fall outside `0..=n-1` and still be on the
+/// scale: float error in the server's arithmetic, and nothing a server could
+/// mean. Private, so no caller comes to depend on a looser scale.
+const SCORE_EPSILON: f64 = 1e-9;
 
 /// The model's estimate for one outcome, in `[0, 1]`, validated on
 /// construction and on deserialisation so an out-of-range wire value is an
@@ -493,14 +575,162 @@ impl Response {
     /// [`Error::AnswerTypeMismatch`] if the primitive differs from what the
     /// handle was created for, [`Error::UnknownOption`] if a typed Choice
     /// names an option outside the enum, and [`Error::Decode`] if a Score's
-    /// legend is not indexed. The module docs explain each.
+    /// legend is not indexed. The module docs explain each. The first three
+    /// carry this response's [`Response::request_id`].
+    ///
+    /// On a response that [`Response::verify`] accepted for the questions
+    /// the handle came from, it cannot fail.
     pub fn get<A: FromAnswer>(&self, handle: &crate::Handle<A>) -> Result<A> {
         let id = handle.id();
-        let answer = self
-            .answers
-            .get(id)
-            .ok_or_else(|| Error::MissingAnswer(id.to_owned()))?;
-        A::from_answer(id, answer)
+        let answer = self.answers.get(id).ok_or_else(|| Error::MissingAnswer {
+            id: id.to_owned(),
+            request_id: self.request_id.clone(),
+        })?;
+        A::from_answer(id, answer).map_err(|e| e.with_request_id(self.request_id.as_deref()))
+    }
+
+    /// Check that this response answers `questions` as they were asked: an
+    /// answer under every id, of the question's primitive, a Choice naming
+    /// only offered options, a Score on the scale the question sent (module
+    /// docs, `# What Response::verify checks`).
+    ///
+    /// Pure and idempotent: it reads the response and changes nothing. It
+    /// walks the questions in id order and returns the first failure, as
+    /// [`Error::MissingAnswer`], [`Error::AnswerTypeMismatch`],
+    /// [`Error::UnknownOption`] or [`Error::InvalidAnswer`]
+    /// ([`Error::is_unfit`]), each carrying this response's request id.
+    ///
+    /// Every backend in this crate calls it before returning, so a caller of
+    /// one never needs to; it is public for a response that did not come
+    /// through a backend: one read from a recording by case id
+    /// ([`crate::eval::read_recording`]), one decoded by a caller's own
+    /// transport, or one built by hand. After it succeeds, [`Response::get`]
+    /// with any handle from the same `questions` cannot fail.
+    pub fn verify(&self, questions: &Questions) -> Result<()> {
+        for (id, question) in questions.iter() {
+            self.verify_answer(id, question)?;
+        }
+        Ok(())
+    }
+
+    /// [`Response::verify`] for one question.
+    fn verify_answer(&self, id: &str, question: &Question) -> Result<()> {
+        let request_id = || self.request_id.clone();
+        let Some(answer) = self.answers.get(id) else {
+            return Err(Error::MissingAnswer {
+                id: id.to_owned(),
+                request_id: request_id(),
+            });
+        };
+        match (question, answer) {
+            (Question::Noul { .. }, Answer::Noul { .. }) => Ok(()),
+            (
+                Question::Choice { criteria, .. },
+                Answer::Choice {
+                    choice,
+                    probabilities,
+                    ..
+                },
+            ) => {
+                let offered = |key: &&String| criteria.contains_key(key.as_str());
+                match std::iter::once(choice)
+                    .chain(probabilities.keys())
+                    .find(|key| !offered(key))
+                {
+                    Some(option) => Err(Error::UnknownOption {
+                        id: id.to_owned(),
+                        option: option.clone(),
+                        request_id: request_id(),
+                    }),
+                    None => Ok(()),
+                }
+            }
+            (
+                Question::Score {
+                    criteria: levels, ..
+                },
+                Answer::Score {
+                    score,
+                    legend,
+                    probabilities,
+                    ..
+                },
+            ) => score_fits(levels, *score, legend, probabilities).map_err(|reason| {
+                Error::InvalidAnswer {
+                    id: id.to_owned(),
+                    reason,
+                    request_id: request_id(),
+                }
+            }),
+            (question, answer) => {
+                Err(mismatch(id, question.kind(), answer)
+                    .with_request_id(self.request_id.as_deref()))
+            }
+        }
+    }
+}
+
+/// Whether a Score answer is on the scale of `levels`, or why not. The
+/// reasons never quote a level's text: it is the caller's own question, it
+/// can be long, and the index says which level.
+fn score_fits(
+    levels: &[Value],
+    score: f64,
+    legend: &BTreeMap<String, Value>,
+    probabilities: &BTreeMap<String, Probability>,
+) -> std::result::Result<(), String> {
+    let n = levels.len();
+    if legend.len() != n {
+        return Err(format!(
+            "its legend has {} levels but the question sent {n}",
+            legend.len()
+        ));
+    }
+    for (i, level) in levels.iter().enumerate() {
+        let Some(echoed) = legend.get(&i.to_string()) else {
+            return Err(format!("its legend has no level {i}"));
+        };
+        if !legend_matches(echoed, level) {
+            return Err(format!(
+                "legend level {i} is not the level the question sent"
+            ));
+        }
+    }
+    if let Some(key) = probabilities.keys().find(|key| !is_level_key(key, n)) {
+        return Err(format!(
+            "probability key {key:?} is not a level of its question"
+        ));
+    }
+    // A question has 2 to 10 levels (`Questions::score`), so the top index
+    // is exact as a float.
+    #[allow(clippy::cast_precision_loss)]
+    let top = n.saturating_sub(1) as f64;
+    // `contains` is false for NaN, so a NaN score is off the scale too.
+    if !(-SCORE_EPSILON..=top + SCORE_EPSILON).contains(&score) {
+        return Err(format!(
+            "score {score} is outside 0..={top}, the scale the question sent"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `key` is exactly the decimal index of one of `n` levels: `"0"`
+/// to `"n-1"`, with no sign and no leading zero (`"01"` and `"+1"` parse as
+/// 1, and are not what a server keys level 1 by).
+fn is_level_key(key: &str, n: usize) -> bool {
+    key.parse::<usize>()
+        .is_ok_and(|i| i < n && i.to_string() == key)
+}
+
+/// Whether a legend entry echoes the level the question sent. A string
+/// level must come back as that string. A structured level may come back as
+/// the same JSON value or as the string of its compact JSON, the label
+/// [`Score::levels`] gives it (module docs, `# What Response::verify
+/// checks`).
+fn legend_matches(echoed: &Value, sent: &Value) -> bool {
+    match sent {
+        Value::String(_) => echoed == sent,
+        other => echoed == other || matches!(echoed, Value::String(s) if *s == level_label(other)),
     }
 }
 
@@ -571,6 +801,7 @@ impl<O: Options> FromAnswer for Choice<O> {
             O::from_key(key).ok_or_else(|| Error::UnknownOption {
                 id: id.to_owned(),
                 option: key.to_owned(),
+                request_id: None,
             })
         };
         let chosen = parse(choice)?;
@@ -692,7 +923,8 @@ impl FromAnswer for Score {
     }
 }
 
-/// The error for an answer of another primitive than `expected`. An unknown
+/// The error for an answer of another primitive than `expected`, with no
+/// request id (the caller that has the response adds it). An unknown
 /// answer's kind is the server's own string, so it is escaped and cut
 /// ([`sanitize_kind`]) before it becomes part of a message.
 fn mismatch(id: &str, expected: &'static str, actual: &Answer) -> Error {
@@ -705,6 +937,7 @@ fn mismatch(id: &str, expected: &'static str, actual: &Answer) -> Error {
         } else {
             kind.to_owned()
         },
+        request_id: None,
     }
 }
 
@@ -843,7 +1076,7 @@ mod tests {
         let mut q = Questions::new();
         let h = q.noul("absent", "?", None).unwrap();
         let r = response(&json!({}));
-        assert!(matches!(r.get(&h), Err(Error::MissingAnswer(id)) if id == "absent"));
+        assert!(matches!(r.get(&h), Err(Error::MissingAnswer { id, .. }) if id == "absent"));
     }
 
     /// Decode `body`'s JSON text, the way the client decodes a reply.
@@ -988,7 +1221,7 @@ mod tests {
         assert!(
             matches!(
                 &err,
-                Error::AnswerTypeMismatch { id, expected: "noul", actual }
+                Error::AnswerTypeMismatch { id, expected: "noul", actual, .. }
                     if id == "order" && actual == "rank"
             ),
             "{err:?}"
@@ -1147,5 +1380,408 @@ mod tests {
         // A response is an object: the array form a derived struct accepted
         // is gone (nothing sent or recorded it).
         assert!(serde_json::from_str::<Response>(r#"["m", {}, {}]"#).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Response::verify
+    // -----------------------------------------------------------------------
+
+    const LEVELS: [&str; 4] = ["none", "minor", "major", "outage"];
+
+    /// One question of each primitive, and a typed Choice, with handles.
+    struct Asked {
+        q: Questions,
+        dept: crate::Handle<Choice<Dept>>,
+        owner: crate::Handle<Choice<String>>,
+        urgent: crate::Handle<Noul>,
+        impact: crate::Handle<Score>,
+    }
+
+    fn asked() -> Asked {
+        let mut q = Questions::new();
+        let dept = q.choice::<Dept>("dept", "Which team?").unwrap();
+        let owner = q
+            .dynamic_choice(
+                "owner",
+                "Who owns it?",
+                [
+                    ("payments".to_owned(), Some("Checkout".to_owned())),
+                    ("platform".to_owned(), None),
+                    ("none_of_these".to_owned(), None),
+                ],
+            )
+            .unwrap();
+        let urgent = q.noul("urgent", "Urgent?", None).unwrap();
+        let impact = q.score("impact", "How bad?", LEVELS).unwrap();
+        Asked {
+            q,
+            dept,
+            owner,
+            urgent,
+            impact,
+        }
+    }
+
+    fn legend() -> Value {
+        json!({ "0": "none", "1": "minor", "2": "major", "3": "outage" })
+    }
+
+    /// A response that answers [`asked`] as asked.
+    fn fitting() -> Value {
+        json!({
+            "dept": { "type": "choice", "choice": "billing",
+                      "probabilities": { "billing": 0.9, "technical": 0.1 }, "confidence": 0.8 },
+            "owner": { "type": "choice", "choice": "payments",
+                       "probabilities": { "payments": 0.7, "platform": 0.3 }, "confidence": 0.6 },
+            "urgent": { "type": "noul", "noul": 0.8 },
+            "impact": { "type": "score", "score": 2.0, "legend": legend(),
+                        "probabilities": { "0": 0.0, "1": 0.1, "2": 0.8, "3": 0.1 },
+                        "confidence": 0.7 }
+        })
+    }
+
+    /// `fitting()` with `id`'s answer replaced.
+    fn with(id: &str, answer: Value) -> Response {
+        let mut answers = fitting();
+        answers[id] = answer;
+        response(&answers)
+    }
+
+    fn score_answer(score: f64, legend: &Value, probabilities: &Value) -> Value {
+        json!({ "type": "score", "score": score, "legend": legend,
+                "probabilities": probabilities, "confidence": 0.5 })
+    }
+
+    fn reason(err: &Error) -> &str {
+        match err {
+            Error::InvalidAnswer { reason, .. } => reason,
+            other => panic!("not InvalidAnswer: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_accepts_a_response_that_answers_every_question_as_asked() {
+        let Asked {
+            q,
+            dept,
+            owner,
+            urgent,
+            impact,
+        } = asked();
+        let mut answers = fitting();
+        // An offered option left out of the distribution reads as zero, and
+        // an answer to a question nobody asked is ignored.
+        answers["owner"]["probabilities"] = json!({ "payments": 0.7, "platform": 0.3 });
+        answers["unasked"] = json!({ "type": "rank", "ranking": [] });
+        let r = response(&answers);
+        r.verify(&q).unwrap();
+        r.verify(&q).unwrap();
+
+        // After verify, every read through the same questions' handles works.
+        assert_eq!(r.get(&dept).unwrap().chosen, Dept::Billing);
+        let owner = r.get(&owner).unwrap();
+        assert_eq!(owner.chosen, "payments");
+        assert!(owner.probability_of(&"none_of_these".to_owned()).abs() < f64::EPSILON);
+        assert!(r.get(&urgent).unwrap().is_yes(0.5));
+        let impact = r.get(&impact).unwrap();
+        assert_eq!(impact.levels, LEVELS);
+        assert_eq!(impact.nearest_label(), "major");
+    }
+
+    #[test]
+    fn verify_reports_the_first_unanswered_question_in_wire_order() {
+        let Asked { q, .. } = asked();
+        let mut answers = fitting();
+        let map = answers.as_object_mut().unwrap();
+        map.remove("owner");
+        map.remove("urgent");
+        let err = response(&answers).verify(&q).unwrap_err();
+        assert!(
+            matches!(&err, Error::MissingAnswer { id, request_id: None } if id == "owner"),
+            "{err:?}"
+        );
+        assert!(err.is_unfit());
+        assert_eq!(err.to_string(), r#"no answer for question "owner""#);
+    }
+
+    #[test]
+    fn verify_refuses_an_answer_of_another_kind() {
+        let Asked { q, .. } = asked();
+        let err = with(
+            "urgent",
+            json!({ "type": "choice", "choice": "billing",
+                                         "probabilities": { "billing": 1.0 }, "confidence": 1.0 }),
+        )
+        .verify(&q)
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::AnswerTypeMismatch { id, expected: "noul", actual, .. }
+                    if id == "urgent" && actual == "choice"
+            ),
+            "{err:?}"
+        );
+        let err = with("impact", json!({ "type": "noul", "noul": 0.5 }))
+            .verify(&q)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::AnswerTypeMismatch { expected: "score", actual, .. } if actual == "noul"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_answer_kind_for_an_asked_question_is_a_type_mismatch() {
+        let Asked { q, .. } = asked();
+        let err = with("urgent", json!({ "type": "rank", "ranking": ["a"] }))
+            .verify(&q)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::AnswerTypeMismatch { id, expected: "noul", actual, .. }
+                    if id == "urgent" && actual == "rank"
+            ),
+            "{err:?}"
+        );
+        // Its kind is escaped and cut, as it is for `get`.
+        let hostile = format!("a\nb{}", "x".repeat(100));
+        let err = with("urgent", json!({ "type": hostile }))
+            .verify(&q)
+            .unwrap_err();
+        let Error::AnswerTypeMismatch { actual, .. } = &err else {
+            panic!("{err:?}");
+        };
+        assert!(
+            !actual.contains('\n') && actual.chars().count() <= 64,
+            "{actual:?}"
+        );
+
+        // Under an id nobody asked, an unknown answer is only kept.
+        let mut answers = fitting();
+        answers["later"] = json!({ "type": "rank" });
+        response(&answers).verify(&q).unwrap();
+    }
+
+    #[test]
+    fn verify_refuses_a_chosen_option_the_question_did_not_offer() {
+        let Asked { q, .. } = asked();
+        let err = with(
+            "owner",
+            json!({ "type": "choice", "choice": "made-up-team",
+                                        "probabilities": { "payments": 0.3 }, "confidence": 0.9 }),
+        )
+        .verify(&q)
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::UnknownOption { id, option, .. }
+                if id == "owner" && option == "made-up-team"),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            r#"answer "owner" names option "made-up-team", which its question does not offer"#
+        );
+        // The chosen option is checked before the distribution.
+        let err = with("dept", json!({ "type": "choice", "choice": "sales",
+                                       "probabilities": { "billing": 0.1, "zzz": 0.9 }, "confidence": 0.9 }))
+        .verify(&q)
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::UnknownOption { id, option, .. } if id == "dept" && option == "sales"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_refuses_a_distribution_key_the_question_did_not_offer() {
+        let Asked { q, .. } = asked();
+        let err = with(
+            "owner",
+            json!({ "type": "choice", "choice": "payments",
+                                        "probabilities": { "payments": 0.7, "INC-9999": 0.3 },
+                                        "confidence": 0.6 }),
+        )
+        .verify(&q)
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::UnknownOption { id, option, .. }
+                if id == "owner" && option == "INC-9999"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_does_not_check_that_probabilities_sum_to_one() {
+        let Asked { q, .. } = asked();
+        let short = with(
+            "owner",
+            json!({ "type": "choice", "choice": "payments",
+                                          "probabilities": { "payments": 0.67, "platform": 0.3 },
+                                          "confidence": 0.6 }),
+        );
+        short.verify(&q).unwrap();
+        let long = with(
+            "impact",
+            score_answer(
+                2.0,
+                &legend(),
+                &json!({ "0": 0.1, "1": 0.1, "2": 0.7002, "3": 0.1 }),
+            ),
+        );
+        long.verify(&q).unwrap();
+    }
+
+    #[test]
+    fn verify_refuses_a_legend_that_is_not_the_levels_sent() {
+        let Asked { q, .. } = asked();
+        let probs = json!({ "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 });
+        let cases = [
+            (
+                json!({ "0": "none", "1": "minor", "2": "major", "3": "outage", "4": "worse" }),
+                "its legend has 5 levels but the question sent 4",
+            ),
+            (
+                json!({ "1": "none", "2": "minor", "3": "major", "4": "outage" }),
+                "its legend has no level 0",
+            ),
+            (
+                json!({ "0": "none", "1": "minor", "2": "major (reworded)", "3": "outage" }),
+                "legend level 2 is not the level the question sent",
+            ),
+            (
+                json!({ "0": "none", "1": "a", "2": "major", "3": "outage" }),
+                "legend level 1 is not the level the question sent",
+            ),
+        ];
+        for (legend, expected) in cases {
+            let err = with("impact", score_answer(2.0, &legend, &probs))
+                .verify(&q)
+                .unwrap_err();
+            assert_eq!(reason(&err), expected, "{legend}");
+            let message = err.to_string();
+            assert!(
+                message.starts_with(r#"answer "impact" does not fit its question: "#),
+                "{message}"
+            );
+            for level in LEVELS {
+                assert!(!message.contains(level), "{message} quotes {level:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_structured_level_may_be_echoed_as_itself_or_its_compact_json() {
+        let level = json!({ "what": "low", "examples": ["a typo"] });
+        let mut q = Questions::new();
+        q.score("s", "?", vec![level.clone(), json!("high")])
+            .unwrap();
+        let answer = |echo: Value| {
+            response(&json!({ "s": score_answer(
+                0.4,
+                &json!({ "0": echo, "1": "high" }),
+                &json!({ "0": 0.6, "1": 0.4 }),
+            ) }))
+        };
+        answer(level.clone()).verify(&q).unwrap();
+        answer(json!(r#"{"examples":["a typo"],"what":"low"}"#))
+            .verify(&q)
+            .unwrap();
+        let err = answer(json!("low")).verify(&q).unwrap_err();
+        assert_eq!(
+            reason(&err),
+            "legend level 0 is not the level the question sent"
+        );
+        // A string level is not matched against a structured echo.
+        let mut q = Questions::new();
+        q.score("s", "?", [r#"{"what":"low"}"#, "high"]).unwrap();
+        let err = answer(json!({ "what": "low" })).verify(&q).unwrap_err();
+        assert_eq!(
+            reason(&err),
+            "legend level 0 is not the level the question sent"
+        );
+    }
+
+    #[test]
+    fn verify_refuses_a_probability_key_that_is_not_a_level() {
+        let Asked { q, .. } = asked();
+        for key in ["4", "01", "+1", "one"] {
+            let mut probs = json!({ "0": 0.0, "1": 0.0, "2": 1.0 });
+            probs[key] = json!(0.0);
+            let err = with("impact", score_answer(2.0, &legend(), &probs))
+                .verify(&q)
+                .unwrap_err();
+            assert_eq!(
+                reason(&err),
+                format!("probability key {key:?} is not a level of its question")
+            );
+        }
+    }
+
+    #[test]
+    fn verify_is_strict_about_the_score_scale() {
+        let Asked { q, .. } = asked();
+        let probs = json!({ "0": 0.25, "1": 0.25, "2": 0.25, "3": 0.25 });
+        for fits in [0.0, 3.0, 1.5, 3.0 + 1e-10, -1e-10] {
+            with("impact", score_answer(fits, &legend(), &probs))
+                .verify(&q)
+                .unwrap();
+        }
+        for off in [3.001, -0.001] {
+            let err = with("impact", score_answer(off, &legend(), &probs))
+                .verify(&q)
+                .unwrap_err();
+            assert_eq!(
+                reason(&err),
+                format!("score {off} is outside 0..=3, the scale the question sent")
+            );
+        }
+        // NaN never reaches the wire as JSON, but a hand-built response can
+        // carry one; it is off the scale too.
+        let mut r = with("impact", score_answer(1.0, &legend(), &probs));
+        if let Some(Answer::Score { score, .. }) = r.answers.get_mut("impact") {
+            *score = f64::NAN;
+        }
+        let err = r.verify(&q).unwrap_err();
+        assert!(reason(&err).contains("outside 0..=3"), "{err}");
+    }
+
+    #[test]
+    fn verify_and_get_errors_carry_the_responses_request_id() {
+        let Asked {
+            q, dept, impact, ..
+        } = asked();
+        let mut r = with(
+            "dept",
+            json!({ "type": "choice", "choice": "sales",
+                                         "probabilities": { "sales": 1.0 }, "confidence": 1.0 }),
+        );
+        r.request_id = Some("req_unfit".into());
+        let err = r.verify(&q).unwrap_err();
+        assert_eq!(err.request_id(), Some("req_unfit"));
+        assert!(
+            err.to_string().ends_with(" [request_id req_unfit]"),
+            "{err}"
+        );
+        let err = r.get(&dept).unwrap_err();
+        assert!(matches!(err, Error::UnknownOption { .. }), "{err:?}");
+        assert_eq!(err.request_id(), Some("req_unfit"));
+
+        let mut r = with("urgent", json!({ "type": "noul", "noul": 0.5 }));
+        r.request_id = Some("req_missing".into());
+        r.answers.remove("impact");
+        for err in [r.verify(&q).unwrap_err(), r.get(&impact).unwrap_err()] {
+            assert!(matches!(err, Error::MissingAnswer { .. }), "{err:?}");
+            assert_eq!(err.request_id(), Some("req_missing"));
+        }
+        let mut other = Questions::new();
+        let wrong = other.score("urgent", "?", LEVELS).unwrap();
+        let err = r.get(&wrong).unwrap_err();
+        assert!(matches!(err, Error::AnswerTypeMismatch { .. }), "{err:?}");
+        assert_eq!(err.request_id(), Some("req_missing"));
+        // A response with no id gives errors with none.
+        r.request_id = None;
+        assert_eq!(r.verify(&q).unwrap_err().request_id(), None);
     }
 }

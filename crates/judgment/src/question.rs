@@ -115,6 +115,19 @@ pub enum Question {
     },
 }
 
+impl Question {
+    /// The primitive's wire `type`: `noul`, `choice` or `score`. It is what
+    /// the answer to this question must be, and what
+    /// [`crate::Response::verify`] names as `expected` when it is not.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Noul { .. } => "noul",
+            Self::Choice { .. } => "choice",
+            Self::Score { .. } => "score",
+        }
+    }
+}
+
 /// What yes and no mean for a Noul question.
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct NoulCriteria {
@@ -560,6 +573,21 @@ mod tests {
         // Instructions alone: accepted, as always.
         q.noul("urgent", "Is `message` urgent?", None).unwrap();
         assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn question_kind_names_the_primitive() {
+        let mut q = Questions::new();
+        q.noul("n", "?", None).unwrap();
+        q.choice::<Colour>("c", "?").unwrap();
+        q.score("s", "?", ["low", "high"]).unwrap();
+        let json = serde_json::to_value(&q).unwrap();
+        for (id, question) in q.iter() {
+            // The kind is the `type` the question is sent with.
+            assert_eq!(json[id]["type"], question.kind(), "{id}");
+        }
+        let kinds: Vec<&str> = q.iter().map(|(_, question)| question.kind()).collect();
+        assert_eq!(kinds, ["choice", "noul", "score"]);
     }
 
     #[test]

@@ -169,7 +169,7 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
             "answers": {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.7 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": common::impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
                 "actionable": { "type": "noul", "noul": 0.95 },
                 "duplicate_of": { "type": "choice", "choice": "INC-4821",
@@ -552,7 +552,7 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
             "answers": {
                 "owner": { "type": "choice", "choice": "payments",
                            "probabilities": { "payments": 0.9, "data-platform": 0.08, "none_of_these": 0.02 }, "confidence": 0.85 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": common::impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
                 "actionable": { "type": "noul", "noul": 0.95 }
             },
@@ -699,7 +699,7 @@ async fn change_feed_fills_recent_changes_and_asks_caused_by_change() {
             "answers": {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.7 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": common::impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
                 "actionable": { "type": "noul", "noul": 0.95 },
                 "caused_by_change": { "type": "noul", "noul": 0.8 }
@@ -1031,7 +1031,7 @@ async fn slow_receiver(
                     "answers": {
                         "owner": { "type": "choice", "choice": "platform",
                                    "probabilities": { "platform": 0.9, "none_of_these": 0.1 }, "confidence": 0.9 },
-                        "impact": { "type": "score", "score": 1.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                        "impact": { "type": "score", "score": 1.0, "legend": common::impact_legend(),
                                     "probabilities": { "0": 0.0, "1": 1.0, "2": 0.0, "3": 0.0 }, "confidence": 1.0 },
                         "actionable": { "type": "noul", "noul": 0.9 }
                     },

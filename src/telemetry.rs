@@ -230,7 +230,8 @@ pub struct Metrics {
     pub typesafe_tokens: Counter<u64>,
     /// `signalman.upstream.errors`: failed attempts against an upstream, by
     /// `service` (`typesafe`, `incidentio`, `backstage`) and `status` (the
-    /// HTTP status, or `transport`). Every attempt counts, retried or not.
+    /// HTTP status, `transport`, or for `typesafe` `decode` and `unfit`).
+    /// Every attempt counts, retried or not.
     pub upstream_errors: Counter<u64>,
     /// `signalman.webhook.deliveries`: incident.io deliveries by `result`
     /// (`accepted`, `duplicate`, `ignored`, `rejected`, `invalid`,
@@ -345,7 +346,11 @@ pub fn record_typesafe_usage(model: &str, input_tokens: u64, output_tokens: u64)
 }
 
 /// One failed attempt against an upstream. `status` is the HTTP status
-/// code, or `transport` when no response came back.
+/// code, `transport` when no response came back, or, from the TypeSafe
+/// client, `decode` (a 2xx whose body did not decode) or `unfit` (a 2xx that
+/// did not fit the questions sent). The shared retry loop reports the first
+/// two for every upstream; the TypeSafe client reports the last two itself,
+/// since the loop saw a success.
 pub fn record_upstream_error(service: &'static str, status: &str) {
     metrics().upstream_errors.add(
         1,

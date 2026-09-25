@@ -47,6 +47,13 @@ required-features = ["http"]
 name = "spans"
 required-features = ["http"]
 
+# What the client reports to the process-wide observer. Its own binary with
+# one test, because `observer::set_global` succeeds once per process and any
+# other test in the same binary would add to the counts.
+[[test]]
+name = "observer"
+required-features = ["http"]
+
 # Live checks against a real server; every test is #[ignore] (see tests/live.rs).
 [[test]]
 name = "live"

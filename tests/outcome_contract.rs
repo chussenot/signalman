@@ -182,6 +182,7 @@ fn every_fixture_validates_round_trips_and_inverts() {
 
 #[test]
 fn the_document_rebuilds_the_decision_it_was_built_from() {
+    let mut names = Vec::new();
     for (name, alert, answers, decision, outcome) in decided_fixtures() {
         let _ = alert;
         let _ = answers;
@@ -190,7 +191,12 @@ fn the_document_rebuilds_the_decision_it_was_built_from() {
             decision,
             "{name}: the inverse does not return the decision the document was built from"
         );
+        // Each fixture decides the action it is named after, on both shapes.
+        let (_, action) = name.split_once('/').unwrap();
+        assert_eq!(outcome.decision.key(), action, "{name}: {decision:?}");
+        names.push(name);
     }
+    assert_eq!(names.len(), 10, "{names:?}");
 }
 
 #[test]
@@ -218,7 +224,7 @@ fn fixtures() -> Vec<(String, Outcome)> {
         .collect();
 
     // A note that failed: the tags were still written.
-    let (alert, answers, decision) = flow_case(&page_answers());
+    let (alert, answers, decision) = flow_case(page_answers);
     all.push((
         "flow/page/note-failed".into(),
         flow_outcome(
@@ -241,7 +247,7 @@ fn fixtures() -> Vec<(String, Outcome)> {
     ));
 
     // A dry run: everything decided, nothing written.
-    let (alert, answers, decision) = flow_case(&attach_answers());
+    let (alert, answers, decision) = flow_case(attach_answers);
     all.push((
         "flow/attach/dry-run".into(),
         flow_outcome(
@@ -260,7 +266,7 @@ fn fixtures() -> Vec<(String, Outcome)> {
     ));
 
     // The CLI with --forward-to-incidentio.
-    let (alert, answers, decision) = cli_case(&page_answers());
+    let (alert, answers, decision) = cli_case(page_answers);
     all.push((
         "cli/page/forwarded".into(),
         cli_outcome(
@@ -280,26 +286,42 @@ fn fixtures() -> Vec<(String, Outcome)> {
     all
 }
 
+/// A fixture's answer set, given who its owner question chooses.
+type Answers = fn(&OwnerPick<'_>) -> Value;
+
 /// One fixture per action, on both call shapes, with the alert, the answers
-/// and the decision each was built from.
+/// and the decision each was built from. Each is named after the action it
+/// decides, on both shapes, and
+/// `the_document_rebuilds_the_decision_it_was_built_from` holds it to that.
 fn decided_fixtures() -> Vec<(String, Alert, TriageAnswers, Decision, Outcome)> {
-    let cases = [
-        ("suppress", suppress_answers()),
-        ("attach_to_incident", attach_answers()),
-        ("page", page_answers()),
-        ("ticket", ticket_answers()),
-        ("human_triage", human_triage_answers()),
-        ("hallucinated_dedup", hallucinated_dedup_answers()),
+    let cases: [(&str, Answers); 5] = [
+        ("suppress", suppress_answers),
+        ("attach_to_incident", attach_answers),
+        ("page", page_answers),
+        ("ticket", ticket_answers),
+        ("human_triage", human_triage_answers),
     ];
     let mut all = Vec::new();
-    for (name, raw) in cases {
-        let (alert, answers, decision) = flow_case(&raw);
-        let outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
-        all.push((format!("flow/{name}"), alert, answers, decision, outcome));
+    for (name, answers) in cases {
+        let (alert, answers_read, decision) = flow_case(answers);
+        let outcome = flow_outcome(&alert, &answers_read, &decision, applied_writes(&decision));
+        all.push((
+            format!("flow/{name}"),
+            alert,
+            answers_read,
+            decision,
+            outcome,
+        ));
 
-        let (alert, answers, decision) = cli_case(&raw);
-        let outcome = cli_outcome(&alert, &answers, &decision, Writes::detached());
-        all.push((format!("cli/{name}"), alert, answers, decision, outcome));
+        let (alert, answers_read, decision) = cli_case(answers);
+        let outcome = cli_outcome(&alert, &answers_read, &decision, Writes::detached());
+        all.push((
+            format!("cli/{name}"),
+            alert,
+            answers_read,
+            decision,
+            outcome,
+        ));
     }
     all
 }
@@ -326,21 +348,34 @@ fn applied_writes(decision: &Decision) -> Writes {
 // Hand-built answers, read through the real handles
 // ---------------------------------------------------------------------------
 
-fn owner_answer(chosen: &str, confidence: f64) -> Value {
+/// Who a fixture's owner question chooses, among the candidates its call
+/// shape offers: a catalog group in the flow, a default team in the CLI. The
+/// client refuses an owner the question did not offer, so the answer is
+/// built over the case's own candidates.
+struct OwnerPick<'a> {
+    candidates: &'a OwnerCandidates,
+    chosen: &'a str,
+}
+
+/// The owner answer: the chosen candidate at `confidence`, every other
+/// candidate the question offered at 0.02.
+fn owner_answer(pick: &OwnerPick<'_>, confidence: f64) -> Value {
+    let probabilities: serde_json::Map<String, Value> = pick
+        .candidates
+        .iter()
+        .map(|c| {
+            let p = if c.key == pick.chosen {
+                confidence
+            } else {
+                0.02
+            };
+            (c.key.clone(), json!(p))
+        })
+        .collect();
     json!({
         "type": "choice",
-        "choice": chosen,
-        "probabilities": {
-            "payments": if chosen == "payments" { confidence } else { 0.1 },
-            "data-platform": 0.06,
-            "application": 0.05,
-            "platform": 0.04,
-            "database": 0.03,
-            "network": 0.02,
-            "security": 0.01,
-            "observability": 0.01,
-            "none_of_these": 0.02,
-        },
+        "choice": pick.chosen,
+        "probabilities": probabilities,
         "confidence": confidence,
     })
 }
@@ -349,7 +384,7 @@ fn impact_answer(score: f64) -> Value {
     json!({
         "type": "score",
         "score": score,
-        "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+        "legend": common::impact_legend(),
         "probabilities": { "0": 0.02, "1": 0.08, "2": 0.8, "3": 0.1 },
         "confidence": 0.86,
     })
@@ -364,9 +399,9 @@ fn duplicate_answer(chosen: &str, confidence: f64) -> Value {
     })
 }
 
-fn suppress_answers() -> Value {
+fn suppress_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
-        "owner": owner_answer("payments", 0.9),
+        "owner": owner_answer(owner, 0.9),
         "impact": impact_answer(0.0),
         "actionable": { "type": "noul", "noul": 0.04 },
         "duplicate_of": duplicate_answer("none", 0.4),
@@ -374,9 +409,9 @@ fn suppress_answers() -> Value {
     })
 }
 
-fn attach_answers() -> Value {
+fn attach_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
-        "owner": owner_answer("payments", 0.9),
+        "owner": owner_answer(owner, 0.9),
         "impact": impact_answer(2.0),
         "actionable": { "type": "noul", "noul": 0.95 },
         "duplicate_of": duplicate_answer("INC-4821", 0.88),
@@ -384,12 +419,12 @@ fn attach_answers() -> Value {
     })
 }
 
-/// The model names an incident that was never offered. The reader confines
-/// the answer to the options the question carried, so nothing downstream can
-/// attach to a reference that is not a candidate.
-fn hallucinated_dedup_answers() -> Value {
+/// The model names an incident that was never offered: the client refuses
+/// it (`an_incident_the_question_never_offered_fails_the_cli_run`), so it is
+/// no fixture.
+fn hallucinated_dedup_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
-        "owner": owner_answer("payments", 0.91),
+        "owner": owner_answer(owner, 0.91),
         "impact": impact_answer(2.0),
         "actionable": { "type": "noul", "noul": 0.95 },
         "duplicate_of": {
@@ -402,9 +437,9 @@ fn hallucinated_dedup_answers() -> Value {
     })
 }
 
-fn page_answers() -> Value {
+fn page_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
-        "owner": owner_answer("payments", 0.91),
+        "owner": owner_answer(owner, 0.91),
         "impact": impact_answer(2.0),
         "actionable": { "type": "noul", "noul": 0.95 },
         "duplicate_of": duplicate_answer("none", 0.5),
@@ -412,9 +447,9 @@ fn page_answers() -> Value {
     })
 }
 
-fn ticket_answers() -> Value {
+fn ticket_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
-        "owner": owner_answer("payments", 0.62),
+        "owner": owner_answer(owner, 0.62),
         "impact": impact_answer(1.0),
         "actionable": { "type": "noul", "noul": 0.9 },
         "duplicate_of": duplicate_answer("none", 0.5),
@@ -422,9 +457,9 @@ fn ticket_answers() -> Value {
     })
 }
 
-fn human_triage_answers() -> Value {
+fn human_triage_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
-        "owner": owner_answer("payments", 0.2),
+        "owner": owner_answer(owner, 0.2),
         "impact": impact_answer(2.0),
         "actionable": { "type": "noul", "noul": 0.9 },
         "duplicate_of": duplicate_answer("none", 0.5),
@@ -502,7 +537,7 @@ fn typed_change() -> Change {
 
 /// The webhook flow: an incident.io alert, catalog enrichment, the change
 /// feed, and side effects.
-fn flow_case(raw: &Value) -> (Alert, TriageAnswers, Decision) {
+fn flow_case(answers: Answers) -> (Alert, TriageAnswers, Decision) {
     let alert = Alert {
         source: "incident.io alert source src-dd".into(),
         title: "HighErrorRate checkout-api".into(),
@@ -527,7 +562,12 @@ fn flow_case(raw: &Value) -> (Alert, TriageAnswers, Decision) {
             component: Some("payments-gateway".into()),
         }],
     };
-    let answers = read(&alert, catalog_candidates(), raw);
+    let candidates = catalog_candidates();
+    let raw = answers(&OwnerPick {
+        candidates: &candidates,
+        chosen: "payments",
+    });
+    let answers = read(&alert, candidates, &raw);
     let decision = decide(&answers, &Policy::default());
     (alert, answers, decision)
 }
@@ -622,8 +662,22 @@ fn flow_outcome(
 
 /// The file-based CLI: no alert id, no enrichment, plain change lines, and
 /// nothing written back.
-fn cli_case(raw: &Value) -> (Alert, TriageAnswers, Decision) {
-    let alert = Alert {
+fn cli_case(answers: Answers) -> (Alert, TriageAnswers, Decision) {
+    let alert = cli_alert();
+    let candidates = OwnerCandidates::from_teams();
+    let raw = answers(&OwnerPick {
+        candidates: &candidates,
+        chosen: "application",
+    });
+    let answers = read(&alert, candidates, &raw);
+    let decision = decide(&answers, &Policy::default());
+    (alert, answers, decision)
+}
+
+/// The alert of the CLI shape: a file, with two open incidents and a change
+/// line.
+fn cli_alert() -> Alert {
+    Alert {
         source: "prometheus".into(),
         title: "KubePodCrashLooping".into(),
         description: "checkout-api restarting, OOMKilled".into(),
@@ -650,10 +704,7 @@ fn cli_case(raw: &Value) -> (Alert, TriageAnswers, Decision) {
         ],
         component: None,
         related_alerts: vec![],
-    };
-    let answers = read(&alert, OwnerCandidates::from_teams(), raw);
-    let decision = decide(&answers, &Policy::default());
-    (alert, answers, decision)
+    }
 }
 
 fn cli_outcome(
@@ -724,7 +775,7 @@ fn cli_outcome(
 // ---------------------------------------------------------------------------
 
 fn a_document() -> Value {
-    let (alert, answers, decision) = flow_case(&page_answers());
+    let (alert, answers, decision) = flow_case(page_answers);
     let outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
     serde_json::to_value(&outcome).unwrap()
 }
@@ -778,48 +829,81 @@ fn a_probability_outside_the_unit_interval_is_refused() {
 
 #[test]
 fn a_document_that_contradicts_itself_is_caught_by_validate() {
-    let (alert, answers, decision) = flow_case(&page_answers());
+    let (alert, answers, decision) = flow_case(page_answers);
     let mut outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
     outcome.impact = outcome::ImpactLevel::None;
     assert!(outcome.validate().is_err());
 
-    let (alert, answers, decision) = flow_case(&page_answers());
+    let (alert, answers, decision) = flow_case(page_answers);
     let mut outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
     outcome.owner = None;
     let err = outcome.validate().unwrap_err().to_string();
     assert!(err.contains("owner"), "{err}");
 }
 
-#[test]
-fn an_incident_the_question_never_offered_cannot_reach_the_document() {
-    let (alert, answers, decision) = flow_case(&hallucinated_dedup_answers());
-    let outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
+/// `signalman triage <file> --json` against a mock TypeSafe that answers
+/// `body`: the exit status, stdout and stderr.
+async fn run_cli(body: Value) -> std::process::Output {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-typesafe-request-id", "req-cli")
+                .set_body_json(body),
+        )
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let alert = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/alerts/crashloop.json");
+    // wiremock serves on the test runtime, so the child process runs on a
+    // blocking thread rather than on a runtime worker.
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_signalman"))
+            .args(["triage", alert.to_str().unwrap(), "--json"])
+            .env("TYPESAFE_BASE_URL", &uri)
+            .env("TYPESAFE_API_KEY", "test")
+            // Built-in defaults only: no configuration file, no catalog.
+            .env_remove("SIGNALMAN_CONFIG")
+            .env_remove("BACKSTAGE_BASE_URL")
+            .env_remove("BACKSTAGE_NOTIFY")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("the signalman binary runs")
+    })
+    .await
+    .unwrap()
+}
 
-    // The reference was dropped on the way in, so the policy never saw it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_incident_the_question_never_offered_fails_the_cli_run() {
+    // The model names an incident that was never a candidate. The client
+    // refuses the response before signalman reads it, so no document is
+    // written and nothing could attach to a reference nobody offered.
+    let candidates = OwnerCandidates::from_teams();
+    let answers = hallucinated_dedup_answers(&OwnerPick {
+        candidates: &candidates,
+        chosen: "application",
+    });
+    let output = run_cli(json!({
+        "model": "jev-1.13.0",
+        "answers": answers,
+        "usage": { "input_tokens": 742, "output_tokens": 41 }
+    }))
+    .await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !matches!(decision, Decision::AttachToIncident { .. }),
-        "an unoffered reference must not become an attach decision: {decision:?}"
+        !output.status.success(),
+        "the run must fail; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(outcome.incident, None);
-    let dup = outcome.judgments.duplicate_of.as_ref().unwrap();
-    assert_eq!(dup.chosen, None);
-
-    // The candidates are the incidents the question offered, all of them and
-    // nothing else, which is what `validate` relies on.
-    let references: Vec<&str> = dup
-        .candidates
-        .iter()
-        .map(|c| c.reference.as_str())
-        .collect();
-    assert_eq!(references, ["INC-4821", "INC-4900"]);
-
-    outcome.validate().unwrap();
-    assert!(!outcome.tags.iter().any(|t| t.starts_with("ai-dup-")));
-
-    let validator = jsonschema::validator_for(&committed_schema()).unwrap();
-    validator
-        .validate(&serde_json::to_value(&outcome).unwrap())
-        .unwrap();
+    assert!(stderr.contains("duplicate_of"), "{stderr}");
+    assert!(stderr.contains("INC-9999"), "{stderr}");
+    assert!(
+        stderr.contains("req-cli"),
+        "the request id is reported: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "no document is written");
 }
 
 #[test]
@@ -862,7 +946,7 @@ fn a_missing_nullable_key_is_refused() {
 
 #[test]
 fn only_tags_in_the_signalman_namespace_have_to_be_derivable() {
-    let (alert, answers, decision) = flow_case(&page_answers());
+    let (alert, answers, decision) = flow_case(page_answers);
     let mut outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
 
     // Somebody else's tag that happens to start with the same two letters.
@@ -877,7 +961,7 @@ fn only_tags_in_the_signalman_namespace_have_to_be_derivable() {
 
 #[test]
 fn an_impact_score_off_the_scale_is_refused() {
-    let (alert, answers, decision) = flow_case(&page_answers());
+    let (alert, answers, decision) = flow_case(page_answers);
     let mut outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
     outcome.judgments.impact.score = 4.0;
     let err = outcome.validate().unwrap_err().to_string();
@@ -906,48 +990,24 @@ fn an_impact_score_off_the_scale_is_refused() {
 /// schema.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_cli_emits_a_document_that_satisfies_the_schema() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "owner": { "type": "choice", "choice": "application",
-                           "probabilities": { "application": 0.82, "platform": 0.1, "database": 0.05, "none_of_these": 0.03 },
-                           "confidence": 0.81 },
-                "impact": { "type": "score", "score": 2.0,
-                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
-                            "probabilities": { "0": 0.02, "1": 0.08, "2": 0.8, "3": 0.1 },
-                            "confidence": 0.86 },
-                "actionable": { "type": "noul", "noul": 0.94 },
-                "duplicate_of": { "type": "choice", "choice": "none",
-                                  "probabilities": { "INC-4821": 0.18, "none": 0.82 }, "confidence": 0.74 },
-                "caused_by_change": { "type": "noul", "noul": 0.88 }
-            },
-            "usage": { "input_tokens": 742, "output_tokens": 41 }
-        })))
-        .mount(&server)
-        .await;
-
-    let uri = server.uri();
-    let alert = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/alerts/crashloop.json");
-    // wiremock serves on the test runtime, so the child process runs on a
-    // blocking thread rather than on a runtime worker.
-    let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_signalman"))
-            .args(["triage", alert.to_str().unwrap(), "--json"])
-            .env("TYPESAFE_BASE_URL", &uri)
-            .env("TYPESAFE_API_KEY", "test")
-            // Built-in defaults only: no configuration file, no catalog.
-            .env_remove("SIGNALMAN_CONFIG")
-            .env_remove("BACKSTAGE_BASE_URL")
-            .env_remove("BACKSTAGE_NOTIFY")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .expect("the signalman binary runs")
-    })
-    .await
-    .unwrap();
+    let output = run_cli(json!({
+        "model": "jev-1.13.0",
+        "answers": {
+            "owner": { "type": "choice", "choice": "application",
+                       "probabilities": { "application": 0.82, "platform": 0.1, "database": 0.05, "none_of_these": 0.03 },
+                       "confidence": 0.81 },
+            "impact": { "type": "score", "score": 2.0,
+                        "legend": common::impact_legend(),
+                        "probabilities": { "0": 0.02, "1": 0.08, "2": 0.8, "3": 0.1 },
+                        "confidence": 0.86 },
+            "actionable": { "type": "noul", "noul": 0.94 },
+            "duplicate_of": { "type": "choice", "choice": "none",
+                              "probabilities": { "INC-4821": 0.18, "none": 0.82 }, "confidence": 0.74 },
+            "caused_by_change": { "type": "noul", "noul": 0.88 }
+        },
+        "usage": { "input_tokens": 742, "output_tokens": 41 }
+    }))
+    .await;
 
     assert!(
         output.status.success(),

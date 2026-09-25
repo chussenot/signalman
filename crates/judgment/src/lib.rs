@@ -40,6 +40,13 @@
 //!   type parameter is the answer type. [`Response::get`] checks the id and the
 //!   primitive, and maps a typed Choice's option key back to the enum. A
 //!   mismatch is an [`Error`], never a misread number.
+//! * A response answers the questions it was sent. [`Response::verify`]
+//!   checks that every question has an answer of its primitive, that a
+//!   Choice names only options it offered and that a Score is on the scale
+//!   it sent, and every backend ([`Client`], [`Fake`], [`Replay`],
+//!   [`Recorder`]) calls it before returning. A response that does not fit
+//!   is an [`Error`] naming the question and carrying the request id, never
+//!   an answer read as a guess.
 //! * Probabilities are validated newtypes. [`Probability`] and [`Confidence`]
 //!   refuse values outside `[0, 1]` on construction and on deserialisation,
 //!   and they are distinct types, so a caller cannot threshold one as the

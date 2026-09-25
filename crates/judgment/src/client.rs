@@ -51,9 +51,14 @@
 //!
 //! Every failed attempt, retried or not, is reported to the process-wide
 //! [`Observer`] under the service label `typesafe`, because a retried failure
-//! is still load on the upstream and still a symptom. Token usage of every
-//! successful response goes to the client's own observer when one was set on
-//! the builder, otherwise to the same process-wide one.
+//! is still load on the upstream and still a symptom. The shared retry loop
+//! reports those, by status or as `transport`. The client also reports a
+//! 2xx it could not use, which the loop counts as a success: `decode` for a
+//! body that does not decode, `unfit` for a response that does not answer
+//! the questions it was sent (`# Errors`). Token usage of every response
+//! that decoded goes to the client's own observer when one was set on the
+//! builder, otherwise to the same process-wide one; an unfit response is
+//! billed like any other, so its usage is reported too.
 //!
 //! # Errors
 //!
@@ -80,8 +85,20 @@
 //!   always means a base URL that is not the API or a server without the
 //!   path, and the body is what says which.
 //! * A 2xx whose body is not the documented shape is [`Error::Decode`], not
-//!   retried; a transport failure is [`Error::Transport`] once the policy
-//!   stopped.
+//!   retried, and reported to the process-wide observer as a failed attempt
+//!   with status `decode`; a transport failure is [`Error::Transport`] once
+//!   the policy stopped.
+//! * A 2xx that decodes but does not answer the questions it was sent is
+//!   the error [`crate::Response::verify`] names: [`Error::MissingAnswer`],
+//!   [`Error::AnswerTypeMismatch`], [`Error::UnknownOption`] or
+//!   [`Error::InvalidAnswer`] ([`Error::is_unfit`]), carrying the request
+//!   id. It is not retried: the call went through and was billed, and a
+//!   second attempt is billed again for an answer that is no likelier to
+//!   fit. Its usage is still reported, since the tokens were spent, and it
+//!   is reported as a failed attempt with status `unfit`. Checking here,
+//!   rather than leaving it to [`crate::Response::get`], means a caller never
+//!   holds a response that answers some other question, and an off-list
+//!   Choice option cannot be read as a guess.
 //!
 //! Each carries the attempt count where one applies, and every error that
 //! came from an HTTP response carries its request id (below). The key is
@@ -544,7 +561,9 @@ impl ClientBuilder {
 
     /// Where this client reports token usage. Without one it reports to
     /// [`crate::observer::global`]. Failed attempts always go to the global
-    /// observer, from the shared retry loop in [`crate::http`].
+    /// observer: from the shared retry loop in [`crate::http`] by status or
+    /// as `transport`, and from this client as `decode` or `unfit` for a 2xx
+    /// it could not use (module docs, `# Errors`).
     #[must_use]
     pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self {
         self.observer = Some(observer);
@@ -707,6 +726,11 @@ impl Client {
     /// the state. The response's [`Response::request_id`] is the last
     /// attempt's `x-typesafe-request-id`, recorded on the span on success
     /// and on failure (module docs, `# Request id`).
+    ///
+    /// The response is verified against `request.questions` before it is
+    /// returned ([`Response::verify`]): one that does not answer them is an
+    /// error, not retried, with its usage reported and the attempt counted
+    /// as `unfit` (module docs, `# Errors`).
     #[tracing::instrument(
         name = "typesafe.evaluate",
         skip_all,
@@ -756,7 +780,14 @@ impl Client {
             }
         }
         tracing::Span::current().record("input_tokens", response.usage.input_tokens);
+        // Billed whether or not it fits, so reported before the check.
         self.observer().on_usage(&response.model, &response.usage);
+        // Not retried: the call went through, and another attempt is billed
+        // again for an answer no likelier to fit.
+        if let Err(e) = response.verify(request.questions) {
+            crate::observer::global().on_failed_attempt("typesafe", "unfit");
+            return Err(e);
+        }
         Ok(response)
     }
 
@@ -842,10 +873,18 @@ struct Reply {
 impl Reply {
     /// Decode the body; a failure keeps the response's request id, since a
     /// 2xx that does not decode is still a call TypeSafe can look up.
+    ///
+    /// A failure is also reported to the process-wide observer as a failed
+    /// attempt with status `decode`: the retry loop counted the 2xx as a
+    /// success, so without this a server answering in the wrong shape would
+    /// show no failures at all. It is not retried.
     fn decode<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_str(&self.body).map_err(|source| Error::Decode {
-            source,
-            request_id: self.request_id.clone(),
+        serde_json::from_str(&self.body).map_err(|source| {
+            crate::observer::global().on_failed_attempt("typesafe", "decode");
+            Error::Decode {
+                source,
+                request_id: self.request_id.clone(),
+            }
         })
     }
 }

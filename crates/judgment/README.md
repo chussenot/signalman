@@ -67,7 +67,13 @@ crates for the same API were not adopted.
   missing `usage` reads as zero, and undocumented top-level fields (Laya's
   `routing`, say) are kept in `Response::extra`; a known answer that breaks
   its shape is still an error, and reading an unknown one through a handle
-  is `AnswerTypeMismatch` naming its kind.
+  is `AnswerTypeMismatch` naming its kind. `Response::verify(&questions)`
+  holds a response against the questions it was sent for: an answer under
+  every id, of the question's primitive, a Choice naming only options it
+  offered, a Score whose legend is the levels sent and whose value is on
+  their scale. The SDKs check the shape of an answer and stop there; an
+  answer that names an option nobody offered is an error here, never read as
+  a guess.
 - `client` (feature `http`, default): `Client` with the official SDKs'
   defaults and `RetryPolicy`: two retries of 408, 429, 5xx and transport
   failures, exponential backoff whose jitter only shortens a wait, and the
@@ -100,7 +106,12 @@ crates for the same API were not adopted.
   implements, so the code consuming judgments never knows which. `Client` is
   one; `Fake` answers from a table and remembers what it was asked; `Recorder`
   writes another backend's responses to a directory; `Replay` answers from
-  that directory offline, keyed by a content hash of the request.
+  that directory offline, keyed by a content hash of the request. Every one
+  of them verifies its response before returning it, so a response that
+  reaches the caller answers what was asked, whichever backend is behind the
+  trait. The client does not retry a response that does not fit (it was
+  billed), still reports its usage, and counts it as a failed attempt,
+  `unfit`, beside `decode` for a 2xx body that does not decode.
 - `eval`: what makes calibrated probabilities trustworthy rather than assumed:
   recordings for replay, one `Judgment` per answer and label, per-question
   accuracy, Brier score, calibration error and confidence when right or wrong.
@@ -113,7 +124,12 @@ and replay backends and the metrics, for a project with its own transport.
 ## Testing without the model
 
 A `Fake` answers from a table, refuses a question it has no answer for, and
-remembers every call, so a test checks the decision and what was asked:
+remembers every call, so a test checks the decision and what was asked. It
+verifies its response like the client, so a scripted option the question
+does not offer, or an answer of the wrong primitive, fails the call (and is
+not remembered) instead of passing a test the real client would fail. A
+scripted Score is only its probabilities: its legend is the levels of the
+question it answers, echoed as a server echoes them.
 
 ```rust
 let backend = Fake::new()
@@ -140,7 +156,7 @@ The unit and integration tests never leave the process, so they cannot tell
 whether a server speaks the wire the way the mocks assume. Two things can:
 
 - `tests/live.rs` holds `#[ignore]` tests that run the three primitives, a
-  structured level, the model list, an unknown model name, an unknown extra
+  structured level (and print how the server echoes it), the model list, an unknown model name, an unknown extra
   body field, a bearer check and a record-then-replay against whatever
   `JUDGMENT_LIVE_BASE_URL` points at. `cargo test` skips them; run them by hand with `-- --ignored`.
 - `examples/typed_decisions.rs` replays the

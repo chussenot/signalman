@@ -77,12 +77,14 @@ crates/judgment/   the judgment crate (decision 0010): the typed client, reusabl
   src/client.rs    TypeSafe HTTP client
   src/http.rs      shared retry loop, backoff, the server's wait (the other clients use it too)
   src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
-  src/answer.rs    Answer wire shape, Probability/Confidence, typed views
+  src/answer.rs    Answer wire shape, Probability/Confidence, typed views, Response::verify
   src/error.rs     TypeSafe-side error enum
   src/backend.rs   SystemOne: the trait; Client, Fake, Recorder and Replay implement it
   src/eval/        recordings, one Judgment per answer and label, per-question metrics
   src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
   tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
+  tests/observer.rs what the client reports to the global observer; a target of its own
+                   because the global observer is set once per process
   tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
   examples/        typed_decisions.rs replays the typed-decisions benchmark; typed-decisions/ holds a sample and the export script
 src/               the signalman application, depending on judgment by path

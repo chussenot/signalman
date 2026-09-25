@@ -39,6 +39,10 @@ document (0.2.0) and the SDK references.
 - `Answer::Unknown(Value)` for an answer kind this release does not know,
   logged at `warn`. `Response::extra` keeps undocumented top-level fields.
   (`#[serde(untagged)]` on a variant needs serde 1.0.181 or later.)
+- `Response::verify(&Questions)`, `Question::kind()` and `Error::is_unfit()`.
+  Every backend in the crate (Client, Fake, Replay, Recorder) returns only a
+  response that answers the questions it was sent. A structured Score level
+  may be echoed as itself or as its compact JSON.
 
 ### Changed
 
@@ -53,6 +57,10 @@ document (0.2.0) and the SDK references.
   requires the key).
 - Backoff jitter only shortens a wait, as in both SDKs.
 - A missing `usage`, or null counts, read as zero.
+- A 2xx that does not decode or does not fit the questions is reported to the
+  observer as a failed attempt (`decode` or `unfit`) and is not retried.
+- `Fake::score` echoes the question's levels as its legend. A Fake refuses a
+  scripted answer that does not fit its question.
 - The rustdoc states where retries match the SDKs and where they deliberately
   differ, instead of claiming to mirror them. The `/v1/models` notes are
   corrected against the OpenAPI document.
@@ -98,3 +106,14 @@ document (0.2.0) and the SDK references.
   array (S5).
 - A response with no `usage`, or null counts, decodes with zero instead of
   failing (S5).
+- `Error::MissingAnswer` is a struct variant `{ id, request_id }` (S6).
+- `Error::UnknownOption`, `InvalidAnswer` and `AnswerTypeMismatch` gain
+  `request_id`; `UnknownOption`'s message is reworded (S6).
+- The client refuses a 2xx that does not fit the questions sent, without
+  retrying (S6).
+- `Observer::on_failed_attempt` also receives `decode` and `unfit` from the
+  TypeSafe client (S6).
+- `Fake` refuses a scripted answer that does not fit and records no call;
+  `Fake::score`'s legend is the question's levels (S6).
+- `Replay` refuses a recording that does not fit; `Recorder` writes nothing
+  for such a response (S6).

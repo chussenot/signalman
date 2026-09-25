@@ -285,8 +285,14 @@ mod tests {
     }
 
     fn impact(level: f64) -> serde_json::Value {
+        // The legend is the levels as sent, as TypeSafe echoes them.
+        let legend: serde_json::Map<String, serde_json::Value> = crate::triage::Impact::LEVELS
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i.to_string(), json!(l)))
+            .collect();
         json!({ "type": "score", "score": level,
-                "legend": {"0":"a","1":"b","2":"c","3":"d"},
+                "legend": legend,
                 "probabilities": {"0":0.0,"1":0.0,"2":0.0,"3":0.0}, "confidence": 0.9 })
     }
 

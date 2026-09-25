@@ -1,6 +1,8 @@
 //! The evaluation harness against a mock TypeSafe: run with recording, grade,
-//! then replay the recordings under a different policy without the model.
-//! The committed Jev run decodes and writes back byte for byte.
+//! then replay the recordings under a different policy without the model. A
+//! live run records an answer that does not fit its questions as a failed
+//! case and carries on. The committed Jev run decodes, writes back byte for
+//! byte, and grades on replay.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
@@ -18,12 +20,24 @@ const CASES: &str = r#"
 {"id": "unlabelled", "alert": {"source": "x", "title": "Y", "description": "z"}}
 "#;
 
+/// The legend TypeSafe echoes for the impact question: its levels as sent,
+/// keyed by index. The client checks the echo against the question, so a
+/// fixture legend must be the real levels.
+fn impact_legend() -> serde_json::Value {
+    Impact::LEVELS
+        .iter()
+        .enumerate()
+        .map(|(i, level)| (i.to_string(), json!(level)))
+        .collect::<serde_json::Map<String, serde_json::Value>>()
+        .into()
+}
+
 fn score(level: u8, conf: f64) -> serde_json::Value {
     let mut probs = serde_json::Map::new();
     for i in 0..4u8 {
         probs.insert(i.to_string(), json!(if i == level { 0.85 } else { 0.05 }));
     }
-    json!({ "type": "score", "score": f64::from(level), "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+    json!({ "type": "score", "score": f64::from(level), "legend": impact_legend(),
             "probabilities": probs, "confidence": conf })
 }
 
@@ -244,4 +258,151 @@ fn the_committed_jev_run_decodes_and_rewrites_byte_for_byte() {
     }
     assert_eq!(seen, 3);
     let _ = std::fs::remove_dir_all(&out);
+}
+
+fn default_setup<'a>(
+    texts: &'a Texts,
+    candidates: &'a OwnerCandidates,
+    policy: &'a Policy,
+) -> Setup<'a> {
+    Setup {
+        texts,
+        candidates,
+        policy,
+    }
+}
+
+#[test]
+fn the_committed_jev_run_grades_on_replay() {
+    // The first live TypeSafe run, graded offline against the committed
+    // cases: every recorded answer still fits the questions the current
+    // default setup asks.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval");
+    let cases = eval::read_cases(&root.join("cases.jsonl")).unwrap();
+    let (texts, candidates, policy) = (
+        Texts::default(),
+        OwnerCandidates::from_teams(),
+        Policy::default(),
+    );
+    let report = eval::replay(
+        &root.join("runs/jev-1.13.0"),
+        &cases,
+        &default_setup(&texts, &candidates, &policy),
+    )
+    .unwrap();
+    assert_eq!(report.cases, 3);
+    assert!(report.failed.is_empty());
+    assert_eq!(
+        report.models.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["jev-1.13.0"]
+    );
+    assert_eq!(report.questions["owner"].labelled, 3);
+}
+
+#[tokio::test]
+async fn a_live_run_records_an_unfit_answer_as_a_failed_case_and_continues() {
+    let server = MockServer::start().await;
+    // oom: the model names an owner the question never offered.
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(json!({ "state": { "alert": { "title": "KubePodCrashLooping" } } })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-typesafe-request-id", "req-unfit")
+                .set_body_json(json!({
+                    "model": "jev-1.13.0",
+                    "answers": {
+                        "owner": { "type": "choice", "choice": "made-up-team",
+                                   "probabilities": { "made-up-team": 0.9, "platform": 0.1 },
+                                   "confidence": 0.9 },
+                        "impact": score(2, 0.9),
+                        "actionable": { "type": "noul", "noul": 0.95 },
+                        "duplicate_of": { "type": "choice", "choice": "none",
+                                          "probabilities": { "INC-1": 0.1, "none": 0.9 }, "confidence": 0.85 },
+                        "caused_by_change": { "type": "noul", "noul": 0.8 }
+                    },
+                    "usage": { "input_tokens": 500, "output_tokens": 30 }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // noise: answered as asked.
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(json!({ "state": { "alert": { "title": "DiskUsageHigh" } } })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "owner": { "type": "choice", "choice": "platform",
+                           "probabilities": { "platform": 0.8, "none_of_these": 0.2 }, "confidence": 0.8 },
+                "impact": score(0, 0.7),
+                "actionable": { "type": "noul", "noul": 0.1 }
+            },
+            "usage": { "input_tokens": 300, "output_tokens": 20 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .api_key("k")
+        .base_url(server.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    let cases: Vec<_> = eval::parse_cases(CASES, "inline")
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.id != "unlabelled")
+        .collect();
+    let (texts, candidates, policy) = (
+        Texts::default(),
+        OwnerCandidates::from_teams(),
+        Policy::default(),
+    );
+    let dir = tmp("unfit");
+
+    let report = eval::run(
+        &client,
+        "jev-latest",
+        &cases,
+        &default_setup(&texts, &candidates, &policy),
+        Some(&dir),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.failed.len(), 1, "{:?}", report.failed);
+    let failed = &report.failed[0];
+    assert_eq!(failed.id, "oom");
+    assert!(failed.error.contains("\"owner\""), "{}", failed.error);
+    assert!(failed.error.contains("made-up-team"), "{}", failed.error);
+    assert_eq!(failed.request_id.as_deref(), Some("req-unfit"));
+
+    // The other case is graded, and only it counts.
+    assert_eq!(report.cases, 1);
+    assert_eq!(report.graded[0].id, "noise");
+    assert_eq!(report.input_tokens, 300);
+    assert_eq!(report.questions["owner"].labelled, 1);
+
+    // A failed case is not recorded.
+    assert!(!dir.join("oom.json").exists());
+    assert!(dir.join("noise.json").is_file());
+
+    // The text says which case failed and that the figures leave it out; the
+    // JSON lists it.
+    let text = report.render();
+    assert!(text.contains("failed (1)"), "{text}");
+    assert!(text.contains("over the 1 graded cases"), "{text}");
+    assert!(text.contains("oom") && text.contains("req-unfit"), "{text}");
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["failed"][0]["id"], "oom");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_report_with_no_failed_case_serialises_as_before() {
+    let report = eval::report(Vec::new(), Vec::new());
+    let json = serde_json::to_value(&report).unwrap();
+    assert!(json.get("failed").is_none(), "{json}");
 }

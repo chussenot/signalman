@@ -26,12 +26,18 @@
 //!   answer of a kind this release does not know is not a decode error: it
 //!   is kept as [`crate::Answer::Unknown`], and reading it is the
 //!   [`Error::AnswerTypeMismatch`] below.
-//! * Reading an answer: [`Error::MissingAnswer`],
-//!   [`Error::AnswerTypeMismatch`], [`Error::UnknownOption`],
-//!   [`Error::NotAProbability`] and [`Error::InvalidAnswer`]. The handle, the
-//!   option set or a recording does not match the answer; fix the code or
-//!   record again. When the answer is of a kind this release does not know,
-//!   upgrade the crate instead.
+//! * An answer that does not fit its question: [`Error::MissingAnswer`],
+//!   [`Error::AnswerTypeMismatch`], [`Error::UnknownOption`] and
+//!   [`Error::InvalidAnswer`] ([`Error::is_unfit`] is true for these four).
+//!   [`crate::Response::verify`] raises them for a response that does not
+//!   answer the questions it was sent, and every backend in this crate
+//!   verifies before it returns, so from the client they mean the server
+//!   answered something else than it was asked: report it with the request
+//!   id they carry. Reading through a handle raises them too, when the
+//!   handle, the option set or a recording does not match the answer; fix
+//!   the code or record again. When the answer is of a kind this release
+//!   does not know, upgrade the crate instead. [`Error::NotAProbability`] is
+//!   a value outside `[0, 1]` on the wire or in a [`crate::Fake`].
 //! * Recordings: [`Error::Io`] and [`Error::NoRecording`]. Fix the path, or
 //!   record the request before replaying it.
 //!
@@ -46,13 +52,16 @@
 //! `x-typesafe-request-id` when the response had one: [`Error::Unauthorized`],
 //! [`Error::PermissionDenied`], [`Error::InvalidRequest`],
 //! [`Error::RateLimited`], [`Error::Overloaded`], [`Error::Http`] and a
-//! [`Error::Decode`] of a 2xx body. It is the one link
-//! from a failure to TypeSafe's own logs, so it is on the value
+//! [`Error::Decode`] of a 2xx body. So do the four errors of an answer that
+//! does not fit its question, which carry the id of the response they were
+//! read from ([`crate::Response::request_id`]): a 2xx that answered
+//! something else than it was asked is a call TypeSafe can look up. It is
+//! the one link from a failure to TypeSafe's own logs, so it is on the value
 //! ([`Error::request_id`]) and at the end of the message (` [request_id …]`),
 //! where a log line that keeps only the message still has it. It is the last
 //! attempt's id and optional, because the API does not promise the header.
 //! [`Error::Transport`] never has one, and the variants raised before a
-//! request is sent or while reading an answer have none either.
+//! request is sent have none either.
 //!
 //! The enum is `#[non_exhaustive]`: new variants may arrive in minor
 //! releases, so a `match` outside the crate needs a wildcard arm.
@@ -266,52 +275,90 @@ pub enum Error {
         /// What is wrong.
         reason: String,
     },
-    /// The response has no answer under the requested id: the handle belongs
-    /// to a different request, or a [`crate::Fake`] was built without that
-    /// answer.
-    #[error("no answer for question {0:?}")]
-    MissingAnswer(String),
-    /// The answer under this id is a different primitive than the handle
-    /// expects: the handle was made for another question with the same id, or
-    /// a recording was made with a different question set. Fix the code or
-    /// record again.
+    /// The response has no answer under a question's id. From
+    /// [`crate::Response::verify`], and so from every backend in this crate,
+    /// it means the server left a question it was sent unanswered (or a
+    /// [`crate::Fake`] was built without that answer): report it with the
+    /// request id. From [`crate::Response::get`] it can also mean the handle
+    /// belongs to a different request.
+    #[error("no answer for question {id:?}{}", request_id_suffix(.request_id.as_deref()))]
+    MissingAnswer {
+        /// Question id.
+        id: String,
+        /// The response's `x-typesafe-request-id`, when it had one.
+        request_id: Option<String>,
+    },
+    /// The answer under this id is a different primitive than its question
+    /// or its handle: the server answered another kind than it was asked
+    /// (report it with the request id), the handle was made for another
+    /// question with the same id, or a recording was made with a different
+    /// question set (fix the code or record again).
     ///
     /// It is also how an answer of a kind this release does not know
-    /// ([`crate::Answer::Unknown`]) reads through a handle: `actual` is then
-    /// the server's own `type`, escaped and cut to 64 characters so it cannot
-    /// break a log line. The remedy is to upgrade this crate, if the API has
-    /// a primitive it does not know yet, or to check what the server answers,
-    /// if it is not the API.
-    #[error("answer {id:?} is a {actual} but a {expected} was requested")]
+    /// ([`crate::Answer::Unknown`]) reads under a question that was asked:
+    /// `actual` is then the server's own `type`, escaped and cut to 64
+    /// characters so it cannot break a log line. The remedy is to upgrade
+    /// this crate, if the API has a primitive it does not know yet, or to
+    /// check what the server answers, if it is not the API.
+    #[error(
+        "answer {id:?} is a {actual} but a {expected} was requested{}",
+        request_id_suffix(.request_id.as_deref())
+    )]
     AnswerTypeMismatch {
         /// Question id.
         id: String,
-        /// Primitive the handle expected.
+        /// Primitive the question or handle expected.
         expected: &'static str,
         /// The kind the server returned: `noul`, `choice`, `score`, or an
         /// unknown kind's escaped `type`.
         actual: String,
+        /// The response's `x-typesafe-request-id`, when it had one.
+        request_id: Option<String>,
     },
-    /// A Choice answer named an option that is not in the Rust option set:
-    /// the enum changed since the answer was recorded, or the backend answered
-    /// a different question. Fix the enum or record again.
-    #[error("answer {id:?} chose unknown option {option:?}")]
+    /// A Choice answer named an option its question did not offer, as the
+    /// chosen option or as a key of its distribution. Raised by
+    /// [`crate::Response::verify`] against the options the question was
+    /// sent with, and by [`crate::Response::get`] for a key outside a typed
+    /// Choice's enum.
+    ///
+    /// It is an error, not a guess: an option nobody offered names nothing
+    /// the code can act on, and reading it as some other option would decide
+    /// on an answer the model did not give. From the client it means the
+    /// server answered a different question; report it with the request id.
+    /// From `get` on a recording, the enum changed since it was recorded;
+    /// fix the enum or record again.
+    #[error(
+        "answer {id:?} names option {option:?}, which its question does not offer{}",
+        request_id_suffix(.request_id.as_deref())
+    )]
     UnknownOption {
         /// Question id.
         id: String,
         /// The option string the API returned.
         option: String,
+        /// The response's `x-typesafe-request-id`, when it had one.
+        request_id: Option<String>,
     },
     /// The answer is of the right primitive but does not describe the
-    /// question it answers: a Score on a different scale, for example. This
-    /// crate never produces it; it is for an application's own reading of an
-    /// answer, so its errors share one type with the crate's.
-    #[error("answer {id:?} does not fit its question: {reason}")]
+    /// question it answers. [`crate::Response::verify`] raises it for a
+    /// Score that is not on the scale the question sent: a legend with
+    /// another number of levels or another level text, a probability keyed
+    /// by something that is not a level, or a score off the ends of the
+    /// scale. From the client, report it with the request id. An application
+    /// may raise it for its own reading of an answer too, so its errors share
+    /// one type with the crate's.
+    #[error(
+        "answer {id:?} does not fit its question: {reason}{}",
+        request_id_suffix(.request_id.as_deref())
+    )]
     InvalidAnswer {
         /// Question id.
         id: String,
-        /// What does not fit.
+        /// What does not fit. It never quotes a level's text, which is the
+        /// caller's own question and can be long.
         reason: String,
+        /// The response's `x-typesafe-request-id`, when it had one.
+        request_id: Option<String>,
     },
     /// A probability or confidence was outside `[0, 1]`: the wire sent one,
     /// or a [`crate::Fake`] was built with one. The value is reported.
@@ -368,8 +415,10 @@ impl From<serde_json::Error> for Error {
 impl Error {
     /// TypeSafe's `x-typesafe-request-id` for the response this error came
     /// from, when there was one and it carried the header: the id to quote
-    /// to TypeSafe support. `None` for an error raised before anything was
-    /// sent, while reading an answer, or on a transport failure.
+    /// to TypeSafe support. The four errors of an answer that does not fit
+    /// its question carry the id of the response they were read from. `None`
+    /// for an error raised before anything was sent, for one about a
+    /// recording, or on a transport failure.
     ///
     /// The match names every variant, so a new one has to choose.
     pub fn request_id(&self) -> Option<&str> {
@@ -380,7 +429,11 @@ impl Error {
             | Self::RateLimited { request_id, .. }
             | Self::Overloaded { request_id, .. }
             | Self::Http { request_id, .. }
-            | Self::Decode { request_id, .. } => request_id.as_deref(),
+            | Self::Decode { request_id, .. }
+            | Self::MissingAnswer { request_id, .. }
+            | Self::AnswerTypeMismatch { request_id, .. }
+            | Self::UnknownOption { request_id, .. }
+            | Self::InvalidAnswer { request_id, .. } => request_id.as_deref(),
             #[cfg(feature = "http")]
             Self::Transport { .. } => None,
             Self::MissingApiKey
@@ -391,13 +444,49 @@ impl Error {
             | Self::InvalidQuestion { .. }
             | Self::ReservedHeader(_)
             | Self::ReservedField(_)
-            | Self::MissingAnswer(_)
-            | Self::AnswerTypeMismatch { .. }
-            | Self::UnknownOption { .. }
-            | Self::InvalidAnswer { .. }
             | Self::NotAProbability { .. }
             | Self::Url(_) => None,
         }
+    }
+
+    /// This error with the request id of the response it was read from, when
+    /// it is one of the four answer-fit errors ([`Error::is_unfit`]) and has
+    /// none yet; any other error is returned as it is. The typed views read
+    /// an answer without its response, so [`crate::Response::get`] adds the
+    /// id here.
+    pub(crate) fn with_request_id(mut self, id: Option<&str>) -> Self {
+        if let Self::MissingAnswer { request_id, .. }
+        | Self::AnswerTypeMismatch { request_id, .. }
+        | Self::UnknownOption { request_id, .. }
+        | Self::InvalidAnswer { request_id, .. } = &mut self
+            && request_id.is_none()
+        {
+            *request_id = id.map(str::to_owned);
+        }
+        self
+    }
+
+    /// True when the response did not fit the questions it answers:
+    /// [`Error::MissingAnswer`], [`Error::AnswerTypeMismatch`],
+    /// [`Error::UnknownOption`] or [`Error::InvalidAnswer`].
+    ///
+    /// These are what [`crate::Response::verify`] raises, so from a backend
+    /// they mean the call itself went through and its answer cannot be
+    /// used, as opposed to a call that failed (a transport error, an HTTP
+    /// status) or a request that was never sent. A caller that runs many
+    /// independent calls, such as an evaluation harness, uses this to record
+    /// the case as failed, with the request id, and carry on with the next
+    /// one, where any other error stops the run. It is false for
+    /// [`Error::Decode`]: a body that does not decode is not an answer at
+    /// all.
+    pub fn is_unfit(&self) -> bool {
+        matches!(
+            self,
+            Self::MissingAnswer { .. }
+                | Self::AnswerTypeMismatch { .. }
+                | Self::UnknownOption { .. }
+                | Self::InvalidAnswer { .. }
+        )
     }
 }
 
@@ -587,6 +676,72 @@ mod tests {
             Error::ReservedField("model".into()),
         ] {
             assert_eq!(err.request_id(), None, "{err:?}");
+        }
+    }
+
+    /// The four errors of a response that does not fit its questions.
+    fn unfit(request_id: Option<&str>) -> [Error; 4] {
+        let id = || request_id.map(str::to_owned);
+        [
+            Error::MissingAnswer {
+                id: "q".into(),
+                request_id: id(),
+            },
+            Error::AnswerTypeMismatch {
+                id: "q".into(),
+                expected: "noul",
+                actual: "score".into(),
+                request_id: id(),
+            },
+            Error::UnknownOption {
+                id: "q".into(),
+                option: "sales".into(),
+                request_id: id(),
+            },
+            Error::InvalidAnswer {
+                id: "q".into(),
+                reason: "score 4 is outside 0..=3, the scale the question sent".into(),
+                request_id: id(),
+            },
+        ]
+    }
+
+    #[test]
+    fn is_unfit_names_the_four_fit_errors() {
+        for err in unfit(None) {
+            assert!(err.is_unfit(), "{err:?}");
+        }
+        let (http, _) = http_variants(Some("req_1"))
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| unreachable!());
+        for err in [
+            http,
+            Error::MissingApiKey,
+            Error::NotAProbability { value: 1.5 },
+            Error::NoRecording("abc".into()),
+            Error::DuplicateQuestionId("q".into()),
+            Error::from(serde_json::from_str::<u8>("x").unwrap_err()),
+        ] {
+            assert!(!err.is_unfit(), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn an_unfit_answer_carries_its_responses_request_id() {
+        let messages = [
+            r#"no answer for question "q""#,
+            r#"answer "q" is a score but a noul was requested"#,
+            r#"answer "q" names option "sales", which its question does not offer"#,
+            r#"answer "q" does not fit its question: score 4 is outside 0..=3, the scale the question sent"#,
+        ];
+        for (err, message) in unfit(None).into_iter().zip(messages) {
+            assert_eq!(err.request_id(), None, "{err:?}");
+            assert_eq!(err.to_string(), message);
+        }
+        for (err, message) in unfit(Some("req_9")).into_iter().zip(messages) {
+            assert_eq!(err.request_id(), Some("req_9"), "{err:?}");
+            assert_eq!(err.to_string(), format!("{message} [request_id req_9]"));
         }
     }
 
