@@ -562,10 +562,12 @@ async fn conservative_does_not_retry_a_timeout() {
                 .set_body_json(noul_body())
                 .set_delay(Duration::from_millis(500)),
         )
-        .expect(1)
+        // At most one: a 50 ms deadline can fire on a loaded runner before
+        // wiremock records the request. `attempts: 1` is the no-retry check.
+        .expect(0..=1)
         .mount(&server)
         .await;
-    // The request was sent before the timeout fired, so it may have been
+    // The request may have been sent before the timeout fired, and so
     // processed and billed: not retried.
     let err = client_at(
         &server.uri(),
@@ -1338,7 +1340,9 @@ async fn a_call_timeout_replaces_the_per_attempt_timeout() {
                 .set_body_json(noul_body())
                 .set_delay(Duration::from_millis(500)),
         )
-        .expect(2)
+        // One or two: the 50 ms call can time out on a loaded runner before
+        // wiremock records its request; the second call always reaches it.
+        .expect(1..=2)
         .mount(&server)
         .await;
     let c = client_at(&server.uri(), RetryPolicy::none(), Duration::from_secs(2));

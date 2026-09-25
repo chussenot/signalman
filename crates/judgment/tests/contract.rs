@@ -25,6 +25,18 @@
 //! validation (OAS 3.1.1 §4.8.25); a `oneOf` over the three kinds is what
 //! refuses an answer that is none of them. The request, response and
 //! model-list schema names are read from the operations, not written here.
+//!
+//! No component in the document closes its properties, and most request
+//! fields are optional, so against the document as published a renamed or
+//! misspelt optional field (`instruction`, `critera`) is only an extra key
+//! and conforms. Request bodies the builders produce are therefore also
+//! checked against a closed overlay: a copy of the components in which the
+//! request, each member of its question union and the components those
+//! members refer to (`NoulCriteria`) carry `unevaluatedProperties: false`,
+//! so a key the document does not name fails. The overlay is built in
+//! memory; the fixture is not touched, and `state`, the `questions` map and
+//! the Choice and Score criteria stay as open as the document has them.
+//!
 //! The document's examples live on properties only, so the tests read them
 //! by named JSON pointer and assemble instances, asserting each assembled
 //! instance conforms before using it: an example a refresh removes fails
@@ -47,15 +59,22 @@
 //! * `what_the_crate_decodes_differently_from_the_schema`: the schema
 //!   types probabilities as bare numbers and counts as bare integers, so the
 //!   crate refuses values it allows; and the crate tolerates what the schema
-//!   requires (`usage`, a non-empty `answers`, a non-null legend entry).
+//!   requires: `usage` or its counts, including as null, a non-empty
+//!   `answers`, a legend entry that is null or a scalar.
+//!
+//! An answer of a kind the document does not name is also decoded
+//! (`Answer::Unknown`) and refused by the schema's `oneOf`. It is not fed to
+//! the validator: `the_schema_has_the_kinds_and_paths_the_crate_has` compares
+//! the discriminator mappings with the crate's kinds instead, so a document
+//! that adds a kind fails there.
 //!
 //! Three tests drive the client over wiremock and need the `http` feature;
-//! the other seven build and run under `--no-default-features`, which is why
+//! the other eight build and run under `--no-default-features`, which is why
 //! request bodies there are assembled with `json!` rather than through
 //! `judgment::Request` (defined in the client module).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -96,14 +115,96 @@ const RESPONSE_422: &str =
 #[cfg(feature = "http")]
 const MODELS_200: &str = "/paths/~1v1~1models/get/responses/200/content/application~1json/schema";
 
+/// The document's components with the request's own objects closed (the
+/// module docs say why): `unevaluatedProperties: false` on the request
+/// schema, on each member of its question union and on each component a
+/// member's property refers to, directly or through an `anyOf` or `oneOf`
+/// (`NoulCriteria`, reached through `criteria: anyOf [NoulCriteria, null]`).
+/// The keyword sits beside each component's own `properties` and does not
+/// reach into a property's value, so `state`, the `questions` map and the
+/// Choice and Score criteria maps stay open.
+static STRICT_COMPONENTS: LazyLock<Value> = LazyLock::new(|| {
+    let schemas = &SPEC["components"]["schemas"];
+    let component = |reference: &Value| {
+        reference
+            .as_str()
+            .and_then(|r| r.strip_prefix("#/components/schemas/"))
+            .map(str::to_owned)
+    };
+    let union = question_union();
+    let members: Vec<String> = schemas[union.as_str()]["oneOf"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{union} is not a oneOf"))
+        .iter()
+        .map(|member| {
+            component(&member["$ref"])
+                .unwrap_or_else(|| panic!("a {union} member is not a component: {member}"))
+        })
+        .collect();
+    let mut closed = BTreeSet::from([request_schema()]);
+    for member in &members {
+        closed.insert(member.clone());
+        let properties = schemas[member.as_str()]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{member} has no properties"));
+        for property in properties.values() {
+            let alternatives = ["anyOf", "oneOf"]
+                .iter()
+                .filter_map(|k| property[*k].as_array())
+                .flatten();
+            for schema in std::iter::once(property).chain(alternatives) {
+                if let Some(name) = component(&schema["$ref"]) {
+                    closed.insert(name);
+                }
+            }
+        }
+    }
+    // Named, so a document that changes the set is reviewed with the
+    // refresh rather than closed silently.
+    assert_eq!(
+        closed.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "ChoiceQuestion",
+            "NoulCriteria",
+            "NoulQuestion",
+            "ScoreQuestion",
+            "SystemOneRequest"
+        ],
+        "the request's components are not the ones the closed overlay was \
+         reviewed for"
+    );
+    let mut components = SPEC["components"].clone();
+    for name in &closed {
+        let schema = components["schemas"][name.as_str()]
+            .as_object_mut()
+            .unwrap_or_else(|| panic!("no component {name}"));
+        assert!(
+            schema.contains_key("properties"),
+            "{name} has no properties"
+        );
+        schema.insert("unevaluatedProperties".to_owned(), Value::Bool(false));
+    }
+    components
+});
+
 /// A 2020-12 validator for one component schema, resolving its `$ref`s
-/// against the document's components.
-fn validator(schema: &str) -> jsonschema::Validator {
+/// against `components`.
+fn validator_over(components: &Value, schema: &str) -> jsonschema::Validator {
     jsonschema::draft202012::new(&json!({
         "$ref": format!("#/components/schemas/{schema}"),
-        "components": SPEC["components"],
+        "components": components,
     }))
     .unwrap_or_else(|e| panic!("component {schema} does not compile: {e}"))
+}
+
+/// A validator for one component schema against the document as published.
+fn validator(schema: &str) -> jsonschema::Validator {
+    validator_over(&SPEC["components"], schema)
+}
+
+/// A validator for one component schema against [`STRICT_COMPONENTS`].
+fn strict_validator(schema: &str) -> jsonschema::Validator {
+    validator_over(&STRICT_COMPONENTS, schema)
 }
 
 /// The component a `$ref` at `pointer` names, such as `SystemOneRequest`
@@ -153,8 +254,12 @@ impl std::fmt::Display for Failure {
 fn flatten(error: &jsonschema::ValidationError<'_>, out: &mut Vec<Failure>) {
     use jsonschema::error::ValidationErrorKind as Kind;
     let mut message = error.to_string();
-    // A failing `oneOf` quotes the whole instance; the path says which.
-    message.truncate(200);
+    // A failing `oneOf` quotes the whole instance; the path says which. Cut
+    // at 200 characters, not bytes: an instance carrying non-ASCII text
+    // would otherwise panic here and lose the list.
+    if let Some((cut, _)) = message.char_indices().nth(200) {
+        message.truncate(cut);
+    }
     out.push(Failure {
         instance_path: error.instance_path().to_string(),
         schema_path: error.schema_path().to_string(),
@@ -172,13 +277,20 @@ fn flatten(error: &jsonschema::ValidationError<'_>, out: &mut Vec<Failure>) {
     }
 }
 
-fn failures(schema: &str, instance: &Value) -> Vec<Failure> {
-    let validator = validator(schema);
+fn failures_of(validator: &jsonschema::Validator, instance: &Value) -> Vec<Failure> {
     let mut out = Vec::new();
     for error in validator.iter_errors(instance) {
         flatten(&error, &mut out);
     }
     out
+}
+
+fn failures(schema: &str, instance: &Value) -> Vec<Failure> {
+    failures_of(&validator(schema), instance)
+}
+
+fn strict_failures(schema: &str, instance: &Value) -> Vec<Failure> {
+    failures_of(&strict_validator(schema), instance)
 }
 
 fn listed(failures: &[Failure]) -> String {
@@ -196,6 +308,20 @@ fn assert_conforms(schema: &str, instance: &Value, what: &str) {
     assert!(
         failures.is_empty(),
         "{what} is not a valid {schema}:\n{}\ninstance: {instance:#}",
+        listed(&failures)
+    );
+}
+
+/// `instance` is valid against component `schema` with the request
+/// components closed ([`STRICT_COMPONENTS`]): it conforms, and it names no
+/// field the document does not.
+#[track_caller]
+fn assert_conforms_strict(schema: &str, instance: &Value, what: &str) {
+    let failures = strict_failures(schema, instance);
+    assert!(
+        failures.is_empty(),
+        "{what} is not a valid {schema} with the request components closed \
+         (a field the document does not name?):\n{}\ninstance: {instance:#}",
         listed(&failures)
     );
 }
@@ -606,6 +732,12 @@ async fn every_request_the_builders_produce_is_a_system_one_request() {
 
         let sent: Value = serde_json::from_slice(&request.body).unwrap();
         assert_conforms(&schema, &sent, &format!("request {i}"));
+        // Every field it names is one the document names, with the same
+        // spelling; `beam_width` (request 6, `CallOptions::extra`) is the
+        // caller's own extra field and is checked for below.
+        let mut documented = sent.clone();
+        documented.as_object_mut().unwrap().remove("beam_width");
+        assert_conforms_strict(&schema, &documented, &format!("request {i}"));
         assert_eq!(
             sent["questions"],
             serde_json::to_value(&q).unwrap(),
@@ -940,7 +1072,7 @@ fn the_schema_examples_decode_through_the_crate() {
         serde_json::to_value(&q).unwrap()["tone"]["criteria"],
         criteria
     );
-    assert_conforms(
+    assert_conforms_strict(
         &request_schema(),
         &body(
             request_example("state", 1),
@@ -1042,6 +1174,7 @@ fn what_the_crate_decodes_differently_from_the_schema() {
     no_answers["answers"] = json!({});
     let mut no_usage = base.clone();
     no_usage.as_object_mut().unwrap().remove("usage");
+    let mut decoded = BTreeMap::new();
     for (what, instance, at) in [
         ("answers {}", no_answers, "/answers"),
         (
@@ -1049,22 +1182,50 @@ fn what_the_crate_decodes_differently_from_the_schema() {
             with("/answers/s/legend/0", Value::Null),
             "/answers/s/legend/0",
         ),
+        (
+            "legend {\"0\": 1}",
+            with("/answers/s/legend/0", json!(1)),
+            "/answers/s/legend/0",
+        ),
         ("a response without usage", no_usage, ""),
+        ("usage null", with("/usage", Value::Null), "/usage"),
+        (
+            "a null usage count",
+            with("/usage/input_tokens", Value::Null),
+            "/usage/input_tokens",
+        ),
     ] {
         assert_refused_at(&schema, &instance, at, what);
-        let decoded = serde_json::from_value::<Response>(instance);
-        assert!(decoded.is_ok(), "{what}: {decoded:?}");
+        let response = serde_json::from_value::<Response>(instance)
+            .unwrap_or_else(|e| panic!("{what} did not decode: {e}"));
+        decoded.insert(what, response);
     }
-    let decoded: Response = {
-        let mut instance = base.clone();
-        instance.as_object_mut().unwrap().remove("usage");
-        serde_json::from_value(instance).unwrap()
-    };
+    // What each tolerated value reads as.
+    for what in ["a response without usage", "usage null"] {
+        assert_eq!(
+            decoded[what].usage,
+            Usage::default(),
+            "{what} reads as zero"
+        );
+    }
+    let example_usage: Usage = serde_json::from_value(base["usage"].clone()).unwrap();
     assert_eq!(
-        decoded.usage,
-        Usage::default(),
-        "a missing usage reads as zero"
+        decoded["a null usage count"].usage,
+        Usage {
+            input_tokens: 0,
+            ..example_usage
+        },
+        "a null count reads as zero and the other is kept"
     );
+    for (what, level) in [
+        ("legend {\"0\": null}", Value::Null),
+        ("legend {\"0\": 1}", json!(1)),
+    ] {
+        let Answer::Score { legend, .. } = &decoded[what].answers["s"] else {
+            panic!("{what}: {:?}", decoded[what].answers["s"]);
+        };
+        assert_eq!(legend["0"], level, "{what} is kept as it came");
+    }
 
     // Both accept these: the response schema is open, so an extra top-level
     // key is valid, and the crate keeps it in `extra`; a body `request_id`
@@ -1138,12 +1299,108 @@ fn the_schema_has_the_kinds_and_paths_the_crate_has() {
     no_model.as_object_mut().unwrap().remove("model");
     assert_refused_at(&request_schema(), &no_model, "", "a request without model");
 
+    // The field names: requests are also checked with the request
+    // components closed, which is what refuses a key the document does not
+    // name. Not vacuous: each misspelling below is a valid request against
+    // the document as published, and the closed components refuse it at the
+    // object that holds it.
+    let hand_written = |question: Value| json!({ "state": "text", "model": "jev-latest", "questions": { "q": question } });
+    for (what, instance, at) in [
+        (
+            "`instruction` for `instructions`",
+            hand_written(json!({ "type": "noul", "instruction": "Is `message` urgent?" })),
+            "/questions/q",
+        ),
+        (
+            "`critera` for `criteria`",
+            hand_written(json!({
+                "type": "noul",
+                "instructions": "Is `message` spam?",
+                "critera": { "true": "advertising", "false": "a real message" },
+            })),
+            "/questions/q",
+        ),
+        (
+            "Noul criteria keyed `yes` and `no`",
+            hand_written(json!({
+                "type": "noul",
+                "instructions": "Is `message` spam?",
+                "criteria": { "yes": "advertising", "no": "a real message" },
+            })),
+            "/questions/q/criteria",
+        ),
+        (
+            "`modle` for `model` beside the model",
+            json!({
+                "state": "text",
+                "model": "jev-latest",
+                "modle": "jev-1.13.0",
+                "questions": { "q": { "type": "noul", "instructions": "?" } },
+            }),
+            "",
+        ),
+    ] {
+        assert_conforms(&request_schema(), &instance, what);
+        let failures = strict_failures(&request_schema(), &instance);
+        assert!(
+            failures.iter().any(|f| f.instance_path == at
+                && f.schema_path.ends_with("/unevaluatedProperties")),
+            "{what}: the closed request components do not refuse it at {}:\n{}",
+            if at.is_empty() { "(root)" } else { at },
+            listed(&failures)
+        );
+    }
+
     // The fixture is canonical: exactly what the drift test writes.
     assert_eq!(
         serde_json::to_string_pretty(&*SPEC).unwrap() + "\n",
         FIXTURE,
-        "tests/fixtures/typesafe-openapi.json is not canonical: it was edited \
-         by hand. Rewrite it with \
+        "tests/fixtures/typesafe-openapi.json is not in canonical form (sorted \
+         keys, two-space indent, final newline). Rewrite it with \
          `JUDGMENT_OPENAPI_WRITE=1 cargo test -p judgment --test openapi_drift -- --ignored`"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 11: the failure list survives any text
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_failure_message_is_cut_on_a_character_boundary() {
+    // A failing `oneOf` quotes the whole question, and each message in the
+    // list is cut to 200 characters. Instructions of two-byte characters
+    // with and without a one-byte pad put byte 200 inside a character in one
+    // of the two, so a cut by bytes would panic in the helper and lose the
+    // list; by characters, the message is cut to exactly 200 of them.
+    for pad in ["", "x"] {
+        let instructions = format!("{pad}{}", "\u{e9}".repeat(300));
+        let instance = json!({
+            "state": "text",
+            "model": "jev-latest",
+            "questions": {
+                "q": { "type": "noul", "instructions": instructions, "criteria": { "true": true } },
+            },
+        });
+        assert_refused_at(
+            &request_schema(),
+            &instance,
+            "/questions/q/criteria/true",
+            "a boolean Noul criterion beside non-ASCII instructions",
+        );
+        let failures = failures(&request_schema(), &instance);
+        let cut: Vec<&Failure> = failures
+            .iter()
+            .filter(|f| f.message.contains('\u{e9}'))
+            .collect();
+        assert!(
+            cut.iter().any(|f| f.message.chars().count() == 200),
+            "pad {pad:?}: no message quoting the instructions was cut:\n{}",
+            listed(&failures)
+        );
+        assert!(
+            failures.iter().all(|f| f.message.chars().count() <= 200),
+            "pad {pad:?}:\n{}",
+            listed(&failures)
+        );
+    }
 }

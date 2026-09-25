@@ -8,9 +8,10 @@
 //! produce in general. This file covers what signalman actually sends: the
 //! triage questions carry structured instructions (`question`, `guidance`,
 //! `catalog`, `context`) and runtime option sets, and the state is a whole
-//! alert, so a change to either that the schema would refuse fails here. It
-//! also keeps the shared mocks honest: a fixture response the schema refuses
-//! would make every test that uses it test a server that does not exist.
+//! alert, so a change to either that the schema would refuse, or that names
+//! a request field the schema does not, fails here. It also keeps the shared
+//! mocks honest: a fixture response the schema refuses would make every test
+//! that uses it test a server that does not exist.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -55,12 +56,42 @@ fn schema_of(pointer: &str) -> String {
         .to_owned()
 }
 
+/// The components with the request's own objects closed:
+/// `unevaluatedProperties: false` on the request, the three question kinds
+/// and the Noul criteria, so a key the document does not name fails. None of
+/// them is closed in the document, and most request fields are optional, so
+/// against the open components a renamed or misspelt optional field is only
+/// an extra key and conforms. The keyword does not reach into a property's
+/// value, so `state`, the `questions` map and the Choice and Score criteria
+/// stay open. `crates/judgment/tests/contract.rs` derives the set from the
+/// document and fails when it is no longer these five.
+static STRICT_COMPONENTS: LazyLock<Value> = LazyLock::new(|| {
+    let mut components = SPEC["components"].clone();
+    for name in [
+        "SystemOneRequest",
+        "NoulQuestion",
+        "ChoiceQuestion",
+        "ScoreQuestion",
+        "NoulCriteria",
+    ] {
+        components["schemas"][name]
+            .as_object_mut()
+            .unwrap_or_else(|| panic!("the vendored document has no component {name}"))
+            .insert("unevaluatedProperties".to_owned(), Value::Bool(false));
+    }
+    components
+});
+
 /// Every failure under `error`, the `anyOf` and `oneOf` branches included,
-/// as `path: message`.
+/// as `path: message [schema path]`.
 fn flatten(error: &jsonschema::ValidationError<'_>, out: &mut Vec<String>) {
     use jsonschema::error::ValidationErrorKind as Kind;
     let mut message = error.to_string();
-    message.truncate(200);
+    // A failing `oneOf` quotes the whole instance. Cut at 200 characters,
+    // not bytes, or non-ASCII text in it panics here and loses the list.
+    if let Some((cut, _)) = message.char_indices().nth(200) {
+        message.truncate(cut);
+    }
     out.push(format!(
         "{}: {message} [schema {}]",
         error.instance_path(),
@@ -76,23 +107,47 @@ fn flatten(error: &jsonschema::ValidationError<'_>, out: &mut Vec<String>) {
     }
 }
 
-/// `instance` is valid against the component the operation at `pointer`
-/// names, validated as JSON Schema 2020-12 (OAS 3.1).
-#[track_caller]
-fn assert_conforms(pointer: &str, instance: &Value, what: &str) {
+/// Every failure of `instance` against the component the operation at
+/// `pointer` names, validated as JSON Schema 2020-12 (OAS 3.1) over
+/// `components`: the document's, or [`STRICT_COMPONENTS`].
+fn failures(pointer: &str, components: &Value, instance: &Value) -> Vec<String> {
     let schema = schema_of(pointer);
     let validator = jsonschema::draft202012::new(&json!({
         "$ref": format!("#/components/schemas/{schema}"),
-        "components": SPEC["components"],
+        "components": components,
     }))
     .unwrap_or_else(|e| panic!("component {schema} does not compile: {e}"));
     let mut failures = Vec::new();
     for error in validator.iter_errors(instance) {
         flatten(&error, &mut failures);
     }
+    failures
+}
+
+/// `instance` is valid against the component the operation at `pointer`
+/// names.
+#[track_caller]
+fn assert_conforms(pointer: &str, instance: &Value, what: &str) {
+    let failures = failures(pointer, &SPEC["components"], instance);
     assert!(
         failures.is_empty(),
-        "{what} is not a valid {schema}:\n  {}\ninstance: {instance:#}",
+        "{what} is not a valid {}:\n  {}\ninstance: {instance:#}",
+        schema_of(pointer),
+        failures.join("\n  ")
+    );
+}
+
+/// `instance` is valid against the component the operation at `pointer`
+/// names with the request components closed: it conforms, and it names no
+/// field the document does not.
+#[track_caller]
+fn assert_conforms_strict(pointer: &str, instance: &Value, what: &str) {
+    let failures = failures(pointer, &STRICT_COMPONENTS, instance);
+    assert!(
+        failures.is_empty(),
+        "{what} is not a valid {} with the request components closed (a field \
+         the document does not name?):\n  {}\ninstance: {instance:#}",
+        schema_of(pointer),
         failures.join("\n  ")
     );
 }
@@ -182,7 +237,7 @@ fn the_triage_request_for_every_example_alert_is_a_system_one_request() {
         let alert: Alert = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let request = triage_request(&alert, OwnerCandidates::from_teams());
-        assert_conforms(
+        assert_conforms_strict(
             REQUEST_BODY,
             &request,
             &format!("the triage request for {}", path.display()),
@@ -199,11 +254,62 @@ fn the_triage_request_for_every_example_alert_is_a_system_one_request() {
     assert!(questions["duplicate_of"]["criteria"]["INC-4821"].is_string());
     assert!(questions["caused_by_change"].is_object());
     assert!(questions["owner"]["criteria"]["payments"].is_string());
-    assert_conforms(
+    assert_conforms_strict(
         REQUEST_BODY,
         &request,
         "the triage request for an alert with every part set",
     );
+
+    // Not vacuous: the owner question with `instructions` misspelt is a
+    // valid request against the document as published, and the closed
+    // components refuse it at the question.
+    let mut misspelt = request.clone();
+    let owner = misspelt["questions"]["owner"].as_object_mut().unwrap();
+    let instructions = owner.remove("instructions").unwrap();
+    owner.insert("instruction".to_owned(), instructions);
+    assert_conforms(REQUEST_BODY, &misspelt, "`instruction` for `instructions`");
+    let refused = failures(REQUEST_BODY, &STRICT_COMPONENTS, &misspelt);
+    assert!(
+        refused
+            .iter()
+            .any(|f| f.starts_with("/questions/owner: ") && f.ends_with("/unevaluatedProperties]")),
+        "the closed request components accept `instruction` for `instructions`:\n  {}",
+        refused.join("\n  ")
+    );
+}
+
+#[test]
+fn a_failure_message_is_cut_on_a_character_boundary() {
+    // A failing `oneOf` quotes the whole question, and each message in the
+    // list is cut to 200 characters. Instructions of two-byte characters
+    // with and without a one-byte pad put byte 200 inside a character in one
+    // of the two, so a cut by bytes would panic in the helper and lose the
+    // list; by characters, the quoting message is cut to exactly 200.
+    for pad in ["", "x"] {
+        let instance = json!({
+            "state": "text",
+            "model": DEFAULT_MODEL,
+            "questions": {
+                "q": {
+                    "type": "noul",
+                    "instructions": format!("{pad}{}", "\u{e9}".repeat(300)),
+                    "criteria": { "true": true },
+                },
+            },
+        });
+        let refused = failures(REQUEST_BODY, &SPEC["components"], &instance);
+        let quoting = refused
+            .iter()
+            .find(|f| f.starts_with("/questions/q: "))
+            .unwrap_or_else(|| panic!("pad {pad:?}: not refused at the question: {refused:?}"));
+        let message = quoting
+            .strip_prefix("/questions/q: ")
+            .and_then(|f| f.rsplit_once(" [schema "))
+            .map(|(message, _)| message)
+            .unwrap();
+        assert!(message.contains('\u{e9}'), "pad {pad:?}: {message}");
+        assert_eq!(message.chars().count(), 200, "pad {pad:?}: {message}");
+    }
 }
 
 #[test]

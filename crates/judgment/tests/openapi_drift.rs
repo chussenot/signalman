@@ -27,8 +27,10 @@
 //!
 //! The fixture is written canonically, as `serde_json::to_string_pretty`
 //! with sorted keys and a final newline, so a refresh's diff is the change in
-//! the contract and nothing else; `tests/contract.rs` checks the bytes are
-//! canonical, so a hand edit shows up too. Review a refresh by rerunning the
+//! the contract and nothing else. `tests/contract.rs` checks the bytes are
+//! canonical, which catches a hand edit that reformats the file; a hand edit
+//! to the content passes offline and shows up only when this test is run
+//! against the live document. Review a refresh by rerunning the
 //! contract test: a gap it pins (something the crate sends that the schema
 //! refuses, or the reverse) fails at its own path when the new document
 //! closes it.

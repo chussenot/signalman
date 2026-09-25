@@ -184,7 +184,10 @@ offline and in every `cargo test`:
   array and null instructions, one-sided and structured Noul criteria,
   undescribed options, 255 options, 2 and 10 levels of every level shape),
   sent through each client entry point, with the method, path, content type
-  and bearer scheme the document names;
+  and bearer scheme the document names, and also against a closed copy of
+  the request components, so a renamed or misspelt field fails even where
+  the published schema, which closes no object, would take it as an extra
+  key;
 - every response a `Fake` builds, and all 40 committed recordings under
   `examples/typed-decisions/recordings`, as committed and after a decode and
   re-serialise;
@@ -206,10 +209,17 @@ at its own path, so a refreshed document that closes one fails loudly:
 - The crate decodes differently: it refuses a probability or confidence
   outside `[0, 1]` and a negative token count, which the schema types as
   bare numbers, because a value no threshold can use is better an error;
-  and it accepts a response without `usage`, with no answers, or with a
-  null legend entry, which the schema refuses, because decoding is tolerant
-  and `Response::verify` is what holds a response to its questions. A `Fake`
+  and it accepts a response without `usage`, with `usage` or a token count
+  null, with no answers, or with a legend entry that is null or a scalar,
+  which the schema refuses, because decoding is tolerant and
+  `Response::verify` is what holds a response to its questions. A `Fake`
   asked nothing answers `answers: {}`, which the schema refuses.
+
+An answer of a kind the document does not name decodes as `Answer::Unknown`
+and is refused by the schema. That case is not run through the validator:
+`the_schema_has_the_kinds_and_paths_the_crate_has` compares the document's
+discriminator mappings with the crate's kinds, so a document that adds a kind
+fails there.
 
 The copy is refreshed only through `tests/openapi_drift.rs`, an ignored test
 that needs the network and no key. It compares the copy with the live
