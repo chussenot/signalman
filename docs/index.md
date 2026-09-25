@@ -2,7 +2,7 @@
 title: Documentation
 description: Map of the signalman documentation, what each page is for, and the conventions the pages follow.
 status: current
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [index]
 ---
 
@@ -29,6 +29,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | How to use the judgment core in another project | [TypeSafe client](typesafe-client.md), the crate README |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | Whether the judgment crate works against Laya, and what the benchmark measured | [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) |
+| What the open Jev reproductions and the Decision Index mean for provider choice, self-hosting, question design and thresholds | [Open System One models](research/open-system-one-models.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |
 | What is unverified or missing | [Roadmap](roadmap.md) |

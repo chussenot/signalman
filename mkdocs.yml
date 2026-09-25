@@ -17,6 +17,8 @@ nav:
   - TypeSafe client: typesafe-client.md
   - Laya as a model provider: laya.md
   - judgment against Laya typed-decisions: judgment-laya-typed-decisions.md
+  - Research:
+      - Open System One models: research/open-system-one-models.md
   - Triage: triage.md
   - Evaluation harness: evaluation.md
   - incident.io integration: incidentio.md

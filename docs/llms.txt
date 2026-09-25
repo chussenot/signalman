@@ -35,6 +35,10 @@ This index is generated from the documentation nav (`mkdocs.yml`) and each page'
 - [C4 level 2, containers](https://raw.githubusercontent.com/chussenot/signalman/main/docs/c4/container.md): The deployable units of signalman, one binary run as a receiver, an MCP server or a CLI over one library, the external services each one uses, and why there is no second process or database.
 - [C4 level 3, components](https://raw.githubusercontent.com/chussenot/signalman/main/docs/c4/component.md): Inside the signalman library, the modules that make up a triage, how they call one another, which external endpoint each client owns, and why each is a separate component.
 
+## Research
+
+- [Open System One models](https://raw.githubusercontent.com/chussenot/signalman/main/docs/research/open-system-one-models.md): What the open reproductions of TypeSafe's Jev, the Jev Decision Index leaderboard and the Laya project establish, and the engineering decisions for judgment and signalman that follow from it: provider portability, self-hosting economics, question design rules, calibration policy and evaluation method.
+
 ## Decisions
 
 - [Decisions](https://raw.githubusercontent.com/chussenot/signalman/main/docs/decisions/README.md): Architecture decision records for signalman in MADR form, the index of accepted decisions, and how to add one.

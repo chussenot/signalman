@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [overview]
 ---
 
@@ -67,6 +67,8 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams; the container and component pages are reached from the context page |
 | [TypeSafe client](docs/typesafe-client.md) | The `judgment` crate: why it is separate, how signalman uses it |
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
+| [judgment against Laya typed-decisions](docs/judgment-laya-typed-decisions.md) | The crate against a second implementation of the wire: the tests, the bug they caught, the benchmark numbers |
+| [Open System One models](docs/research/open-system-one-models.md) | Research note: the open Jev reproductions, the Decision Index, Laya, and the decisions that follow for signalman and judgment |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
@@ -80,6 +82,13 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |
 | [Decisions](docs/decisions/README.md) | Architecture decision records in MADR form |
 | [llms.txt](docs/llms.txt) | The documentation index for agents and models; [llms-full.txt](docs/llms-full.txt) is every page in one file |
+
+## References
+
+- [TypeSafe documentation](https://docs.typesafe.ai/llms.txt): the System One wire and question guidance, the contract the `judgment` crate implements.
+- [Laya](https://github.com/NandhaKishorM/laya) (Convai Innovations, Apache 2.0): the open-weights System One model this project ran, with its [model](https://huggingface.co/convaiinnovations/laya) and [typed-decisions](https://huggingface.co/convaiinnovations/laya-typed-decisions) checkpoints on Hugging Face.
+- [Jev Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index): the community leaderboard and news tracker for open reproductions of Jev; read for [Open System One models](docs/research/open-system-one-models.md).
+- [typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions): the benchmark the crate's replay example runs.
 
 ## License
 
