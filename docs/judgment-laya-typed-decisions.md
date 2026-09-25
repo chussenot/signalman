@@ -2,7 +2,7 @@
 title: judgment against Laya typed-decisions
 description: How the judgment crate was tested against Laya's typed-decisions checkpoint through laya-serve, what each test asserts and why, the one decoding bug the run caught, the benchmark numbers, and how to repeat the run.
 status: experiment
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [judgment, typesafe, laya, evaluation, compatibility]
 ---
 
@@ -45,7 +45,7 @@ Each test exists for one belief the mocks could not check.
 | `the_three_primitives_round_trip_through_typed_handles` | A Choice over an `options!` enum, a Noul with criteria and a three-level Score come back through their handles: the chosen option is the arg max of a distribution that sums to 1 within rounding, the legend echoes the levels in order, the score lies on the level line, confidence and probability are in `[0, 1]`, the response names a model and counts input tokens | The whole promise of the crate is that the handle fixes the answer's type. Laya rounds every probability to four decimals and adds fields the API does not have (`answer_confidence`, `action`, `routing`); the test shows the typed views survive both |
 | `a_structured_score_level_comes_back_decoded` | A level sent as an object (`{"what": …, "examples": […]}`) decodes, and its label is the object's JSON | This is the test that failed first. See [the bug](#the-bug-the-run-caught) |
 | `a_choice_option_without_a_description_is_accepted` | `dynamic_choice` with `None` descriptions is answered | TypeSafe documents `null` descriptions; Laya's README says every option needs a description. The server accepts them |
-| `the_model_list_is_either_served_or_absent` | `list_models` returns a non-empty list or exactly `Error::Http { status: 404 }`; anything else fails | `GET /v1/models` is observed on TypeSafe's API, not documented. A compatible server may not have it, and the crate must fail cleanly rather than hang or misdecode |
+| `the_model_list_is_either_served_or_absent` | `list_models` returns a non-empty list or exactly `Error::Http { status: 404 }`; anything else fails | `GET /v1/models` is in TypeSafe's OpenAPI document and both SDKs call it, but the HTTP API reference page leaves it out, and a compatible server may not serve it. The crate must fail cleanly rather than hang or misdecode |
 | `a_model_name_the_server_does_not_know_is_still_answered` | A client sending the crate's default `jev-latest` gets an answer | A consumer that only changed `base_url` must not be broken by the model name it never set |
 | `a_live_answer_replays_offline_from_its_recording` | `Recorder` over the live client, then `Replay` over the directory, return the same `Response` for the same state and questions | The request hash that keys a recording is computed on the crate side; this proves it is stable across a real round trip, which the mocks could not, since they never see a serialised request |
 | `the_builder_refuses_what_the_wire_would_reject` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server |
@@ -83,7 +83,7 @@ None of these needs a code change; each is a fact to know when pointing the crat
 - **Latency is seconds, and the default timeout is ten.** A five-question case takes about two seconds on four CPU cores, warm. The crate's default per-attempt timeout mirrors the hosted API's hundreds of milliseconds; the example and the live tests set 120 s. In signalman, `typesafe.timeout_seconds` is the setting.
 - **Confidence means something else.** TypeSafe computes `confidence` from the spread of the distribution; Laya reports one minus the normalised entropy under that name and adds `answer_confidence`, the probability of the reported answer, which its model card says to gate on. Both are in `[0, 1]`, so the typed `Confidence` accepts either, but a threshold tuned on Jev's confidence does not carry over. The server also warned at start-up that the checkpoint's temperature for Choice questions with eleven or more options is outside the range it trusts and was clamped; confidence on such questions is uncalibrated by Laya's own account.
 
-Limits were probed as well. Laya answered 200 options and 11 levels, past its README's stated budget; the crate's builder stops at TypeSafe's 255 and 10 regardless, so the stricter of the two bounds applies. A malformed body is a 400 with a FastAPI `detail`, and the crate reports it as `Error::Http` with the body, not retried.
+Limits were probed as well. Laya answered 200 options and 11 levels, past its README's stated budget; the crate's builder stops at TypeSafe's 255 and 10 regardless, so the stricter of the two bounds applies. A malformed body is a 400 with a FastAPI `detail`. The run reported it as `Error::Http` with the body; the crate now reports it as `Error::InvalidRequest { status: 400, .. }`, the same variant as TypeSafe's 422, with the message read from `detail` (or `error`, which the shim under `examples/laya/` sends), and still not retried.
 
 ## What the benchmark measured
 

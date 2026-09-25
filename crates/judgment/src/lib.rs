@@ -54,8 +54,9 @@
 //! ## What it deliberately is not
 //!
 //! * Not a sync client, and no batching or streaming. The API documents one
-//!   endpoint and one request shape, and one request already carries many
-//!   questions. A caller that must block can block on the future.
+//!   evaluation endpoint (and a model listing) and one request shape, and one
+//!   request already carries many questions. A caller that must block can
+//!   block on the future.
 //! * Not a metrics backend. A library must not choose one for the application
 //!   that embeds it. The crate emits `tracing` spans and hands token usage and
 //!   failed attempts to an [`Observer`]; the application counts them where it
@@ -136,6 +137,6 @@ pub use answer::{
 pub use backend::{Fake, Recorder, Replay, SystemOne};
 #[cfg(feature = "http")]
 pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
-pub use error::{Error, Result};
+pub use error::{Error, Result, ValidationIssue};
 pub use observer::Observer;
 pub use question::{Handle, NoulCriteria, Options, Question, Questions};

@@ -3,12 +3,14 @@
 //! A caller has to pick a remedy from the error alone, so the variants are
 //! grouped by what fixes them rather than by HTTP status:
 //!
-//! * Configuration: [`Error::MissingApiKey`] and [`Error::Unauthorized`]. Fix
-//!   the key; no retry helps.
-//! * Request: [`Error::InvalidRequest`] (the API's 422, with the body naming
-//!   the field), [`Error::InvalidQuestion`] and [`Error::DuplicateQuestionId`]
-//!   (caught by the builder before anything is sent) and [`Error::Url`]. Fix
-//!   the request; no retry helps either.
+//! * Configuration: [`Error::MissingApiKey`], [`Error::InvalidApiKey`],
+//!   [`Error::Unauthorized`] and [`Error::PermissionDenied`]. Fix the key, or
+//!   the account's access for a 403; no retry helps.
+//! * Request: [`Error::InvalidRequest`] (the API's 400 or 422, with the
+//!   server's message and the fields it names as [`ValidationIssue`]s),
+//!   [`Error::InvalidQuestion`] and [`Error::DuplicateQuestionId`] (caught by
+//!   the builder before anything is sent) and [`Error::Url`]. Fix the
+//!   request; no retry helps either.
 //! * Transient, retries exhausted: [`Error::RateLimited`] (429, carrying the
 //!   server's `Retry-After` when it sent one) and [`Error::Overloaded`] (529,
 //!   which carries no header). Both are returned only after the retry policy
@@ -36,8 +38,9 @@
 //!
 //! Every variant built from an HTTP response carries TypeSafe's
 //! `x-typesafe-request-id` when the response had one: [`Error::Unauthorized`],
-//! [`Error::InvalidRequest`], [`Error::RateLimited`], [`Error::Overloaded`],
-//! [`Error::Http`] and a [`Error::Decode`] of a 2xx body. It is the one link
+//! [`Error::PermissionDenied`], [`Error::InvalidRequest`],
+//! [`Error::RateLimited`], [`Error::Overloaded`], [`Error::Http`] and a
+//! [`Error::Decode`] of a 2xx body. It is the one link
 //! from a failure to TypeSafe's own logs, so it is on the value
 //! ([`Error::request_id`]) and at the end of the message (` [request_id …]`),
 //! where a log line that keeps only the message still has it. It is the last
@@ -58,10 +61,35 @@ use std::time::Duration;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// No key was passed to the builder and `TYPESAFE_API_KEY` is unset or
-    /// blank. Set one or the other.
-    #[error("no API key: set TYPESAFE_API_KEY or pass one to the client builder")]
+    /// No usable key: none was passed to the builder and `TYPESAFE_API_KEY`
+    /// is unset or blank, or the key passed to the builder is blank.
+    ///
+    /// A blank key passed explicitly lands here and never falls back to the
+    /// environment, as in the Python SDK (0.7.1): a caller that passed a key
+    /// meant that key, and silently using another one from the environment
+    /// would authenticate as someone else. A key is blank when nothing is
+    /// left after trimming the characters Python's `str.isspace` accepts.
+    #[error("no API key: pass a non-blank key to the client builder, or set TYPESAFE_API_KEY")]
     MissingApiKey,
+    /// The key cannot be a TypeSafe key: it has whitespace inside it, a
+    /// control character or a non-ASCII character (a byte-order mark
+    /// included), or `TYPESAFE_API_KEY` is not valid UTF-8. Refused when the
+    /// client is built, before anything is sent.
+    ///
+    /// The rule is the Python SDK's (0.7.1): printable ASCII with no space,
+    /// after trimming. Refusing here turns a copy-paste that picked up a
+    /// non-breaking space, or a key file with a stray tab, into an error at
+    /// start-up that names the cause, instead of a 401 on the first call or
+    /// a key that cannot be put in a header at all. The cost is that this
+    /// crate, like that SDK, refuses a key a lenient server might have
+    /// accepted; the JS SDK has no such check. `reason` names where the key
+    /// came from and what is wrong with it, and never contains any part of
+    /// the key, so the message is safe to log.
+    #[error("invalid API key: {reason}")]
+    InvalidApiKey {
+        /// Where the key came from and what is wrong, without the key.
+        reason: String,
+    },
     /// The API rejected the key (HTTP 401). Not retried: a retry cannot fix
     /// a key. Check that the key is the right one and still valid.
     #[error("authentication failed (401): check the API key{}", request_id_suffix(.request_id.as_deref()))]
@@ -69,13 +97,45 @@ pub enum Error {
         /// TypeSafe's `x-typesafe-request-id`, when the response had one.
         request_id: Option<String>,
     },
-    /// The request body failed server-side validation (HTTP 422). Not
-    /// retried: a retry cannot fix a body. `detail` names the offending
-    /// field; fix the question or the state it points at.
-    #[error("request rejected by the API (422): {detail}{}", request_id_suffix(.request_id.as_deref()))]
-    InvalidRequest {
-        /// The response body, which names the offending field.
+    /// The API accepted the key but refused the call (HTTP 403). Not
+    /// retried: the account lacks access to what was asked, a model for
+    /// instance, and a second attempt is refused the same way.
+    ///
+    /// It is kept apart from [`Error::Unauthorized`] because the remedy
+    /// differs: a new key does not help, the account's access does. Both
+    /// official SDKs name this status `PermissionDenied` too. `detail` is the
+    /// server's message, read from the body as for [`Error::InvalidRequest`].
+    #[error("permission denied (403): {detail}{}", request_id_suffix(.request_id.as_deref()))]
+    PermissionDenied {
+        /// The server's message, or the body truncated when it has none.
         detail: String,
+        /// TypeSafe's `x-typesafe-request-id`, when the response had one.
+        request_id: Option<String>,
+    },
+    /// The API refused the request body (HTTP 400 or 422). Not retried: a
+    /// retry cannot fix a body. Fix the question or the state the issues
+    /// point at.
+    ///
+    /// Both statuses mean the same thing to the caller: the API reference
+    /// documents a 422 for a body that fails validation, both official SDKs
+    /// have a bad-request error for a 400, and a compatible server such as
+    /// Laya's answers 400 for a body it cannot use. They share the variant,
+    /// and `status` tells them apart. `detail` is a
+    /// readable summary rather than the raw body: the server's own message
+    /// when it sent one, otherwise the parsed issues joined as
+    /// `path: msg; …`, otherwise the body itself, truncated. `issues` keeps
+    /// the fields a validation body names, so code can point at the
+    /// question at fault without parsing the message. The value echoed back
+    /// under each issue's `input` is dropped, since it can be a piece of the
+    /// state.
+    #[error("request rejected by the API ({status}): {detail}{}", request_id_suffix(.request_id.as_deref()))]
+    InvalidRequest {
+        /// HTTP status: 400 or 422.
+        status: u16,
+        /// The server's message, the issues joined, or the body truncated.
+        detail: String,
+        /// The validation issues the body listed; empty when it listed none.
+        issues: Vec<ValidationIssue>,
         /// TypeSafe's `x-typesafe-request-id`, when the response had one.
         request_id: Option<String>,
     },
@@ -252,6 +312,7 @@ impl Error {
     pub fn request_id(&self) -> Option<&str> {
         match self {
             Self::Unauthorized { request_id }
+            | Self::PermissionDenied { request_id, .. }
             | Self::InvalidRequest { request_id, .. }
             | Self::RateLimited { request_id, .. }
             | Self::Overloaded { request_id, .. }
@@ -260,6 +321,7 @@ impl Error {
             #[cfg(feature = "http")]
             Self::Transport { .. } => None,
             Self::MissingApiKey
+            | Self::InvalidApiKey { .. }
             | Self::Io { .. }
             | Self::NoRecording(_)
             | Self::DuplicateQuestionId(_)
@@ -270,6 +332,61 @@ impl Error {
             | Self::InvalidAnswer { .. }
             | Self::NotAProbability { .. }
             | Self::Url(_) => None,
+        }
+    }
+}
+
+/// One invalid value a 400 or 422 body named: an entry of the `detail` list
+/// in the OpenAPI document's `HTTPValidationError`, which is what `FastAPI`
+/// sends when a body fails validation.
+///
+/// The server's message says the same thing in prose; this keeps it as data,
+/// so code can point at the question at fault, and a person reading a log
+/// line gets a dotted path instead of a JSON array. The entry's `input` (the
+/// offending value, echoed back) and `ctx` are not kept: `input` can be a
+/// piece of the state, and neither is needed to find the field.
+///
+/// For a question error the path runs `questions.<id>.<type>.<field>`, the
+/// question id second and its type third (`questions.urgency.score.criteria`
+/// in the OpenAPI document's example), because `FastAPI` puts the tag of the
+/// question's discriminated union in the location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationIssue {
+    /// Where the invalid value is, as the server sent it: the request
+    /// location (`body`) followed by field names and array indices. An
+    /// integer segment is kept as its decimal string, so an array index and
+    /// a map key that happens to be numeric read the same.
+    pub loc: Vec<String>,
+    /// The server's explanation, for example `Field required`.
+    pub msg: String,
+    /// The server's machine-readable code (its `type`), for example
+    /// `missing`; empty when the entry had none.
+    pub kind: String,
+}
+
+impl ValidationIssue {
+    /// The location as a dotted path, without the leading `body` segment
+    /// every body error starts with: `questions.urgency.score.criteria`.
+    ///
+    /// Only a leading `body` is dropped. The Python SDK drops every `body`
+    /// segment, which would also remove a question whose id is `body`.
+    pub fn path(&self) -> String {
+        let segments = match self.loc.split_first() {
+            Some((first, rest)) if first == "body" => rest,
+            _ => self.loc.as_slice(),
+        };
+        segments.join(".")
+    }
+}
+
+impl std::fmt::Display for ValidationIssue {
+    /// `path: msg`, or `msg` alone when the location is empty.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = self.path();
+        if path.is_empty() {
+            f.write_str(&self.msg)
+        } else {
+            write!(f, "{path}: {}", self.msg)
         }
     }
 }
@@ -300,9 +417,9 @@ mod tests {
 
     use super::*;
 
-    /// The five variants built from an HTTP error response, each with its
+    /// The variants built from an HTTP error response, each with its
     /// message as it reads without an id.
-    fn http_variants(request_id: Option<&str>) -> [(Error, &'static str); 5] {
+    fn http_variants(request_id: Option<&str>) -> [(Error, &'static str); 7] {
         let id = || request_id.map(str::to_owned);
         [
             (
@@ -310,11 +427,29 @@ mod tests {
                 "authentication failed (401): check the API key",
             ),
             (
+                Error::PermissionDenied {
+                    detail: "model not enabled".into(),
+                    request_id: id(),
+                },
+                "permission denied (403): model not enabled",
+            ),
+            (
                 Error::InvalidRequest {
+                    status: 422,
                     detail: "bad".into(),
+                    issues: Vec::new(),
                     request_id: id(),
                 },
                 "request rejected by the API (422): bad",
+            ),
+            (
+                Error::InvalidRequest {
+                    status: 400,
+                    detail: "model mismatch".into(),
+                    issues: Vec::new(),
+                    request_id: id(),
+                },
+                "request rejected by the API (400): model mismatch",
             ),
             (
                 Error::RateLimited {
@@ -377,10 +512,46 @@ mod tests {
 
         for err in [
             Error::MissingApiKey,
+            Error::InvalidApiKey {
+                reason: "has whitespace inside it".into(),
+            },
             Error::Url("nope".into()),
             Error::NoRecording("abc".into()),
         ] {
             assert_eq!(err.request_id(), None, "{err:?}");
         }
+    }
+
+    fn issue(loc: &[&str], msg: &str) -> ValidationIssue {
+        ValidationIssue {
+            loc: loc.iter().map(|s| (*s).to_owned()).collect(),
+            msg: msg.into(),
+            kind: "missing".into(),
+        }
+    }
+
+    #[test]
+    fn validation_issue_path_drops_only_the_leading_body() {
+        // A question whose id is `body` keeps its segment; the Python SDK
+        // would drop it.
+        let nested = issue(&["body", "questions", "body", "noul"], "bad");
+        assert_eq!(nested.path(), "questions.body.noul");
+        assert_eq!(nested.to_string(), "questions.body.noul: bad");
+
+        let question = issue(
+            &["body", "questions", "urgency", "score", "criteria"],
+            "short",
+        );
+        assert_eq!(question.path(), "questions.urgency.score.criteria");
+
+        // Not a body location: nothing is dropped.
+        assert_eq!(issue(&["query", "limit"], "x").path(), "query.limit");
+        // Only `body`, or nothing at all: the message stands alone.
+        assert_eq!(issue(&["body"], "Field required").path(), "");
+        assert_eq!(
+            issue(&["body"], "Field required").to_string(),
+            "Field required"
+        );
+        assert_eq!(issue(&[], "Field required").to_string(), "Field required");
     }
 }

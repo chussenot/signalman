@@ -17,6 +17,23 @@
 //! by its backticked path (`` `message` ``, `` `alert.title` ``) so the model
 //! knows what to judge.
 //!
+//! The instructions may be `null`, when the criteria carry the whole
+//! question: a Choice whose option descriptions already say what is being
+//! decided, a Noul whose meaning of yes and no does. Every builder accepts
+//! `()`, [`Value::Null`], `None::<&str>` or an `Option<String>` for them.
+//! Leave them null only then; with neither instructions nor criteria a Noul
+//! asks the model nothing, and [`Questions::noul`] refuses it, because the
+//! answer would still be a confident-looking probability.
+//!
+//! A null is sent as `"instructions": null`, not left out. The OpenAPI
+//! document requires only `type` (and `criteria` for a Choice or a Score)
+//! and accepts a null for all three primitives; the HTTP API reference page
+//! marks `instructions` required. The Python SDK omits a null field, the JS
+//! SDK sends null, and this crate sends null because Laya reads the key
+//! unconditionally (`qdef["instructions"]` in its `agent.py`), so a server
+//! that follows the reference page or Laya's code still gets the field, and
+//! the request hash of a recording does not change.
+//!
 //! # A Choice should carry a no-match option
 //!
 //! A Choice answer is always one of the options given, with the probability
@@ -72,7 +89,9 @@ pub const MAX_SCORE_LEVELS: usize = 10;
 pub enum Question {
     /// Yes/no; the answer is the probability of yes.
     Noul {
-        /// What to decide. String, object or array.
+        /// What to decide. String, object or array; `null` when the criteria
+        /// say it all (module docs, `# Ids are for code, not for the model`).
+        /// Sent as `null`, never omitted.
         instructions: Value,
         /// Optional meaning of yes and no.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,14 +99,16 @@ pub enum Question {
     },
     /// One option from a defined set.
     Choice {
-        /// What to decide.
+        /// What to decide; `null` when the option descriptions say it all.
+        /// Sent as `null`, never omitted.
         instructions: Value,
         /// Option key to rubric description (`null` allowed).
         criteria: BTreeMap<String, Value>,
     },
     /// A position along ordered levels.
     Score {
-        /// What to rate.
+        /// What to rate; `null` when the levels say it all. Sent as `null`,
+        /// never omitted.
         instructions: Value,
         /// Ordered level descriptions, lowest first.
         criteria: Vec<Value>,
@@ -262,16 +283,32 @@ impl Questions {
     }
 
     /// Add a yes/no question.
+    ///
+    /// `instructions` may be null when `criteria` say what yes and no mean;
+    /// with neither, the question is refused with [`Error::InvalidQuestion`].
+    /// The id is never shown to the model, so such a Noul asks it nothing,
+    /// yet the answer would come back as a probability that reads like a
+    /// judgment. A Choice and a Score always carry criteria, so they have no
+    /// such check.
     pub fn noul(
         &mut self,
         id: impl Into<String>,
         instructions: impl Into<Value>,
         criteria: Option<NoulCriteria>,
     ) -> Result<Handle<Noul>> {
+        let id = id.into();
+        let instructions = instructions.into();
+        if instructions.is_null() && criteria.is_none() {
+            return Err(Error::InvalidQuestion {
+                id,
+                reason: "a Noul needs instructions or criteria: the id is never shown to the model"
+                    .to_owned(),
+            });
+        }
         self.insert(
-            id.into(),
+            id,
             Question::Noul {
-                instructions: instructions.into(),
+                instructions,
                 criteria,
             },
         )
@@ -460,6 +497,69 @@ mod tests {
             matches!(&err, Error::InvalidQuestion { id, reason } if id == "s" && reason.contains("level 1 is null")),
             "{err}"
         );
+    }
+
+    #[test]
+    fn null_instructions_are_sent_as_null() {
+        let mut q = Questions::new();
+        q.choice::<Colour>("unit", ()).unwrap();
+        q.score("none", None::<&str>, ["low", "high"]).unwrap();
+        q.dynamic_choice(
+            "value",
+            Value::Null,
+            [
+                ("a".to_owned(), Some("A".to_owned())),
+                ("b".to_owned(), None),
+            ],
+        )
+        .unwrap();
+        q.noul(
+            "option",
+            None::<String>,
+            Some(NoulCriteria::new("spam", "not spam")),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&q).unwrap();
+        for id in ["unit", "none", "value", "option"] {
+            let question = json[id].as_object().unwrap();
+            assert_eq!(
+                question.get("instructions"),
+                Some(&Value::Null),
+                "{id}: the key is present and null"
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&json["none"]).unwrap(),
+            r#"{"criteria":["low","high"],"instructions":null,"type":"score"}"#
+        );
+    }
+
+    #[test]
+    fn a_noul_with_neither_instructions_nor_criteria_is_refused() {
+        let mut q = Questions::new();
+        for (id, instructions) in [("unit", Value::from(())), ("null", Value::Null)] {
+            let err = q.noul(id, instructions, None).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidQuestion { id: got, reason }
+                    if got == id && reason == "a Noul needs instructions or criteria: the id is never shown to the model"),
+                "{err}"
+            );
+        }
+        assert!(q.is_empty(), "a refused question is not added");
+
+        // Criteria alone carry the question: accepted.
+        q.noul(
+            "spam",
+            (),
+            Some(NoulCriteria::new(
+                "unsolicited advertising",
+                "a real message",
+            )),
+        )
+        .unwrap();
+        // Instructions alone: accepted, as always.
+        q.noul("urgent", "Is `message` urgent?", None).unwrap();
+        assert_eq!(q.len(), 2);
     }
 
     #[test]

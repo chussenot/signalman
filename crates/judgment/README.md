@@ -68,10 +68,16 @@ crates for the same API were not adopted.
 - `http` (feature `http`): the retry loop behind `Client`, shareable by other
   `reqwest` clients.
 - `error`: one enum grouped by remedy: configuration, request, transient
-  (retries exhausted), transport, decode, and reading an answer. Every error
-  that came from an HTTP response, and every `Response`, carries TypeSafe's
-  request id (`x-typesafe-request-id`) when the API sent one, the id its
-  support asks for; the `typesafe.*` spans record it too.
+  (retries exhausted), transport, decode, and reading an answer. A 400 or a
+  422 is `InvalidRequest` with the server's message and the fields it names
+  as `ValidationIssue`s with dotted paths (`questions.urgency.score.criteria`);
+  a 403 is `PermissionDenied`, apart from a 401, because a new key does not
+  fix it; a malformed API key (whitespace inside, a control or non-ASCII
+  character) is `InvalidApiKey` when the client is built, before any request,
+  and no message quotes the key. Every error that came from an HTTP response,
+  and every `Response`, carries TypeSafe's request id (`x-typesafe-request-id`)
+  when the API sent one, the id its support asks for; the `typesafe.*` spans
+  record it too.
 - `backend`: `SystemOne`, the one-method trait every source of answers
   implements, so the code consuming judgments never knows which. `Client` is
   one; `Fake` answers from a table and remembers what it was asked; `Recorder`

@@ -73,7 +73,7 @@ TypeSafe identifies a call by an `x-typesafe-request-id` response header, which 
 
 ## What the crate does not do
 
-- No sync client: the API documents one endpoint and every consumer so far is async.
+- No sync client: the API documents one evaluation endpoint (and a model listing) and every consumer so far is async.
 - No batching or streaming: the API documents one request shape, and no consumer has asked.
 - No metrics backend: a library that named instruments would force its telemetry stack on every consumer; the `Observer` trait hands the numbers to whoever owns the instruments.
 - No second backend in the product yet: the crate has a `SystemOne` trait with `Fake` and `Replay` implementations, but signalman's `Triager` holds a concrete `Client` rather than a `dyn SystemOne` until a second backend is needed there. The trait is the seam an official SDK or a local model would plug into.

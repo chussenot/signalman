@@ -1,7 +1,9 @@
 //! Client behaviour against a mock TypeSafe API: the documented request shape
-//! and typed answers, error mapping, retry with `Retry-After`, exhausted
-//! retries, the models list, and the request id carried from the
-//! `x-typesafe-request-id` header onto responses and errors.
+//! and typed answers, error mapping by remedy (400 and 422 parsed into
+//! issues, 403 apart from 401, 404 left as an HTTP error), the trimmed key,
+//! retry with `Retry-After`, exhausted retries, the models list, and the
+//! request id carried from the `x-typesafe-request-id` header onto responses
+//! and errors.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Duration;
@@ -85,8 +87,13 @@ async fn sends_documented_request_shape_and_reads_typed_answers() {
     assert!(response.get(&urgent).unwrap().is_yes(0.9));
 }
 
+/// The OpenAPI document's `HTTPValidationError` example, at
+/// `/components/schemas/HTTPValidationError/properties/detail/examples/0`.
+const VALIDATION_EXAMPLE: &str =
+    r#"{"detail":[{"loc":["body","state"],"msg":"Field required","type":"missing"}]}"#;
+
 #[tokio::test]
-async fn maps_401_and_422_without_retrying() {
+async fn maps_4xx_by_remedy_without_retrying() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(401))
@@ -100,8 +107,36 @@ async fn maps_401_and_422_without_retrying() {
         c.system_one(&"s", &q).await,
         Err(Error::Unauthorized { .. })
     ));
+    // `reset` drops the mounted mocks without checking them, so each
+    // `expect(1)` is verified before it: a retried 4xx would be sent four
+    // times under `fast_retries(3)` and fail here.
+    server.verify().await;
     server.reset().await;
 
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(422).set_body_string(VALIDATION_EXAMPLE))
+        .expect(1)
+        .mount(&server)
+        .await;
+    match c.system_one(&"s", &q).await {
+        Err(Error::InvalidRequest {
+            status: 422,
+            detail,
+            issues,
+            ..
+        }) => {
+            assert_eq!(detail, "state: Field required");
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].path(), "state");
+            assert_eq!(issues[0].kind, "missing");
+            assert_eq!(issues[0].msg, "Field required");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    server.verify().await;
+    server.reset().await;
+
+    // A string `detail` is the message, with no issues to parse.
     Mock::given(method("POST"))
         .respond_with(
             ResponseTemplate::new(422)
@@ -111,11 +146,150 @@ async fn maps_401_and_422_without_retrying() {
         .mount(&server)
         .await;
     match c.system_one(&"s", &q).await {
-        Err(Error::InvalidRequest { detail, .. }) => {
-            assert!(detail.contains("questions.x.criteria"));
+        Err(Error::InvalidRequest {
+            status: 422,
+            detail,
+            issues,
+            ..
+        }) => {
+            assert_eq!(detail, "questions.x.criteria: invalid");
+            assert!(issues.is_empty(), "{issues:?}");
         }
         other => panic!("unexpected: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_400_is_an_invalid_request_with_the_servers_message() {
+    let server = MockServer::start().await;
+    let c = client(&server, fast_retries(3));
+    let q = one_noul();
+    let bodies = [
+        (r#"{"error":"model mismatch"}"#, "model mismatch", 0),
+        // What examples/laya/serve_laya.py answers when Laya raises.
+        (
+            r#"{"error":{"message":"'instructions'","type":"invalid_request"}}"#,
+            "'instructions'",
+            0,
+        ),
+        // FastAPI's `detail`, as a list and as a string.
+        (VALIDATION_EXAMPLE, "state: Field required", 1),
+        (r#"{"detail":"malformed body"}"#, "malformed body", 0),
+    ];
+    for (body, message, issue_count) in bodies {
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body))
+            // Once: a 400 is not retried.
+            .expect(1)
+            .mount(&server)
+            .await;
+        let err = c.system_one(&"s", &q).await.unwrap_err();
+        match &err {
+            Error::InvalidRequest {
+                status: 400,
+                detail,
+                issues,
+                ..
+            } => {
+                assert_eq!(detail, message, "{body}");
+                assert_eq!(issues.len(), issue_count, "{body}");
+            }
+            other => panic!("{body}: unexpected {other:?}"),
+        }
+        assert_eq!(
+            err.to_string(),
+            format!("request rejected by the API (400): {message}")
+        );
+        // `reset` does not check expectations; verify the `expect(1)` first.
+        server.verify().await;
+        server.reset().await;
+    }
+}
+
+#[tokio::test]
+async fn a_403_is_permission_denied_and_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header(REQUEST_ID_HEADER, "req_403")
+                .set_body_string(r#"{"error":{"message":"model not enabled for this account"}}"#),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, fast_retries(3))
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::PermissionDenied { detail, .. } if detail == "model not enabled for this account"),
+        "{err:?}"
+    );
+    assert_eq!(err.request_id(), Some("req_403"));
+    assert_eq!(
+        err.to_string(),
+        "permission denied (403): model not enabled for this account [request_id req_403]"
+    );
+}
+
+#[tokio::test]
+async fn a_404_stays_an_http_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(404).set_body_string(r#"{"detail":"Not Found"}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, fast_retries(3))
+        .list_models()
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Http { status: 404, body, .. } if body == r#"{"detail":"Not Found"}"#),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_422_that_is_not_json_keeps_the_body_as_detail() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(422).set_body_string("<html>bad request</html>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, RetryPolicy::none())
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::InvalidRequest { status: 422, detail, issues, .. }
+                if detail == "<html>bad request</html>" && issues.is_empty()
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_trimmed_key_is_the_one_sent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(header("authorization", "Bearer test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = Client::builder()
+        .api_key(" test-key\r\n")
+        .base_url(server.uri())
+        .retry(RetryPolicy::none())
+        .build()
+        .unwrap();
+    c.system_one(&"s", &one_noul()).await.unwrap();
 }
 
 #[tokio::test]
@@ -258,7 +432,7 @@ async fn every_http_error_carries_the_request_id_in_its_value_and_message() {
     let server = MockServer::start().await;
     let c = client(&server, RetryPolicy::none());
     let q = one_noul();
-    for status in [401_u16, 422, 429, 529, 404, 500] {
+    for status in [400_u16, 401, 403, 422, 429, 529, 404, 500] {
         let id = format!("req_{status}");
         Mock::given(method("POST"))
             .respond_with(
@@ -271,8 +445,10 @@ async fn every_http_error_carries_the_request_id_in_its_value_and_message() {
             .await;
         let err = c.system_one(&"s", &q).await.unwrap_err();
         let variant_fits = match status {
+            400 => matches!(err, Error::InvalidRequest { status: 400, .. }),
             401 => matches!(err, Error::Unauthorized { .. }),
-            422 => matches!(err, Error::InvalidRequest { .. }),
+            403 => matches!(err, Error::PermissionDenied { .. }),
+            422 => matches!(err, Error::InvalidRequest { status: 422, .. }),
             429 => matches!(err, Error::RateLimited { attempts: 1, .. }),
             529 => matches!(err, Error::Overloaded { attempts: 1, .. }),
             _ => matches!(err, Error::Http { status: s, .. } if s == status),

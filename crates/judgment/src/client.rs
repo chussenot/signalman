@@ -10,6 +10,14 @@
 //! version>`, so the API's logs can tell this client from the SDKs and from
 //! the application embedding it.
 //!
+//! The key is checked when the client is built, with the Python SDK's
+//! (0.7.1) rules: surrounding whitespace is trimmed (the characters Python's
+//! `str.isspace` accepts, so a key file's trailing newline is fine), a blank
+//! key is [`Error::MissingApiKey`], and a key with whitespace inside it, a
+//! control character or a non-ASCII character is [`Error::InvalidApiKey`].
+//! A key passed to the builder is used or refused as it stands and never
+//! replaced by the environment's. The trimmed key is the one sent.
+//!
 //! # Retries
 //!
 //! A transient failure must not fail a call that a second attempt would have
@@ -17,12 +25,12 @@
 //! to fall back. [`RetryPolicy`] sits between those two costs; its defaults
 //! are the Python SDK's, and the reasoning behind each field is on that type.
 //! In short: 408, 429 and every 5xx (TypeSafe's 529 included) are retried
-//! because they are transient by definition; 401 and 422 are not, because a
-//! retry cannot fix a key or a request body; `Retry-After` wins over the
-//! backoff when present, only up to `retry_after_max` and only in its
-//! delay-seconds form; and with the defaults a call makes at most three
-//! attempts of 10 s each plus two waits, so a caller knows the bound before
-//! it adds a deadline of its own.
+//! because they are transient by definition; 400, 401, 403 and 422 are not,
+//! because a retry cannot fix a request body, a key or an account's access;
+//! `Retry-After` wins over the backoff when present, only up to
+//! `retry_after_max` and only in its delay-seconds form; and with the
+//! defaults a call makes at most three attempts of 10 s each plus two waits,
+//! so a caller knows the bound before it adds a deadline of its own.
 //!
 //! Every failed attempt, retried or not, is reported to the process-wide
 //! [`Observer`] under the service label `typesafe`, because a retried failure
@@ -32,17 +40,30 @@
 //!
 //! # Errors
 //!
-//! The final response is classified by status into [`Error`]: 401 is
-//! [`Error::Unauthorized`]; 422 is [`Error::InvalidRequest`] with the body;
-//! 429 after the retries is [`Error::RateLimited`] with the last
-//! `Retry-After`; 529 after the retries is [`Error::Overloaded`]; any other
-//! non-success status is [`Error::Http`]; a 2xx whose body is not the
-//! documented shape is [`Error::Decode`], not retried; and a transport
-//! failure after the retries is [`Error::Transport`]. Each carries the
-//! attempt count where one applies, and every error that came from an HTTP
-//! response carries its request id (below). The key is marked sensitive and
-//! redacted from `Debug` output, so a client or builder printed with `{:?}`
-//! cannot leak it.
+//! The final response is classified by status into [`Error`], grouped by
+//! what fixes it:
+//!
+//! * 400 and 422 are [`Error::InvalidRequest`], with `status` telling them
+//!   apart. Its `detail` is the server's message (read from `error`,
+//!   `error.message`, `message`, `detail` or `detail.message`, in the Python
+//!   SDK's order), otherwise the validation issues as `path: msg`, otherwise
+//!   the body, truncated; `issues` keeps the fields a validation body names
+//!   as [`ValidationIssue`]s.
+//! * 401 is [`Error::Unauthorized`]; 403 is [`Error::PermissionDenied`],
+//!   with the server's message, because a new key does not fix a 403.
+//! * 429 after the retries is [`Error::RateLimited`] with the last
+//!   `Retry-After`; 529 after the retries is [`Error::Overloaded`].
+//! * Any other non-success status is [`Error::Http`] with the body. A 404
+//!   stays there: both paths are fixed and carry no resource id, so a 404
+//!   always means a base URL that is not the API or a server without the
+//!   path, and the body is what says which.
+//! * A 2xx whose body is not the documented shape is [`Error::Decode`], not
+//!   retried; a transport failure after the retries is [`Error::Transport`].
+//!
+//! Each carries the attempt count where one applies, and every error that
+//! came from an HTTP response carries its request id (below). The key is
+//! marked sensitive and redacted from `Debug` output, so a client or builder
+//! printed with `{:?}` cannot leak it, and no error message quotes it.
 //!
 //! # Request id
 //!
@@ -75,11 +96,16 @@
 //!
 //! # `GET /v1/models`
 //!
-//! [`Client::list_models`] calls an endpoint the official SDKs expose but the
-//! HTTP API reference does not document. It is observed rather than
-//! documented and could change without notice. It stays because a readiness
-//! probe and a model listing need it; nothing else in the crate depends on it.
+//! [`Client::list_models`] calls the model listing: the models and aliases
+//! the account may send, each with a name, a description and a `YYYY-MM-DD`
+//! release date. It is in the published OpenAPI document (0.2.0), and both
+//! official SDKs call it `models.list()`; only the HTTP API reference page,
+//! which covers the evaluation endpoint, leaves it out. A compatible server
+//! may not serve it (laya-serve 0.3.20 does not), and then the call is
+//! [`Error::Http`] with status 404. It stays because a readiness probe and a
+//! model listing need it; nothing else in the crate depends on it.
 
+use std::env::VarError;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,9 +114,10 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::answer::Response;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, ValidationIssue};
 use crate::http::{self, Completed, Exhausted};
 use crate::observer::Observer;
 use crate::question::Questions;
@@ -132,7 +159,8 @@ pub struct ModelInfo {
     pub name: String,
     /// What the model is for.
     pub description: String,
-    /// Release date.
+    /// Release date, `YYYY-MM-DD` per the OpenAPI document. Kept as the
+    /// string sent, so a server that formats it otherwise still lists.
     pub release_date: String,
 }
 
@@ -180,6 +208,12 @@ impl Default for ClientBuilder {
 
 impl ClientBuilder {
     /// Set the API key explicitly (otherwise read from `TYPESAFE_API_KEY`).
+    ///
+    /// [`build`](Self::build) trims it and refuses a malformed one. A key
+    /// set here is never replaced by the environment's, not even when it is
+    /// blank: a blank key is [`Error::MissingApiKey`], because a caller that
+    /// passed a key meant that one, and silently authenticating with another
+    /// would bill or authorise the wrong account.
     #[must_use]
     pub fn api_key(mut self, key: impl Into<String>) -> Self {
         self.api_key = Some(key.into());
@@ -224,15 +258,25 @@ impl ClientBuilder {
     }
 
     /// Build the client. Reads `TYPESAFE_API_KEY` if no key was set.
+    ///
+    /// The key is checked first, before the URL and before anything is
+    /// sent, with the Python SDK's (0.7.1) rules (module docs, `# Defaults`):
+    /// trimmed, [`Error::MissingApiKey`] when blank, [`Error::InvalidApiKey`]
+    /// when it has whitespace inside it, a control character or a non-ASCII
+    /// character, or when `TYPESAFE_API_KEY` is not valid UTF-8. Neither
+    /// message contains any part of the key. A base URL that does not parse
+    /// is [`Error::Url`].
     pub fn build(self) -> Result<Client> {
-        let api_key = self
-            .api_key
-            .or_else(|| std::env::var(API_KEY_ENV).ok())
-            .filter(|k| !k.trim().is_empty())
-            .ok_or(Error::MissingApiKey)?;
+        let api_key = resolve_api_key(self.api_key, || std::env::var(API_KEY_ENV))?;
         let base_url = Url::parse(&self.base_url).map_err(|e| Error::Url(e.to_string()))?;
-        let mut auth = HeaderValue::from_str(&format!("Bearer {api_key}"))
-            .map_err(|_| Error::Url("API key contains characters invalid in a header".into()))?;
+        // Unreachable after `resolve_api_key` (printable ASCII always fits a
+        // header), kept so a future change to that check cannot turn a bad
+        // key into a panic or back into the URL error it used to be.
+        let mut auth = HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|_| {
+            Error::InvalidApiKey {
+                reason: "the key cannot be sent in an HTTP header".into(),
+            }
+        })?;
         auth.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, auth);
@@ -283,7 +327,10 @@ impl Client {
         ClientBuilder::default()
     }
 
-    /// Production defaults with the API key from `TYPESAFE_API_KEY`.
+    /// Production defaults with the API key from `TYPESAFE_API_KEY`,
+    /// trimmed and checked as [`ClientBuilder::build`] says: unset or blank
+    /// is [`Error::MissingApiKey`], malformed or not UTF-8 is
+    /// [`Error::InvalidApiKey`].
     pub fn from_env() -> Result<Self> {
         ClientBuilder::default().build()
     }
@@ -344,8 +391,9 @@ impl Client {
         Ok(response)
     }
 
-    /// List the models this account may send. Observed rather than
-    /// documented: the SDKs expose it, the HTTP API reference does not.
+    /// List the models and aliases this account may send (`GET /v1/models`,
+    /// in the OpenAPI document; module docs, `` # `GET /v1/models` ``). A
+    /// server that does not serve it answers [`Error::Http`] with status 404.
     ///
     /// The list carries no request id; the `typesafe.list_models` span and
     /// every error do.
@@ -442,9 +490,18 @@ fn classify(
     request_id: Option<String>,
 ) -> Error {
     match status.as_u16() {
+        code @ (400 | 422) => {
+            let (detail, issues) = error_detail(&body);
+            Error::InvalidRequest {
+                status: code,
+                detail,
+                issues,
+                request_id,
+            }
+        }
         401 => Error::Unauthorized { request_id },
-        422 => Error::InvalidRequest {
-            detail: http::truncate(body),
+        403 => Error::PermissionDenied {
+            detail: error_detail(&body).0,
             request_id,
         },
         429 => Error::RateLimited {
@@ -456,12 +513,168 @@ fn classify(
             attempts,
             request_id,
         },
+        // 404 included: both paths are fixed and carry no resource id, so a
+        // 404 is always a base URL that is not the API or a server without
+        // the path, and the body is what tells the two apart.
         code => Error::Http {
             status: code,
             body: http::truncate(body),
             request_id,
         },
     }
+}
+
+/// The readable message and the validation issues of a 400, 403 or 422
+/// body, for [`Error::InvalidRequest`] and [`Error::PermissionDenied`].
+///
+/// The message is the first non-empty string of `error`, `error.message`,
+/// `message`, `detail` (a string) and `detail.message`, which is the Python
+/// SDK's order (`extract_message` in its `errors.py`); then the issues of a
+/// `detail` list joined as `path: msg; …`; then the body itself. The issues
+/// are parsed from a `detail` list whatever supplies the message, so code
+/// gets them even when the server also sent prose. An entry without a string
+/// `msg` is skipped, a missing or non-list `loc` is an empty location, a
+/// non-string location item keeps its JSON text, and a missing `type` is an
+/// empty kind. A body that is a JSON string is the message itself, as in the
+/// SDK, unless it is empty; a blank one is kept, since the SDK keeps it too.
+/// The result is truncated to 2,000 bytes, like every body this crate quotes.
+///
+/// Where it differs from the SDK, on purpose:
+///
+/// * An empty string does not win: `{"error": "", "message": "x"}` reads
+///   `x`, where the SDK takes the empty `error` and falls back to the raw
+///   body.
+/// * Only a leading `body` location segment is dropped
+///   ([`ValidationIssue::path`]); the SDK drops every one, which hides a
+///   question whose id is `body`.
+/// * A body that is not JSON is quoted truncated to 2,000 bytes; the SDK
+///   keeps it whole. The raw-body fallback is 2,000 bytes too, where the SDK
+///   cuts its message at 200 characters.
+/// * A non-list `loc` gives an empty path, as in the SDK.
+///
+/// The value a validation entry echoes under `input` (and its `ctx`) is
+/// dropped from the issues and the joined message, since `input` can be a
+/// piece of the state. That is best-effort: a body this function does not
+/// recognise is still quoted as it came, truncated.
+fn error_detail(body: &str) -> (String, Vec<ValidationIssue>) {
+    if body.trim().is_empty() {
+        return ("no body".to_owned(), Vec::new());
+    }
+    let object = match serde_json::from_str::<Value>(body) {
+        Ok(Value::Object(object)) => object,
+        Ok(Value::String(text)) if !text.is_empty() => {
+            return (http::truncate(text), Vec::new());
+        }
+        _ => return (http::truncate(body.to_owned()), Vec::new()),
+    };
+    let issues: Vec<ValidationIssue> = object
+        .get("detail")
+        .and_then(Value::as_array)
+        .map(|entries| entries.iter().filter_map(validation_issue).collect())
+        .unwrap_or_default();
+    let nested = |key: &str| object.get(key).and_then(|v| v.get("message"));
+    let message = non_empty_str(object.get("error"))
+        .or_else(|| non_empty_str(nested("error")))
+        .or_else(|| non_empty_str(object.get("message")))
+        .or_else(|| non_empty_str(object.get("detail")))
+        .or_else(|| non_empty_str(nested("detail")))
+        .map(str::to_owned)
+        .or_else(|| {
+            (!issues.is_empty()).then(|| {
+                issues
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+        })
+        .unwrap_or_else(|| body.to_owned());
+    (http::truncate(message), issues)
+}
+
+/// `value` when it is a non-empty JSON string: an empty message does not
+/// win over the next field.
+fn non_empty_str(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+/// One entry of a validation `detail` list, or `None` when it has no string
+/// `msg`. `input` and `ctx` are not read.
+fn validation_issue(entry: &Value) -> Option<ValidationIssue> {
+    let msg = entry.get("msg")?.as_str()?.to_owned();
+    let loc = entry
+        .get("loc")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map_or_else(|| item.to_string(), str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let kind = entry
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    Some(ValidationIssue { loc, msg, kind })
+}
+
+/// Whether `c` is whitespace to Python's `str.isspace`, which the Python
+/// SDK trims from a key: Rust's `char::is_whitespace` plus the four
+/// information separators U+001C to U+001F, which Python counts and Rust
+/// does not. The two sets are otherwise equal.
+fn is_sdk_space(c: char) -> bool {
+    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
+}
+
+/// The key to send: `explicit` when the builder was given one, otherwise
+/// what `env` returns for `TYPESAFE_API_KEY`, trimmed and checked with the
+/// Python SDK's (0.7.1) rules (module docs, `# Defaults`).
+///
+/// The environment is a parameter so tests can supply one: setting a
+/// process variable is `unsafe` in edition 2024, and this workspace forbids
+/// `unsafe`. `env` is not called when a key was passed explicitly, blank or
+/// not. No error names any part of the key; the reason names where it came
+/// from and what is wrong with it.
+fn resolve_api_key(
+    explicit: Option<String>,
+    env: impl FnOnce() -> Result<String, VarError>,
+) -> Result<String> {
+    let (raw, origin) = match explicit {
+        Some(key) => (key, "the key passed to the client builder"),
+        None => match env() {
+            Ok(key) => (key, API_KEY_ENV),
+            Err(VarError::NotPresent) => return Err(Error::MissingApiKey),
+            Err(VarError::NotUnicode(_)) => {
+                return Err(Error::InvalidApiKey {
+                    reason: format!("{API_KEY_ENV} is not valid UTF-8"),
+                });
+            }
+        },
+    };
+    let key = raw.trim_matches(is_sdk_space);
+    if key.is_empty() {
+        return Err(Error::MissingApiKey);
+    }
+    if let Some(c) = key.chars().find(|c| !c.is_ascii_graphic()) {
+        let what = if is_sdk_space(c) {
+            "has whitespace inside it"
+        } else if c.is_control() {
+            "contains a control character"
+        } else {
+            // A byte-order mark (U+FEFF) lands here too: it is not
+            // whitespace to Python either, so it is refused, not trimmed.
+            "contains a non-ASCII character"
+        };
+        return Err(Error::InvalidApiKey {
+            reason: format!("{origin} {what}"),
+        });
+    }
+    Ok(key.to_owned())
 }
 
 /// The usable request id in `headers`, if any: the first value of
@@ -493,6 +706,8 @@ fn record_request_id(id: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -528,6 +743,262 @@ mod tests {
         );
         let opaque = HeaderValue::from_bytes(b"req\x80").unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(read(opaque), None, "not printable ASCII");
+    }
+
+    /// An environment that must not be read.
+    fn no_env() -> std::result::Result<String, VarError> {
+        panic!("the environment was read although a key was passed")
+    }
+
+    fn resolved(explicit: &str) -> Result<String> {
+        resolve_api_key(Some(explicit.to_owned()), no_env)
+    }
+
+    #[test]
+    fn a_key_is_trimmed_like_the_sdk() {
+        assert_eq!(resolved("  sk-abc\r\n").ok().as_deref(), Some("sk-abc"));
+        // The information separators are whitespace to Python, not to Rust.
+        assert_eq!(
+            resolved("\u{1f}sk-abc\u{1c}").ok().as_deref(),
+            Some("sk-abc")
+        );
+        assert_eq!(
+            resolved("\u{a0}sk-abc\u{3000}").ok().as_deref(),
+            Some("sk-abc")
+        );
+    }
+
+    #[test]
+    fn a_blank_explicit_key_is_missing_and_never_reads_the_environment() {
+        for blank in ["", "   ", "\n", "\t\u{1d}\u{a0}"] {
+            let err = resolved(blank).unwrap_err();
+            assert!(matches!(err, Error::MissingApiKey), "{blank:?}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn an_unset_or_blank_environment_is_missing() {
+        let from_env = |value: std::result::Result<&str, VarError>| {
+            resolve_api_key(None, || value.map(str::to_owned))
+        };
+        assert!(matches!(
+            from_env(Err(VarError::NotPresent)),
+            Err(Error::MissingApiKey)
+        ));
+        assert!(matches!(from_env(Ok("  ")), Err(Error::MissingApiKey)));
+        assert_eq!(from_env(Ok("sk-env\n")).ok().as_deref(), Some("sk-env"));
+    }
+
+    #[test]
+    fn a_malformed_key_is_invalid_and_never_quoted() {
+        let cases = [
+            ("SECRET XYZ", "has whitespace inside it"),
+            ("SECRET\tXYZ", "has whitespace inside it"),
+            ("SECRET\u{a0}XYZ", "has whitespace inside it"),
+            ("SECRET\u{7f}XYZ", "contains a control character"),
+            ("SECRETXYZ\u{0}", "contains a control character"),
+            ("SECRETXYZé", "contains a non-ASCII character"),
+            ("SECRET\u{200b}XYZ", "contains a non-ASCII character"),
+            ("\u{feff}SECRETXYZ", "contains a non-ASCII character"),
+        ];
+        for (key, what) in cases {
+            let err = resolved(key).unwrap_err();
+            let Error::InvalidApiKey { reason } = &err else {
+                panic!("{key:?}: {err:?}");
+            };
+            assert_eq!(
+                reason,
+                &format!("the key passed to the client builder {what}"),
+                "{key:?}"
+            );
+            for shown in [err.to_string(), format!("{err:?}")] {
+                assert!(!shown.contains("SECRET"), "{key:?}: {shown}");
+                assert!(!shown.contains("XYZ"), "{key:?}: {shown}");
+            }
+        }
+        // From the environment, the reason names the variable instead.
+        let err = resolve_api_key(None, || Ok("SECRET XYZ".to_owned())).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid API key: TYPESAFE_API_KEY has whitespace inside it"
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_environment_key_is_invalid() {
+        let err = resolve_api_key(None, || {
+            Err(VarError::NotUnicode(std::ffi::OsString::from("sk")))
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidApiKey { reason } if reason == "TYPESAFE_API_KEY is not valid UTF-8"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn build_refuses_an_invalid_key_before_any_request() {
+        // Nothing listens on the base URL: a request would be a transport
+        // error. 0.1 returned a URL error for a key the header refuses (a
+        // control character such as an inner CR) and sent a key with a space
+        // as it was; both are a key error now, before any request.
+        for key in ["sk\rabc", "sk abc"] {
+            let err = Client::builder()
+                .api_key(key)
+                .base_url("http://127.0.0.1:1")
+                .build()
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidApiKey { .. }),
+                "{key:?}: {err:?}"
+            );
+        }
+        // The key is checked before the URL, so a bad key is reported even
+        // when the URL is bad too.
+        let err = Client::builder()
+            .api_key("sk\u{e9}")
+            .base_url("not a url")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidApiKey { .. }), "{err:?}");
+        let err = Client::builder().api_key(" \n").build().unwrap_err();
+        assert!(matches!(err, Error::MissingApiKey), "{err:?}");
+    }
+
+    fn detail(body: &str) -> (String, Vec<ValidationIssue>) {
+        error_detail(body)
+    }
+
+    fn only_detail(body: &str) -> String {
+        let (message, issues) = error_detail(body);
+        assert!(issues.is_empty(), "{body}: {issues:?}");
+        message
+    }
+
+    #[test]
+    fn error_detail_reads_every_body_shape() {
+        // The OpenAPI document's example, at
+        // /components/schemas/HTTPValidationError/properties/detail/examples/0.
+        let (message, issues) = detail(
+            r#"{"detail":[{"loc":["body","state"],"msg":"Field required","type":"missing"}]}"#,
+        );
+        assert_eq!(message, "state: Field required");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].path(), "state");
+        assert_eq!(issues[0].kind, "missing");
+        assert_eq!(issues[0].loc, ["body", "state"]);
+
+        // The ValidationError.loc example: a question error names the id
+        // second and the question type third.
+        let (message, issues) = detail(
+            r#"{"detail":[{"loc":["body","questions","urgency","score","criteria"],"msg":"List should have at least 2 items","type":"too_short"}]}"#,
+        );
+        assert_eq!(issues[0].path(), "questions.urgency.score.criteria");
+        assert_eq!(
+            message,
+            "questions.urgency.score.criteria: List should have at least 2 items"
+        );
+
+        // Two issues are joined in order.
+        let (message, issues) = detail(
+            r#"{"detail":[{"loc":["body","state"],"msg":"Field required","type":"missing"},{"loc":["body","model"],"msg":"Input should be a valid string","type":"string_type"}]}"#,
+        );
+        assert_eq!(issues.len(), 2);
+        assert_eq!(
+            message,
+            "state: Field required; model: Input should be a valid string"
+        );
+
+        // The server's own message, in the SDK's order.
+        assert_eq!(
+            only_detail(r#"{"detail":"questions.x.criteria: invalid"}"#),
+            "questions.x.criteria: invalid"
+        );
+        assert_eq!(
+            only_detail(r#"{"error":"model mismatch"}"#),
+            "model mismatch"
+        );
+        assert_eq!(
+            only_detail(r#"{"error":{"message":"bad question","type":"invalid_request"}}"#),
+            "bad question"
+        );
+        assert_eq!(only_detail(r#"{"message":"slow down"}"#), "slow down");
+        assert_eq!(only_detail(r#"{"detail":{"message":"nested"}}"#), "nested");
+        assert_eq!(
+            only_detail(r#"{"error":"first","message":"second"}"#),
+            "first"
+        );
+        // A message wins over the issues, which are still parsed.
+        let (message, issues) = detail(
+            r#"{"message":"invalid body","detail":[{"loc":["body","state"],"msg":"Field required","type":"missing"}]}"#,
+        );
+        assert_eq!(message, "invalid body");
+        assert_eq!(issues.len(), 1);
+        // Pinned deviation: an empty string does not win.
+        assert_eq!(only_detail(r#"{"error":"","message":"x"}"#), "x");
+
+        // Not a message: the body, truncated.
+        let html = "<html><body>Bad Gateway</body></html>";
+        assert_eq!(only_detail(html), html);
+        let long = format!("<html>{}</html>", "x".repeat(5_000));
+        let quoted = only_detail(&long);
+        assert!(quoted.len() <= 2_000 + '…'.len_utf8(), "{}", quoted.len());
+        assert!(quoted.ends_with('…'));
+        assert_eq!(only_detail(""), "no body");
+        assert_eq!(only_detail(" \n"), "no body");
+        assert_eq!(only_detail(r#"{"detail":[]}"#), r#"{"detail":[]}"#);
+        assert_eq!(only_detail(r#"{"other":1}"#), r#"{"other":1}"#);
+        assert_eq!(only_detail("[1,2]"), "[1,2]");
+        assert_eq!(only_detail("42"), "42");
+        // A JSON string body is its own message, blank included, as in the
+        // SDK (`body or None`); only an empty one is quoted.
+        assert_eq!(only_detail(r#""model not found""#), "model not found");
+        assert_eq!(only_detail(r#"" ""#), " ");
+        assert_eq!(only_detail(r#""""#), r#""""#);
+
+        // Entries without a string msg are skipped; the rest still parse.
+        let (message, issues) = detail(
+            r#"{"detail":[{"loc":["body","a"]},{"loc":["body","b"],"msg":7},"text",{"loc":["body","c"],"msg":"kept","type":"x"}]}"#,
+        );
+        assert_eq!(issues.len(), 1);
+        assert_eq!(message, "c: kept");
+        // No entry has a msg: the raw body.
+        let body = r#"{"detail":[{"loc":["body","a"]}]}"#;
+        assert_eq!(only_detail(body), body);
+
+        // A missing loc, or one that is not a list, is an empty path.
+        let (message, issues) = detail(r#"{"detail":[{"msg":"Field required","type":"missing"}]}"#);
+        assert!(issues[0].loc.is_empty());
+        assert_eq!(message, "Field required");
+        let (message, issues) =
+            detail(r#"{"detail":[{"loc":"body.state","msg":"Field required"}]}"#);
+        assert!(issues[0].loc.is_empty());
+        assert_eq!(issues[0].kind, "", "a missing type is an empty kind");
+        assert_eq!(message, "Field required");
+
+        // An integer segment is stringified.
+        let (message, issues) = detail(
+            r#"{"detail":[{"loc":["body","questions","risk","score","criteria",0],"msg":"Input should be a valid string","type":"string_type"}]}"#,
+        );
+        assert_eq!(issues[0].loc.last().map(String::as_str), Some("0"));
+        assert_eq!(
+            message,
+            "questions.risk.score.criteria.0: Input should be a valid string"
+        );
+    }
+
+    #[test]
+    fn validation_input_never_reaches_the_message() {
+        let (message, issues) = detail(
+            r#"{"detail":[{"loc":["body","state"],"msg":"Input should be a valid dictionary","type":"dict_type","input":"SECRET-STATE","ctx":{"hint":"SECRET-CTX"}}]}"#,
+        );
+        assert_eq!(message, "state: Input should be a valid dictionary");
+        let shown = format!("{message} {issues:?}");
+        assert!(!shown.contains("SECRET"), "{shown}");
+
+        // Best-effort only: a body with no usable entry is still quoted.
+        let body = r#"{"detail":[{"loc":["body","state"],"input":"SECRET-STATE"}]}"#;
+        assert!(only_detail(body).contains("SECRET-STATE"));
     }
 
     #[test]

@@ -204,9 +204,11 @@ async fn a_choice_option_without_a_description_is_accepted() {
 #[tokio::test]
 #[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
 async fn the_model_list_is_either_served_or_absent() {
-    // `GET /v1/models` is observed on TypeSafe's API, not documented, and a
-    // compatible server may not have it. Either outcome is acceptable; what
-    // is not is anything other than a clean success or a clean 404.
+    // `GET /v1/models` is in the OpenAPI document and both SDKs call it, but
+    // the HTTP API reference page leaves it out and a compatible server may
+    // not serve it (laya-serve 0.3.20 does not). Either outcome is
+    // acceptable; what is not is anything other than a clean success or a
+    // clean 404.
     match client().list_models().await {
         Ok(models) => {
             assert!(!models.is_empty());

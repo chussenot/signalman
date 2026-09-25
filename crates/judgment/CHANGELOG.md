@@ -22,6 +22,26 @@ document (0.2.0) and the SDK references.
   no response headers.
 - `http::Completed::headers`: the retry loop hands back the last response's
   headers, so each client reads its own upstream's headers.
+- `Error::PermissionDenied` for HTTP 403, and `Error::InvalidApiKey` for a key
+  the Python SDK (0.7.1) would refuse.
+- `ValidationIssue`: the fields a 400 or 422 body names, with a dotted `path()`.
+
+### Changed
+
+- A 400 is `Error::InvalidRequest { status: 400, .. }`, like 422, and its
+  `detail` is the server's message or the parsed issues rather than the raw
+  body. Echoed request `input` is dropped from parsed issues.
+- The API key is trimmed (a trailing newline from a key file is fine) and
+  validated when the client is built. A blank explicit key never falls back to
+  `TYPESAFE_API_KEY`.
+- A Noul with neither instructions nor criteria is refused by the builder.
+  Null instructions are still sent as `null` (the schema accepts it, and Laya
+  requires the key).
+- The `/v1/models` notes are corrected against the OpenAPI document.
+
+### Fixed
+
+- A malformed API key is no longer reported as a URL error.
 
 ### Breaking changes
 
@@ -32,4 +52,13 @@ document (0.2.0) and the SDK references.
   `From<serde_json::Error>` impl (S1).
 - `http::Completed` is `#[non_exhaustive]` with a new `headers` field (S1).
 - `Response` gains the public field `request_id` (S1).
-- `Error::InvalidRequest` gains `request_id` (S1).
+- `Error::InvalidRequest` gains `status`, `issues` and `request_id`, covers
+  400, and its `detail` is a summary, not the raw body (S1, S2).
+- A 403 is `Error::PermissionDenied`, not `Error::Http` (S2).
+- A 400 is `Error::InvalidRequest { status: 400, .. }`, not `Error::Http` (S2).
+- New `Error::InvalidApiKey`: a key with inner whitespace, a control character
+  or a non-ASCII character (a BOM included) is refused at `build()` (S2).
+- A non-UTF-8 `TYPESAFE_API_KEY` is `InvalidApiKey`, not `MissingApiKey` (S2).
+- The key is trimmed; a blank explicit key is `MissingApiKey` and never falls
+  back to the environment; the `MissingApiKey` message is reworded (S2).
+- `Questions::noul` refuses a Noul with neither instructions nor criteria (S2).
