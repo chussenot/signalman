@@ -23,9 +23,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// TypeSafe answering `GET /v1/models`, after `delay` when given.
 async fn typesafe(delay: Option<Duration>) -> MockServer {
     let srv = MockServer::start().await;
-    let mut response = ResponseTemplate::new(200).set_body_json(json!({
-        "models": [{ "name": "jev-latest", "release_date": "2026-01-01", "description": "d" }]
-    }));
+    let mut response = ResponseTemplate::new(200).set_body_json(common::models_body());
     if let Some(d) = delay {
         response = response.set_delay(d);
     }

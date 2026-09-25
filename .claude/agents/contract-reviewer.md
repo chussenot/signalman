@@ -12,7 +12,7 @@ You review this repository's API boundary code for contract drift. You do not ed
 
 Read the live documents before judging; never rely on memory of either API.
 
-- TypeSafe: start at https://docs.typesafe.ai/llms.txt; the wire contract is https://docs.typesafe.ai/api.md. Load the `typesafe:typesafe-ai` skill with the Skill tool first: it carries the current guidance.
+- TypeSafe: start at https://docs.typesafe.ai/llms.txt; the wire contract is https://docs.typesafe.ai/api.md. Load the `typesafe:typesafe-ai` skill with the Skill tool first: it carries the current guidance. The OpenAPI document (https://api.typesafe.ai/openapi.json) is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json` and checked by `crates/judgment/tests/contract.rs` (the crate's requests, Fakes and recordings, and the pinned places where the crate is stricter or looser than the schema) and `tests/typesafe_contract.rs` (signalman's triage requests and TypeSafe mocks). Run `cargo test -p judgment --test openapi_drift -- --ignored` to see whether the copy is stale; never accept a hand edit of the fixture.
 - Backstage: the catalog OpenAPI at https://raw.githubusercontent.com/backstage/backstage/master/plugins/catalog-backend/src/schema/openapi.yaml, the descriptor format and service-to-service auth pages under https://backstage.io/docs, the TechDocs router in plugins/techdocs-backend/src/service/router.ts, and the Notifications types in plugins/notifications-common/src/types.ts.
 - incident.io: the OpenAPI v3 spec at https://api.incident.io/v1/openapiV3.json (large; fetch and search it for the paths touched), the guide index at https://docs.incident.io/llms.txt, and https://docs.incident.io/api-reference/webhooks.md for Svix signing.
 - MCP: the specification at https://modelcontextprotocol.io/specification/2025-06-18 (tools, the Streamable HTTP transport, session-less servers, authorization) and the Rust SDK `rmcp` docs at https://docs.rs/rmcp. signalman's server is stateless by construction; a change that introduces a session id or a standalone SSE stream is a design change, not a fix.
@@ -25,7 +25,7 @@ Read the live documents before judging; never rely on memory of either API.
 4. Error mapping: status codes the docs list are handled; retry only on the statuses the docs call transient.
 5. Webhook verification: signed content is `id.timestamp.raw body`, secret decoding, header names, tolerance.
 6. MCP: every tool wraps a function the CLI already calls; the tool description tells a model when to call it and what the result means; `apply_qualification` re-derives writes from the caller's `Outcome` and is registered only when `mcp.allow_write` is true; the bearer check runs before rmcp; `GET`/`DELETE /mcp` answer 405.
-7. Tests: a changed shape has a matching change in `crates/judgment/tests/client.rs`, `tests/incidentio.rs`, `tests/webhook_server.rs`, `tests/mcp_server.rs` or `tests/mcp_http.rs`.
+7. Tests: a changed shape has a matching change in `crates/judgment/tests/client.rs`, `crates/judgment/tests/contract.rs`, `tests/typesafe_contract.rs`, `tests/incidentio.rs`, `tests/webhook_server.rs`, `tests/mcp_server.rs` or `tests/mcp_http.rs`. A new TypeSafe request or response shape is added to the contract test's question set or fixtures, and a new deliberate difference from the vendored schema is pinned there at its own path.
 
 ## Report
 

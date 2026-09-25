@@ -43,6 +43,9 @@ document (0.2.0) and the SDK references.
   Every backend in the crate (Client, Fake, Replay, Recorder) returns only a
   response that answers the questions it was sent. A structured Score level
   may be echoed as itself or as its compact JSON.
+- Contract tests against the vendored `api.typesafe.ai/openapi.json`
+  (`tests/contract.rs`), covering requests, Fakes and recordings, plus an
+  ignored drift test (`tests/openapi_drift.rs`).
 
 ### Changed
 
@@ -62,8 +65,8 @@ document (0.2.0) and the SDK references.
 - `Fake::score` echoes the question's levels as its legend. A Fake refuses a
   scripted answer that does not fit its question.
 - The rustdoc states where retries match the SDKs and where they deliberately
-  differ, instead of claiming to mirror them. The `/v1/models` notes are
-  corrected against the OpenAPI document.
+  differ, instead of claiming to mirror them. The `/v1/models` notes and the
+  question-limit notes are corrected against the OpenAPI document.
 
 ### Fixed
 

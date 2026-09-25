@@ -60,8 +60,10 @@
 //!   [`Error`] that names its kind, so only the question that needed it
 //!   fails.
 //! * Limits are checked before sending. 255 options per Choice, 2 to 10 levels
-//!   per Score and unique ids are enforced by the builder, so a bad question is
-//!   an error naming the question, not a 422 after a round trip.
+//!   per Score (the HTTP API reference page's limits, stricter than the
+//!   OpenAPI document, which bounds neither above) and unique ids are
+//!   enforced by the builder, so a bad question is an error naming the
+//!   question, not a round trip whose outcome nobody has observed.
 //! * Retries follow the official SDKs' defaults and say, on [`RetryPolicy`],
 //!   where they differ. Behaviour matches across languages, the worst case
 //!   is bounded, and the reasoning behind each field is on that type.

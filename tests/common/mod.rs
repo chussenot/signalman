@@ -1,7 +1,7 @@
 //! Fixtures shared by the integration tests: the clients pointed at mock
 //! servers, one incident.io alert with its open incident and blast radius,
-//! one TypeSafe answer set, the committed outcome schema, and the bare MCP
-//! client the in-process and HTTP transport tests both drive.
+//! one TypeSafe answer set and model list, the committed outcome schema, and
+//! the bare MCP client the in-process and HTTP transport tests both drive.
 //!
 //! The fixtures exist because four test files had grown the same `al-1` /
 //! `INC-4821` / `jev-1.13.0` scene by copy, and a change to one shape (a
@@ -235,6 +235,15 @@ impl SystemOne {
             .mount(typesafe)
             .await;
     }
+}
+
+/// A `GET /v1/models` body listing one model, as the readiness probe reads
+/// it. `tests/typesafe_contract.rs` checks it against the model-list schema
+/// of the vendored OpenAPI document.
+pub fn models_body() -> Value {
+    json!({
+        "models": [{ "name": "jev-latest", "release_date": "2026-01-01", "description": "d" }]
+    })
 }
 
 /// The legend TypeSafe echoes for the impact question: its levels as sent,

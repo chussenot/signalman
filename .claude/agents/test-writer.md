@@ -17,10 +17,17 @@ without asserting the shape, is worse than none.
 ## Patterns in this repository
 
 - `judgment::Fake` answers a question set from a table and remembers what
-  it was asked; `judgment::Replay` answers from recordings. Prefer them to
-  a wiremock TypeSafe when a test is about the flow, not the wire: they
-  fail on a forgotten question and need no port. wiremock stays for the
-  client itself and for the two other upstreams.
+  it was asked; `judgment::Replay` answers from recordings. Both verify the
+  response against the questions like the client: a Fake refuses (and does
+  not record) a scripted answer of the wrong primitive, an option the
+  question does not offer or a Score off its scale, and a scripted Score is
+  only its probabilities, its legend echoing the question's levels. Prefer
+  them to a wiremock TypeSafe when a test is about the flow, not the wire:
+  they fail on a forgotten question and need no port. wiremock stays for
+  the client itself and for the two other upstreams. A new shared TypeSafe
+  mock body goes in `tests/common/mod.rs` and into
+  `tests/typesafe_contract.rs`, which checks the shared mocks against the
+  vendored OpenAPI document.
 - `tests/common/mod.rs` holds what every scenario shares: the clients
   pointed at a mock (`typesafe_client`, `incidentio_client`,
   `backstage_client`, `triager`), the `al-1` / `INC-4821` scene

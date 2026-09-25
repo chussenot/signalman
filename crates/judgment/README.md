@@ -57,8 +57,9 @@ crates for the same API were not adopted.
 
 - `question`: the builder, one typed `Handle` per question, the `options!`
   macro for enum-backed choices, `dynamic_choice` for option sets known only
-  at runtime, and the documented limits (255 options, 2 to 10 levels) checked
-  before anything is sent.
+  at runtime, and the HTTP API reference page's limits (255 options, 2 to 10
+  levels, stricter than the OpenAPI document) checked before anything is
+  sent.
 - `answer`: `Probability` and `Confidence` newtypes that refuse values outside
   `[0, 1]`, the wire `Answer`, and `Response::get(&handle)` returning `Noul`,
   `Choice<T>` or `Score`. Decoding is tolerant and reading is strict: an
@@ -170,6 +171,60 @@ Both were run against Laya's `typed-decisions` checkpoint through
 is in the signalman documentation page
 [judgment against Laya typed-decisions](../../docs/judgment-laya-typed-decisions.md).
 
+### Checking against the published contract
+
+TypeSafe publishes an OpenAPI document for the System One API at
+<https://api.typesafe.ai/openapi.json>. A copy is vendored at
+`tests/fixtures/typesafe-openapi.json` (OpenAPI 3.1.0, API version 0.2.0),
+and `tests/contract.rs` validates against it, as JSON Schema 2020-12,
+offline and in every `cargo test`:
+
+- every request shape the builders produce (each primitive, string, object,
+  array and null instructions, one-sided and structured Noul criteria,
+  undescribed options, 255 options, 2 and 10 levels of every level shape),
+  sent through each client entry point, with the method, path, content type
+  and bearer scheme the document names;
+- every response a `Fake` builds, and all 40 committed recordings under
+  `examples/typed-decisions/recordings`, as committed and after a decode and
+  re-serialise;
+- the document's own examples, which decode through `Response` and read
+  through typed handles, and its model list and validation error, through
+  `list_models` and `Error::InvalidRequest`.
+
+Where the crate and the schema disagree the test pins the difference, each
+at its own path, so a refreshed document that closes one fails loudly:
+
+- The crate sends what the schema refuses: a null or numeric state, numeric
+  instructions, a boolean Noul criterion, a numeric Score level, an empty
+  question set. The builders take any JSON value there and the client any
+  `Serialize` state, so such a request reaches the server, which is expected
+  to refuse it with a 422.
+- The builder refuses what the schema allows: 1 or 256 options, 1 or 11
+  levels. It follows the HTTP API reference page, which is stricter than the
+  schema, and nobody has observed what a server does past those limits.
+- The crate decodes differently: it refuses a probability or confidence
+  outside `[0, 1]` and a negative token count, which the schema types as
+  bare numbers, because a value no threshold can use is better an error;
+  and it accepts a response without `usage`, with no answers, or with a
+  null legend entry, which the schema refuses, because decoding is tolerant
+  and `Response::verify` is what holds a response to its questions. A `Fake`
+  asked nothing answers `answers: {}`, which the schema refuses.
+
+The copy is refreshed only through `tests/openapi_drift.rs`, an ignored test
+that needs the network and no key. It compares the copy with the live
+document and names what differs; with `JUDGMENT_OPENAPI_WRITE` set it
+rewrites the copy canonically instead:
+
+```sh
+cargo test -p judgment --test openapi_drift -- --ignored          # stale?
+JUDGMENT_OPENAPI_WRITE=1 cargo test -p judgment --test openapi_drift -- --ignored
+cargo test -p judgment --test contract                            # review the refresh
+```
+
+This checks the published schema, not a live account: a server can accept
+or refuse what its schema does not say, which is what `tests/live.rs` is
+for.
+
 ## Status
 
 `0.1.0`, a workspace member of the signalman repository, not yet on crates.io.
@@ -181,4 +236,5 @@ judgment = { git = "https://github.com/chussenot/signalman", package = "judgment
 ```
 
 Live behaviour has been verified only under signalman's own account; the
-wiremock tests are the contract in this repository. Licensed MIT.
+vendored OpenAPI document and the wiremock tests are the contract in this
+repository. Licensed MIT.

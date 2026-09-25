@@ -397,9 +397,13 @@ async fn an_unknown_extra_field_is_answered_or_refused_by_name() {
 
 #[tokio::test]
 #[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
-async fn the_builder_refuses_what_the_wire_would_reject() {
+async fn the_builder_refuses_what_the_reference_page_forbids() {
     // Checked before any request: no server involved, but listed here so a
-    // live run shows the limits next to the behaviour they guard.
+    // live run shows the limits next to the behaviour they guard. The limits
+    // are the HTTP API reference page's (255 options, 2 to 10 levels); the
+    // OpenAPI document states only `minItems: 1` for levels, and what a
+    // server does past either limit is unverified. `tests/contract.rs` pins
+    // the difference between the builder and the schema.
     let mut q = Questions::new();
     let too_many = (0..256).map(|i| (format!("opt{i}"), None));
     let err = q.dynamic_choice("c", "pick", too_many).unwrap_err();

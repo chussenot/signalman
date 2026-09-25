@@ -657,24 +657,26 @@ async fn a_truncated_body_is_retried_by_default_only() {
     }
 }
 
+/// The body is the fixture `tests/contract.rs` checks against the OpenAPI
+/// document's `ModelMetadataList`, so this mock is a list the schema allows.
 #[tokio::test]
 async fn lists_models() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "models": [
-                { "name": "jev-latest", "description": "Stable", "release_date": "2026-06-01" }
-            ]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(include_str!("fixtures/models.json"), "application/json"),
+        )
         .mount(&server)
         .await;
     let models = client(&server, RetryPolicy::none())
         .list_models()
         .await
         .unwrap();
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].name, "jev-latest");
+    let names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["jev-latest", "jev-1.13.0"]);
+    assert_eq!(models[1].release_date, "2026-09-15");
 }
 
 /// `Client` is a `SystemOne`: the same request through the trait object.

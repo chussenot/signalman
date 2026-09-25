@@ -22,9 +22,10 @@ mise tasks          # everything below
 
 | Task | What it runs |
 |---|---|
-| `check` | `fmt:check`, `lint`, `test`, `doc`, `docs:check`, in CI order |
+| `check` | `fmt:check`, `lint`, `check:minimal`, `test`, `doc`, `docs:check`, in CI order |
 | `fmt` / `fmt:check` | `cargo fmt --all` / with `--check` |
 | `lint` | `cargo clippy --all-targets --all-features` with `RUSTFLAGS=-D warnings` |
+| `check:minimal` | `cargo check -p judgment --no-default-features --all-targets`: the judgment crate and its tests without the `http` feature |
 | `test` | `cargo test --all-features` |
 | `doc` | `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS=-D warnings` |
 | `docs:check` | frontmatter on `README.md` and `docs/**`; `docs/llms.txt` and `docs/llms-full.txt` match the nav and frontmatter |
@@ -43,11 +44,13 @@ mise tasks          # everything below
 
 Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the libraries carry: the crate-level walkthroughs in `src/lib.rs` and `crates/judgment/src/lib.rs` are `no_run`, so they compile against the public API on every test run without an API key; the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys; and the `RetryPolicy` example in `crates/judgment/src/http.rs` builds a policy with a budget by struct update, which pins that the struct stays constructible that way. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
-The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and nothing in the default gate exercises that configuration. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
+The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and `mise run check` and CI run it as `check:minimal`. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
 
-The one exception to "tests never reach the network" is `crates/judgment/tests/live.rs`: every test there is `#[ignore]`, so the gate never runs it, and `cargo test -p judgment --test live -- --ignored` runs it by hand against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) is the record of one such run. The crate's `typed_decisions` example is the same idea at benchmark scale.
+The exceptions to "tests never reach the network" are two targets whose tests are all `#[ignore]`, so the gate builds them and never runs them. `crates/judgment/tests/live.rs` runs by hand with `cargo test -p judgment --test live -- --ignored` against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) is the record of one such run. The crate's `typed_decisions` example is the same idea at benchmark scale. `crates/judgment/tests/openapi_drift.rs` is the second: one ignored test that needs only the network (no key, no server of your own), described below.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
+
+The TypeSafe OpenAPI document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json`, a copy of <https://api.typesafe.ai/openapi.json>, and it is never hand-edited. `crates/judgment/tests/contract.rs` validates against it every request shape the crate's builders produce (with the method, path, content type and bearer scheme the document names), every `Fake` response and every committed recording, and pins each place the crate and the schema disagree at its own path; `tests/typesafe_contract.rs` does the same for signalman's own traffic: the triage request for every example alert, the shared TypeSafe mocks in `tests/common/` and the committed Jev run. Both run offline in the default gate. The copy goes stale only when TypeSafe publishes a new document, and `cargo test -p judgment --test openapi_drift -- --ignored` says so, naming the paths and schemas that differ. `JUDGMENT_OPENAPI_WRITE=1 cargo test -p judgment --test openapi_drift -- --ignored` refreshes it, written canonically (sorted keys, final newline, which `contract.rs` checks) so the diff is only the contract's change. Review a refresh by rerunning `cargo test -p judgment --test contract`: a pinned gap the new document closes fails at its own path, and every request, Fake and recording is checked against the new schemas.
 
 `docs/llms.txt` and `docs/llms-full.txt` ([llmstxt.org](https://llmstxt.org)) are generated the same way, by `scripts/gen-llms-txt.sh` from the `mkdocs.yml` nav and each page's frontmatter: one line per page with its title and description, in nav order, top-level pages first and each nav group as its own section, linking the raw Markdown on the default branch; the full file concatenates the pages. A page opts out of both with `llms: false` in its frontmatter, which only the decision-record template does. `docs:check` regenerates both into a temporary directory and fails when the committed files differ, so a new page, a changed description or a nav edit cannot leave the index stale; a page under `docs/` that the nav does not list fails the check too. `mise run docs:llms` rewrites them. The script is POSIX `sh` and `awk`, like `check-frontmatter.sh`, so it needs nothing `mise install` does not already provide.
 
@@ -83,8 +86,12 @@ crates/judgment/   the judgment crate (decision 0010): the typed client, reusabl
   src/eval/        recordings, one Judgment per answer and label, per-question metrics
   src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
   tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
+  tests/spans.rs   what the client records on its spans, through a capturing layer
   tests/observer.rs what the client reports to the global observer; a target of its own
                    because the global observer is set once per process
+  tests/contract.rs requests, Fakes and recordings against the vendored OpenAPI document
+  tests/openapi_drift.rs ignored: the vendored OpenAPI document against the live one (network only)
+  tests/fixtures/  the vendored typesafe-openapi.json (written only by openapi_drift.rs) and models.json
   tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
   examples/        typed_decisions.rs replays the typed-decisions benchmark; typed-decisions/ holds a sample and the export script
 src/               the signalman application, depending on judgment by path
@@ -99,7 +106,7 @@ src/               the signalman application, depending on judgment by path
   config.rs        configuration layers: file schema, env, flags, resolve
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
-tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers, the committed schema)
+tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers and model list, the committed schema); tests/typesafe_contract.rs checks signalman's TypeSafe requests and mocks against the vendored OpenAPI document
 examples/          sample alerts and a sample webhook delivery
 docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
 scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh

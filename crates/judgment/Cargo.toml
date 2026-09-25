@@ -30,6 +30,7 @@ fastrand = { workspace = true, optional = true }
 httpdate = { workspace = true, optional = true }
 
 [dev-dependencies]
+jsonschema = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
@@ -52,6 +53,13 @@ required-features = ["http"]
 # other test in the same binary would add to the counts.
 [[test]]
 name = "observer"
+required-features = ["http"]
+
+# The vendored OpenAPI document against the live one; its one test is
+# #[ignore] and needs the network but no key (see tests/openapi_drift.rs).
+# tests/contract.rs has no entry: it builds and runs without `http` too.
+[[test]]
+name = "openapi_drift"
 required-features = ["http"]
 
 # Live checks against a real server; every test is #[ignore] (see tests/live.rs).

@@ -44,6 +44,10 @@ run = "cargo clippy --workspace --all-targets --all-features"
 description = "Unit, integration (wiremock) and doc tests; no network"
 run = "cargo test --workspace --all-features"
 
+[tasks."check:minimal"]
+description = "The judgment crate and its tests build without the http feature (the no-transport configuration)"
+run = "cargo check -p judgment --no-default-features --all-targets"
+
 [tasks.doc]
 description = "Build API docs; broken links are errors"
 env = { RUSTDOCFLAGS = "-D warnings" }
@@ -63,7 +67,7 @@ run = "scripts/gen-llms-txt.sh"
 
 [tasks.check]
 description = "All quality gates, in CI order"
-depends = ["fmt:check", "lint", "test", "doc", "docs:check"]
+depends = ["fmt:check", "lint", "check:minimal", "test", "doc", "docs:check"]
 
 [tasks.precommit]
 description = "Run every pre-commit hook against the whole tree"

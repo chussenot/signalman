@@ -57,12 +57,21 @@
 //!
 //! # Limits are checked here
 //!
-//! The API allows at most 255 options per Choice and between 2 and 10 levels
-//! per Score, and rejects a violation with a 422. The builder enforces the
-//! same limits ([`MAX_CHOICE_OPTIONS`], [`MAX_SCORE_LEVELS`]) and rejects a
-//! duplicate id before anything is sent: the error names the question, and no
-//! round trip, retry or token is spent finding out. The cost is that the
-//! limits are duplicated here and must follow the API when it changes them.
+//! The HTTP API reference page allows at most 255 options per Choice, and
+//! says a Score "should have at least two levels; the API accepts up to
+//! 10". The OpenAPI document TypeSafe publishes is looser: it bounds a
+//! Score's levels only below (`minItems: 1`) and a Choice's options not at
+//! all. The builder follows the reference page ([`MAX_CHOICE_OPTIONS`],
+//! [`MAX_SCORE_LEVELS`], at least 2 levels) and adds a minimum of 2 options,
+//! since a Choice of one option decides nothing. It is deliberately stricter
+//! than the schema, and it rejects a duplicate id too, before anything is
+//! sent: the error names the question, and no round trip, retry or token is
+//! spent finding out. What a server does past the reference page's limits
+//! (a 422, or an answer) has not been observed, so the stricter bound is the
+//! safe one. The cost is that the limits are duplicated here and must follow
+//! the API when it changes them; `tests/contract.rs` pins the difference
+//! from the schema in both directions, so a refreshed OpenAPI document that
+//! adds or moves a bound fails there.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -75,12 +84,17 @@ use serde_json::Value;
 use crate::answer::{Choice, Noul, Score};
 use crate::error::{Error, Result};
 
-/// Maximum options a Choice may define. The API's limit, checked by the
-/// builder so a violation is an error here rather than a 422 after a round
-/// trip.
+/// Maximum options a Choice may define: the HTTP API reference page's limit
+/// ("a maximum of 255 options per Choice"), checked by the builder so a
+/// violation is an error here rather than whatever a server does with it.
+/// The OpenAPI document states no maximum; the builder is deliberately the
+/// stricter of the two (module docs, `# Limits are checked here`).
 pub const MAX_CHOICE_OPTIONS: usize = 255;
-/// Maximum levels a Score may define. The API's limit, checked by the builder;
-/// the minimum is 2, since one level cannot be a scale.
+/// Maximum levels a Score may define: the HTTP API reference page's limit
+/// ("the API accepts up to 10"), checked by the builder. The minimum is 2,
+/// also the reference page's ("at least two levels"), since one level cannot
+/// be a scale; the OpenAPI document says only `minItems: 1` and no maximum
+/// (module docs, `# Limits are checked here`).
 pub const MAX_SCORE_LEVELS: usize = 10;
 
 /// One question, as sent on the wire.

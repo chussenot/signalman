@@ -1,0 +1,14 @@
+{
+  "models": [
+    {
+      "name": "jev-latest",
+      "description": "Alias for the newest Jev release.",
+      "release_date": "2026-09-15"
+    },
+    {
+      "name": "jev-1.13.0",
+      "description": "General-purpose system one model.",
+      "release_date": "2026-09-15"
+    }
+  ]
+}

@@ -14,7 +14,11 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 
 - Load the `typesafe:typesafe-ai` skill before touching questions, answers,
   the TypeSafe client or `src/triage/policy.rs`. The live docs are the
-  contract; start at https://docs.typesafe.ai/llms.txt.
+  contract; start at https://docs.typesafe.ai/llms.txt. The OpenAPI
+  document (https://api.typesafe.ai/openapi.json) is vendored at
+  `crates/judgment/tests/fixtures/typesafe-openapi.json`, checked by
+  `crates/judgment/tests/contract.rs` and `tests/typesafe_contract.rs`, and
+  refreshed only through the drift test; never hand-edit it.
 - The typed client is its own crate, `crates/judgment` (decision 0010), a
   workspace member signalman depends on by path and re-exports. It is
   generic: nothing about alerts, incident.io, Backstage or signalman's
@@ -74,10 +78,14 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   `Outcome` document (`validate`, `decision`, `answers`, `expected_tags`) —
   never add a second write path that trusts free-form input instead.
 - Tests never call a real API: wiremock for both clients, hand-built answers
-  for policy. The one exception is `crates/judgment/tests/live.rs`, all
+  for policy. The exceptions are `crates/judgment/tests/live.rs`, all
   `#[ignore]`, run by hand against `JUDGMENT_LIVE_BASE_URL`
-  (`docs/judgment-laya-typed-decisions.md`). Nothing has been verified
-  against a live TypeSafe account yet; say so in docs where it matters.
+  (`docs/judgment-laya-typed-decisions.md`), and
+  `crates/judgment/tests/openapi_drift.rs`, ignored, network only, no key.
+  TypeSafe has answered live once, under signalman's own account
+  (`signalman-b11.1`, `docs/roadmap.md`); everything else is verified
+  against wiremock and the vendored OpenAPI document; say so in docs where
+  it matters.
 - Markdown under `docs/` and the README carries frontmatter (`title`,
   `description`, `status`, `last_reviewed`, `tags`). `docs/llms.txt` and
   `docs/llms-full.txt` are generated from the `mkdocs.yml` nav and that
