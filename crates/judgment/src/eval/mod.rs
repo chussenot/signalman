@@ -426,6 +426,7 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
             },
+            request_id: None,
         };
         let keyed = Recording {
             case: "case-1".into(),
@@ -444,6 +445,28 @@ mod tests {
             Err(Error::MissingRecording { case, .. }) if case == "ghost"
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recording_made_before_0_2_reads_with_no_request_id() {
+        // The shape every recording had before responses carried the
+        // request id: no `request_id` key anywhere.
+        let text = r#"{
+          "case": "0123456789abcdef",
+          "response": {
+            "model": "typed-decisions",
+            "answers": { "a": { "type": "noul", "noul": 0.25 } },
+            "usage": { "input_tokens": 7, "output_tokens": 1 }
+          },
+          "elapsed_ms": 12,
+          "request_hash": "0123456789abcdef"
+        }"#;
+        let recording: Recording = serde_json::from_str(text).unwrap();
+        assert_eq!(recording.response.request_id, None);
+        // Written back, it gains no key: an old recording re-serialises as
+        // it was.
+        let again = serde_json::to_string(&recording).unwrap();
+        assert!(!again.contains("request_id"), "{again}");
     }
 
     #[test]

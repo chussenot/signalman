@@ -31,11 +31,32 @@
 //! its own smaller [`crate::eval::Error`]: a harness handles a missing file
 //! differently from a missing answer, and the backends map it into this type
 //! where the two meet.
+//!
+//! # Request id
+//!
+//! Every variant built from an HTTP response carries TypeSafe's
+//! `x-typesafe-request-id` when the response had one: [`Error::Unauthorized`],
+//! [`Error::InvalidRequest`], [`Error::RateLimited`], [`Error::Overloaded`],
+//! [`Error::Http`] and a [`Error::Decode`] of a 2xx body. It is the one link
+//! from a failure to TypeSafe's own logs, so it is on the value
+//! ([`Error::request_id`]) and at the end of the message (` [request_id …]`),
+//! where a log line that keeps only the message still has it. It is the last
+//! attempt's id and optional, because the API does not promise the header.
+//! [`Error::Transport`] never has one, and the variants raised before a
+//! request is sent or while reading an answer have none either.
+//!
+//! The enum is `#[non_exhaustive]`: new variants may arrive in minor
+//! releases, so a `match` outside the crate needs a wildcard arm.
 
 use std::time::Duration;
 
 /// Everything that can go wrong talking to TypeSafe or reading its answers.
+///
+/// Non-exhaustive: new variants may arrive in minor releases, so a `match`
+/// outside this crate needs a wildcard arm. The variants themselves are not,
+/// so their fields can be matched and built as they stand.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// No key was passed to the builder and `TYPESAFE_API_KEY` is unset or
     /// blank. Set one or the other.
@@ -43,46 +64,66 @@ pub enum Error {
     MissingApiKey,
     /// The API rejected the key (HTTP 401). Not retried: a retry cannot fix
     /// a key. Check that the key is the right one and still valid.
-    #[error("authentication failed (401): check the API key")]
-    Unauthorized,
+    #[error("authentication failed (401): check the API key{}", request_id_suffix(.request_id.as_deref()))]
+    Unauthorized {
+        /// TypeSafe's `x-typesafe-request-id`, when the response had one.
+        request_id: Option<String>,
+    },
     /// The request body failed server-side validation (HTTP 422). Not
     /// retried: a retry cannot fix a body. `detail` names the offending
     /// field; fix the question or the state it points at.
-    #[error("request rejected by the API (422): {detail}")]
+    #[error("request rejected by the API (422): {detail}{}", request_id_suffix(.request_id.as_deref()))]
     InvalidRequest {
         /// The response body, which names the offending field.
         detail: String,
+        /// TypeSafe's `x-typesafe-request-id`, when the response had one.
+        request_id: Option<String>,
     },
     /// Rate limited (HTTP 429) and retries were exhausted. The remedy is to
     /// slow down: wait `retry_after` when the server gave one, and lower the
     /// request rate or raise the account's limit if it keeps happening.
-    #[error("rate limited (429) after {attempts} attempts{}", crate::error::retry_after_suffix(*.retry_after))]
+    #[error(
+        "rate limited (429) after {attempts} attempts{}{}",
+        crate::error::retry_after_suffix(*.retry_after),
+        request_id_suffix(.request_id.as_deref())
+    )]
     RateLimited {
         /// Total attempts made, including the first.
         attempts: u32,
         /// Server-provided `Retry-After`, when present on the last response.
         retry_after: Option<Duration>,
+        /// The last response's `x-typesafe-request-id`, when it had one.
+        request_id: Option<String>,
     },
     /// TypeSafe overloaded (HTTP 529) and retries were exhausted. Nothing on
     /// the caller's side is wrong; wait and try again later.
-    #[error("service overloaded (529) after {attempts} attempts")]
+    #[error("service overloaded (529) after {attempts} attempts{}", request_id_suffix(.request_id.as_deref()))]
     Overloaded {
         /// Total attempts made, including the first.
         attempts: u32,
+        /// The last response's `x-typesafe-request-id`, when it had one.
+        request_id: Option<String>,
     },
     /// Any other non-success HTTP status: a proxy in the way, a base URL
     /// that is not the API, or a status the API did not have when this crate
     /// was written. The truncated body says which.
-    #[error("unexpected HTTP status {status}: {body}")]
+    #[error("unexpected HTTP status {status}: {body}{}", request_id_suffix(.request_id.as_deref()))]
     Http {
         /// Status code.
         status: u16,
         /// Response body, truncated.
         body: String,
+        /// The last response's `x-typesafe-request-id`, when it had one. A
+        /// proxy or a server that is not the API usually sends none.
+        request_id: Option<String>,
     },
     /// Network failure, TLS failure or timeout, after retries. Check
     /// connectivity, the base URL and the per-attempt timeout; `attempts`
     /// says how many times it was tried.
+    ///
+    /// It never carries a request id: either no response came back, or its
+    /// body could not be read and the shared loop drops that response's
+    /// headers, as the SDKs do.
     #[cfg(feature = "http")]
     #[error("transport error after {attempts} attempts: {source}")]
     Transport {
@@ -95,8 +136,22 @@ pub enum Error {
     /// The response was not the JSON shape the API documents, or a
     /// recording was not one. The API changed, the base URL points at
     /// something else, or the file is corrupt; the message says where.
-    #[error("could not decode API response: {0}")]
-    Decode(#[from] serde_json::Error),
+    ///
+    /// A 2xx whose body does not decode is still an HTTP response, so it
+    /// keeps that response's `x-typesafe-request-id`, as the Python SDK's
+    /// `TypeSafeAPIResponseValidationError` does; a recording, a state that
+    /// does not serialise or a legend read from an answer has none. It is
+    /// not retried: the loop retries by status, and a 2xx is final. `?` on
+    /// a [`serde_json::Error`] builds this variant with no id.
+    #[error("could not decode API response: {source}{}", request_id_suffix(.request_id.as_deref()))]
+    Decode {
+        /// What serde could not read.
+        #[source]
+        source: serde_json::Error,
+        /// The response's `x-typesafe-request-id`, when the body came from an
+        /// HTTP response that had one.
+        request_id: Option<String>,
+    },
     /// A recording could not be read or written. Check the directory and its
     /// permissions; `context` names what was being accessed.
     #[error("cannot access {context}: {source}")]
@@ -177,8 +232,58 @@ pub enum Error {
     Url(String),
 }
 
+impl From<serde_json::Error> for Error {
+    /// A serde failure with no response behind it: no request id.
+    fn from(source: serde_json::Error) -> Self {
+        Self::Decode {
+            source,
+            request_id: None,
+        }
+    }
+}
+
+impl Error {
+    /// TypeSafe's `x-typesafe-request-id` for the response this error came
+    /// from, when there was one and it carried the header: the id to quote
+    /// to TypeSafe support. `None` for an error raised before anything was
+    /// sent, while reading an answer, or on a transport failure.
+    ///
+    /// The match names every variant, so a new one has to choose.
+    pub fn request_id(&self) -> Option<&str> {
+        match self {
+            Self::Unauthorized { request_id }
+            | Self::InvalidRequest { request_id, .. }
+            | Self::RateLimited { request_id, .. }
+            | Self::Overloaded { request_id, .. }
+            | Self::Http { request_id, .. }
+            | Self::Decode { request_id, .. } => request_id.as_deref(),
+            #[cfg(feature = "http")]
+            Self::Transport { .. } => None,
+            Self::MissingApiKey
+            | Self::Io { .. }
+            | Self::NoRecording(_)
+            | Self::DuplicateQuestionId(_)
+            | Self::InvalidQuestion { .. }
+            | Self::MissingAnswer(_)
+            | Self::AnswerTypeMismatch { .. }
+            | Self::UnknownOption { .. }
+            | Self::InvalidAnswer { .. }
+            | Self::NotAProbability { .. }
+            | Self::Url(_) => None,
+        }
+    }
+}
+
 /// Convenience alias.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// The request id clause of an error message: ` [request_id <id>]`, or
+/// empty when there is none, so a message without an id reads as it did
+/// before ids were carried.
+fn request_id_suffix(id: Option<&str>) -> String {
+    id.map(|id| format!(" [request_id {id}]"))
+        .unwrap_or_default()
+}
 
 /// The `Retry-After` clause of a rate-limit error message, empty when the
 /// server sent none. Shared with the error types of other clients built on
@@ -187,4 +292,95 @@ pub fn retry_after_suffix(retry_after: Option<Duration>) -> String {
     retry_after
         .map(|d| format!("; server asked to retry after {}s", d.as_secs_f64()))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// The five variants built from an HTTP error response, each with its
+    /// message as it reads without an id.
+    fn http_variants(request_id: Option<&str>) -> [(Error, &'static str); 5] {
+        let id = || request_id.map(str::to_owned);
+        [
+            (
+                Error::Unauthorized { request_id: id() },
+                "authentication failed (401): check the API key",
+            ),
+            (
+                Error::InvalidRequest {
+                    detail: "bad".into(),
+                    request_id: id(),
+                },
+                "request rejected by the API (422): bad",
+            ),
+            (
+                Error::RateLimited {
+                    attempts: 3,
+                    retry_after: Some(Duration::from_secs(2)),
+                    request_id: id(),
+                },
+                "rate limited (429) after 3 attempts; server asked to retry after 2s",
+            ),
+            (
+                Error::Overloaded {
+                    attempts: 3,
+                    request_id: id(),
+                },
+                "service overloaded (529) after 3 attempts",
+            ),
+            (
+                Error::Http {
+                    status: 500,
+                    body: "boom".into(),
+                    request_id: id(),
+                },
+                "unexpected HTTP status 500: boom",
+            ),
+        ]
+    }
+
+    #[test]
+    fn request_id_is_read_from_the_http_variants_and_ends_their_message() {
+        // Without an id the messages read exactly as before ids existed.
+        for (err, message) in http_variants(None) {
+            assert_eq!(err.request_id(), None, "{err:?}");
+            assert_eq!(err.to_string(), message);
+        }
+        for (err, message) in http_variants(Some("req_1")) {
+            assert_eq!(err.request_id(), Some("req_1"), "{err:?}");
+            assert_eq!(err.to_string(), format!("{message} [request_id req_1]"));
+        }
+
+        // `?` on a serde error: a Decode with no response behind it.
+        let decode = Error::from(serde_json::from_str::<u8>("x").unwrap_err());
+        assert!(matches!(
+            decode,
+            Error::Decode {
+                request_id: None,
+                ..
+            }
+        ));
+        assert_eq!(decode.request_id(), None);
+        assert!(!decode.to_string().contains("request_id"), "{decode}");
+        let decode = Error::Decode {
+            source: serde_json::from_str::<u8>("x").unwrap_err(),
+            request_id: Some("req_2".into()),
+        };
+        assert_eq!(decode.request_id(), Some("req_2"));
+        assert!(
+            decode.to_string().ends_with(" [request_id req_2]"),
+            "{decode}"
+        );
+
+        for err in [
+            Error::MissingApiKey,
+            Error::Url("nope".into()),
+            Error::NoRecording("abc".into()),
+        ] {
+            assert_eq!(err.request_id(), None, "{err:?}");
+        }
+    }
 }

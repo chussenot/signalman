@@ -284,6 +284,7 @@ impl SystemOne for Fake {
                 model: self.model.clone(),
                 answers,
                 usage: self.usage,
+                request_id: None,
             })
         })
     }
@@ -296,6 +297,9 @@ impl SystemOne for Fake {
 /// A backend that passes every request to another and writes the response
 /// to `dir/<request hash>.json` as a [`Recording`], so a [`Replay`] over the
 /// same directory answers the same requests later without a model.
+///
+/// The response is written as received, [`Response::request_id`] included,
+/// so a recording still names the call TypeSafe can look up.
 #[derive(Debug)]
 pub struct Recorder<B> {
     inner: B,
@@ -346,6 +350,11 @@ impl<B: SystemOne> SystemOne for Recorder<B> {
 
 /// A backend that answers from recordings keyed by request hash, and
 /// nothing else: a request nobody recorded is [`Error::NoRecording`].
+///
+/// A replayed response carries the recorded call's
+/// [`Response::request_id`], not a new one: it is that call's answers, and
+/// the id is how to find that call in TypeSafe's logs. A recording made
+/// before the field existed replays with `None`.
 #[derive(Debug, Default)]
 pub struct Replay {
     by_hash: BTreeMap<String, Response>,

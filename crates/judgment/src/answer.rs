@@ -214,6 +214,22 @@ pub struct Response {
     pub answers: BTreeMap<String, Answer>,
     /// Token accounting.
     pub usage: Usage,
+    /// TypeSafe's request id for the call that produced this response: the
+    /// value of the `x-typesafe-request-id` response header (the client's
+    /// `REQUEST_ID_HEADER`), the one link from a surprising answer to
+    /// TypeSafe's own logs. It is a header, not part of the documented body:
+    /// the client sets it from the last attempt's header after decoding, and
+    /// overwrites any `request_id` key the body had, with `None` when the
+    /// header was absent.
+    ///
+    /// `None` from a [`crate::Fake`], from recordings made before 0.2, and
+    /// from a server that sends no such header (the OpenAPI document lists
+    /// no response headers, and a self-hosted server may not send one). It
+    /// is serialised only when present, so a [`crate::Recorder`] keeps it, a
+    /// [`crate::Replay`] returns the recorded call's id, and a response
+    /// without one serialises as it did before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 impl Response {
@@ -392,11 +408,14 @@ impl FromAnswer for Score {
         let mut indexed: Vec<(usize, &Value)> = legend
             .iter()
             .map(|(k, v)| {
-                k.parse::<usize>().map(|i| (i, v)).map_err(|_| {
-                    Error::Decode(serde::de::Error::custom(format!(
-                        "score legend key {k:?} is not an index"
-                    )))
-                })
+                k.parse::<usize>()
+                    .map(|i| (i, v))
+                    .map_err(|_| Error::Decode {
+                        source: serde::de::Error::custom(format!(
+                            "score legend key {k:?} is not an index"
+                        )),
+                        request_id: None,
+                    })
             })
             .collect::<Result<_>>()?;
         indexed.sort_by_key(|(i, _)| *i);
@@ -541,6 +560,20 @@ mod tests {
         let s = r.get(&h).unwrap();
         assert_eq!(s.levels, vec![r#"{"examples":["a"],"what":"low"}"#, "high"]);
         assert_eq!(s.nearest_label(), r#"{"examples":["a"],"what":"low"}"#);
+    }
+
+    #[test]
+    fn a_response_request_id_is_serialised_only_when_present() {
+        let mut r = response(&json!({}));
+        assert_eq!(r.request_id, None, "absent from the body reads as None");
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(!text.contains("request_id"), "{text}");
+        assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), r);
+
+        r.request_id = Some("req_abc".into());
+        let value = serde_json::to_value(&r).unwrap();
+        assert_eq!(value["request_id"], "req_abc");
+        assert_eq!(serde_json::from_value::<Response>(value).unwrap(), r);
     }
 
     #[test]

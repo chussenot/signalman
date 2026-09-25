@@ -68,7 +68,10 @@ crates for the same API were not adopted.
 - `http` (feature `http`): the retry loop behind `Client`, shareable by other
   `reqwest` clients.
 - `error`: one enum grouped by remedy: configuration, request, transient
-  (retries exhausted), transport, decode, and reading an answer.
+  (retries exhausted), transport, decode, and reading an answer. Every error
+  that came from an HTTP response, and every `Response`, carries TypeSafe's
+  request id (`x-typesafe-request-id`) when the API sent one, the id its
+  support asks for; the `typesafe.*` spans record it too.
 - `backend`: `SystemOne`, the one-method trait every source of answers
   implements, so the code consuming judgments never knows which. `Client` is
   one; `Fake` answers from a table and remembers what it was asked; `Recorder`

@@ -5,8 +5,8 @@
 //! uses it, and the application this crate was extracted from runs two more
 //! clients through it, so the retry rules and the failure counting are
 //! written once and every upstream behaves the same way under failure. The
-//! loop returns the last response; each client classifies it into its own
-//! error type.
+//! loop returns the last response, headers included; each client classifies
+//! it into its own error type and reads its own upstream's headers from it.
 
 use std::time::Duration;
 
@@ -115,7 +115,11 @@ impl RetryPolicy {
 }
 
 /// The last response of a retry loop, ready for the caller to classify.
+///
+/// Non-exhaustive so the loop can hand back more of the response without a
+/// breaking change; destructure it with `..`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Completed {
     /// HTTP status.
     pub status: StatusCode,
@@ -125,6 +129,11 @@ pub struct Completed {
     pub attempts: u32,
     /// `Retry-After` from the last response, when present.
     pub retry_after: Option<Duration>,
+    /// The last response's headers. The loop itself reads only the retry
+    /// headers; each client reads its own upstream's headers here (a request
+    /// id, say), so this module stays free of any one vendor's names.
+    /// Responses that were retried are dropped with their headers.
+    pub headers: HeaderMap,
 }
 
 /// The retry loop gave up on a transport-level failure.
@@ -161,6 +170,9 @@ pub async fn send_with_retries(
                 if !status.is_success() {
                     crate::observer::global().on_failed_attempt(service, status.as_str());
                 }
+                // Cloned, not taken: with the `charset` feature `text()`
+                // reads `Content-Type` to pick the decoding.
+                let headers = resp.headers().clone();
                 let body = match resp.text().await {
                     Ok(b) => b,
                     Err(source) => {
@@ -193,6 +205,7 @@ pub async fn send_with_retries(
                     body,
                     attempts: attempt,
                     retry_after,
+                    headers,
                 });
             }
             Err(source) => {

@@ -30,12 +30,20 @@ fastrand = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
 
 # The client tests need the HTTP feature; the rest of the crate is tested
 # with `--no-default-features` too.
 [[test]]
 name = "client"
+required-features = ["http"]
+
+# What the client records on its spans, through a capturing subscriber layer.
+# Its own binary, so the callsite interest cached by one test's subscriber
+# cannot hide another test's spans.
+[[test]]
+name = "spans"
 required-features = ["http"]
 
 # Live checks against a real server; every test is #[ignore] (see tests/live.rs).

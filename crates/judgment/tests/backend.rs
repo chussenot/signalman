@@ -45,6 +45,7 @@ async fn a_fake_answers_typed_and_remembers_the_call() {
 
     let response = backend.answer(&state, "any-model", &q).await.unwrap();
     assert_eq!(response.model, "fake-1");
+    assert_eq!(response.request_id, None, "a fake has no call to name");
     let d = response.get(&dept).unwrap();
     assert_eq!(d.chosen, Department::Billing);
     assert!(d.confidence.at_least(0.8));

@@ -1299,6 +1299,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "wiremock",
 ]
 

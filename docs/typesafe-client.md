@@ -2,7 +2,7 @@
 title: TypeSafe client
 description: The typed TypeSafe client is the judgment crate; this page says why it is a separate crate, how signalman uses it, and where its own documentation lives.
 status: current
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [typesafe, library, judgment]
 ---
 
@@ -59,6 +59,8 @@ flowchart TD
 ```
 
 Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
+
+TypeSafe identifies a call by an `x-typesafe-request-id` response header, which both official SDKs expose: the one link from a failed call or a surprising answer to TypeSafe's own logs. The client keeps it in three places: `Error::request_id()` on every error that came from an HTTP response (a 2xx whose body does not decode included), a ` [request_id …]` suffix at the end of that error's message, so a log line that keeps only the message still has it, and the `request_id` field of the `typesafe.evaluate` and `typesafe.list_models` spans ([Observability](observability.md#spans)). A successful response carries it too, as `Response::request_id`. Quote it to TypeSafe support when a call fails or an answer looks wrong. It is the last attempt's id when the call was retried, there is none after a transport failure (no response came back, or its body could not be read), and it is optional everywhere: the published OpenAPI document lists no response headers, the [Laya](laya.md) server sends none, and the hosted API has not yet been seen sending one to this client.
 
 ## How signalman uses it
 

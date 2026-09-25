@@ -2,7 +2,7 @@
 title: Operations
 description: Running the webhook receiver, its endpoints including liveness and readiness, its manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [operations]
 ---
 
@@ -53,7 +53,7 @@ The response is `200` when every upstream answered and `503` otherwise, with the
 }
 ```
 
-`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. The TypeSafe error text ends with `[request_id …]` when the API sent an `x-typesafe-request-id`, as incident.io's does with the request id from its error body: the id to quote to that vendor's support. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
 
 Two settings shape the probe, both under `[server]` with the usual layers and no flags ([Configuration](configuration.md#server)):
 

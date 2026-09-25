@@ -291,6 +291,8 @@ flowchart TD
 
 Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
 
+TypeSafe identifies a call by an `x-typesafe-request-id` response header, which both official SDKs expose: the one link from a failed call or a surprising answer to TypeSafe's own logs. The client keeps it in three places: `Error::request_id()` on every error that came from an HTTP response (a 2xx whose body does not decode included), a ` [request_id …]` suffix at the end of that error's message, so a log line that keeps only the message still has it, and the `request_id` field of the `typesafe.evaluate` and `typesafe.list_models` spans ([Observability](observability.md#spans)). A successful response carries it too, as `Response::request_id`. Quote it to TypeSafe support when a call fails or an answer looks wrong. It is the last attempt's id when the call was retried, there is none after a transport failure (no response came back, or its body could not be read), and it is optional everywhere: the published OpenAPI document lists no response headers, the [Laya](laya.md) server sends none, and the hosted API has not yet been seen sending one to this client.
+
 ## How signalman uses it
 
 - `signalman::Client` is a re-export of `judgment::Client`, the same type; the re-exports exist so nothing built against signalman breaks during the extraction and are dropped after one release.
@@ -1642,7 +1644,7 @@ The response is `200` when every upstream answered and `503` otherwise, with the
 }
 ```
 
-`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. The TypeSafe error text ends with `[request_id …]` when the API sent an `x-typesafe-request-id`, as incident.io's does with the request id from its error body: the id to quote to that vendor's support. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
 
 Two settings shape the probe, both under `[server]` with the usual layers and no flags ([Configuration](configuration.md#server)):
 
@@ -1853,7 +1855,8 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 | `triage.flow` | `Triager::triage_alert`: enrich, ask, decide, write back | `alert_id`, `decision` (recorded at the end) |
 | `incidentio.write_back` | the tags, attachment, note and notification writes; absent on a dry run | `tags` (count), `attach`, `note` (booleans) |
 | `incidentio.get_alert`, `incidentio.list_incidents`, `incidentio.list_firing_alerts`, `incidentio.add_alert_tags`, `incidentio.attach_alert`, `incidentio.list_alert_notes`, `incidentio.create_alert_note`, `incidentio.update_alert_note`, `incidentio.send_alert_event`, `incidentio.identity` | one per incident.io call | the call's identifiers (`alert_id`, `max`, and so on); never the body |
-| `typesafe.evaluate`, `typesafe.list_models` | one per TypeSafe call | `model`, `input_tokens` (recorded from the response) |
+| `typesafe.evaluate` | one per TypeSafe evaluation | `model`, `input_tokens` (recorded from the response), `request_id`: the last attempt's `x-typesafe-request-id`, recorded on success, on an HTTP error and on a body that does not decode; absent after a transport failure or when the API sends none |
+| `typesafe.list_models` | one per TypeSafe model listing (the readiness check) | `request_id`, as on `typesafe.evaluate` |
 | `backstage.enrich`, `backstage.notify_owner` | catalog resolution and the owner notification | `hints`; `owner` |
 | `readiness.check` | one per uncached `GET /readyz`, wrapping the upstream calls (`typesafe.list_models`, `incidentio.identity`, the Backstage query) | none |
 
@@ -1861,7 +1864,7 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 
 `triage.background` is not a child of `webhook.receive`. The receiver answers `202` and the request span ends, while the triage runs on for seconds. The triage span therefore *follows from* the request span, which OpenTelemetry renders as a span link: the trace of a delivery links to the trace of its triage, and a backend that shows links lets you cross from one to the other. The two are separate traces.
 
-Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly.
+Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly. The TypeSafe `request_id` is TypeSafe's own identifier for the call, not a secret: it is what TypeSafe support asks for, so a trace of a surprising decision leads straight to the call behind it. A value that is empty, not printable ASCII, or longer than 256 bytes is ignored rather than recorded.
 
 ## Metrics
 

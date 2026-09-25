@@ -130,6 +130,7 @@ async fn the_three_primitives_round_trip_through_typed_handles() {
     assert!((sum(severity.probabilities.iter().map(|p| p.value())) - 1.0).abs() < 0.01);
     assert!(severity.nearest_level() <= 2);
 
+    eprintln!("request id: {:?}", response.request_id);
     eprintln!(
         "model {}: department {:?} p={:.3} conf={:.3}; urgent {:.3}; severity {:.2} ({})",
         response.model,
@@ -322,7 +323,8 @@ async fn a_wrong_bearer_token_is_unauthorized_and_the_right_one_is_not() {
         .system_one(&state, &q)
         .await
         .unwrap_err();
-    assert!(matches!(err, Error::Unauthorized), "{err}");
+    assert!(matches!(err, Error::Unauthorized { .. }), "{err}");
+    eprintln!("401 request id: {:?}", err.request_id());
 
     let response = build(&key).system_one(&state, &q).await.unwrap();
     response.get(&urgent).unwrap();

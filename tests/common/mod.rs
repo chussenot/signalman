@@ -227,7 +227,11 @@ impl SystemOne {
     pub async fn mount(&self, typesafe: &MockServer) {
         Mock::given(method("POST"))
             .and(path("/v1/systemone"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(self.body()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-typesafe-request-id", "req-signalman")
+                    .set_body_json(self.body()),
+            )
             .mount(typesafe)
             .await;
     }
