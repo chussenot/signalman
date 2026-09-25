@@ -20,12 +20,16 @@ document (0.2.0) and the SDK references.
   the `typesafe.evaluate` and `typesafe.list_models` spans. It is the last
   attempt's id, and optional everywhere, because the OpenAPI document lists
   no response headers. A value that is empty, longer than 256 bytes or not
-  printable ASCII (a tab inside it included) is ignored.
+  printable ASCII (a tab inside it included) is ignored. A body `request_id`
+  that is not a string (the documented body has no such field) reads as
+  `None` instead of failing the response.
 - `http::Completed::headers`: the retry loop hands back the last response's
   headers, so each client reads its own upstream's headers.
 - `Error::PermissionDenied` for HTTP 403, and `Error::InvalidApiKey` for a key
   the Python SDK (0.7.1) would refuse.
 - `ValidationIssue`: the fields a 400 or 422 body names, with a dotted `path()`.
+  It is `#[non_exhaustive]`, so fields such as `ctx` can be added in a minor
+  release; its fields are public to read.
 - `RetryPolicy::conservative()`: retries only 408, 429 and failures before the
   request left the process, for callers who would rather fail a billed call
   than pay for it twice.
@@ -76,6 +80,16 @@ document (0.2.0) and the SDK references.
 - A missing `usage`, or null counts, read as zero.
 - A 2xx that does not decode or does not fit the questions is reported to the
   observer as a failed attempt (`decode` or `unfit`) and is not retried.
+- `Error::Http` carries the attempt count and its message names it (`unexpected
+  HTTP status 503 after 3 attempts: …`), so a 5xx the policy retried reads
+  apart from one it returned at once; an empty or blank body reads `no body`
+  in the message, while the `body` field keeps what the server sent.
+- Server-chosen strings in error messages are escaped and cut to 64
+  characters, as an unknown answer kind is: the off-list option in
+  `Error::UnknownOption`'s message (the `option` field keeps it whole) and a
+  probability key in a Score's `Error::InvalidAnswer` reason. An answer sent
+  as a JSON string is named by its type in the `Error::Decode` message, not
+  quoted.
 - `Fake::score` echoes the question's levels as its legend. A Fake refuses a
   scripted answer that does not fit its question.
 - The rustdoc states where retries match the SDKs and where they deliberately
@@ -93,6 +107,8 @@ document (0.2.0) and the SDK references.
 - `Error` is `#[non_exhaustive]` (S1).
 - `Error::Unauthorized` is a struct variant with `request_id` (S1).
 - `Error::RateLimited`, `Overloaded` and `Http` gain `request_id` (S1).
+- `Error::Http` gains `attempts`, and its message names the attempt count and
+  reads `no body` for an empty body.
 - `Error::Decode` is a struct variant `{ source, request_id }` with a
   `From<serde_json::Error>` impl (S1).
 - `http::Completed` is `#[non_exhaustive]` with a new `headers` field (S1).
@@ -126,7 +142,8 @@ document (0.2.0) and the SDK references.
   failing (S5).
 - `Error::MissingAnswer` is a struct variant `{ id, request_id }` (S6).
 - `Error::UnknownOption`, `InvalidAnswer` and `AnswerTypeMismatch` gain
-  `request_id`; `UnknownOption`'s message is reworded (S6).
+  `request_id`; `UnknownOption`'s message is reworded, and quotes the option
+  escaped and cut to 64 characters (S6).
 - The client refuses a 2xx that does not fit the questions sent, without
   retrying (S6).
 - `Observer::on_failed_attempt` also receives `decode` and `unfit` from the

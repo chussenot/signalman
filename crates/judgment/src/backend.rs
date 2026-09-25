@@ -26,8 +26,11 @@
 //! was given ([`Response::verify`]), so the code consuming judgments can
 //! rely on it whichever backend is behind the trait: a test with a [`Fake`]
 //! cannot pass on a scripted answer the real client would have refused, and
-//! a [`Replay`] of an old recording fails, naming the question, when the
-//! questions changed under it.
+//! a [`Replay`] never answers questions it was not recorded for. The request
+//! hash covers the questions, so a changed question set is
+//! [`Error::NoRecording`], and a recording filed under the right hash that
+//! no longer fits (edited by hand, or made by an older release that did not
+//! check) fails naming the question.
 
 use std::collections::BTreeMap;
 use std::future::Future;

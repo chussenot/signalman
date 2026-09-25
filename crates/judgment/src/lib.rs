@@ -56,9 +56,10 @@
 //!   kept as [`Answer::Unknown`] (and logged at `warn` by the client), a
 //!   missing `usage` reads as zero, and undocumented top-level fields are
 //!   kept in [`Response::extra`]. A known answer that breaks its own shape
-//!   is still an error, and reading an unknown answer through a handle is an
-//!   [`Error`] that names its kind, so only the question that needed it
-//!   fails.
+//!   is still an error. An unknown answer under a question that was asked
+//!   fails the call ([`Error::AnswerTypeMismatch`] through
+//!   [`Response::verify`], naming its kind); under an id nobody asked it is
+//!   kept.
 //! * Limits are checked before sending. 255 options per Choice, 2 to 10 levels
 //!   per Score (the HTTP API reference page's limits, stricter than the
 //!   OpenAPI document, which bounds neither above) and unique ids are

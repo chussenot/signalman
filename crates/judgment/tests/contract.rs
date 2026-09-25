@@ -1073,9 +1073,19 @@ fn what_the_crate_decodes_differently_from_the_schema() {
     open["routing"] = json!({ "checkpoint": "typed-decisions" });
     open["request_id"] = json!("req_body");
     assert_conforms(&schema, &open, "an extra key and a body request_id");
-    let decoded: Response = serde_json::from_value(open).unwrap();
+    let decoded: Response = serde_json::from_value(open.clone()).unwrap();
     assert_eq!(decoded.extra.keys().collect::<Vec<_>>(), ["routing"]);
     assert_eq!(decoded.request_id.as_deref(), Some("req_body"));
+
+    // The schema does not define `request_id`, so any type conforms; one
+    // that is not a string reads as none rather than failing the response.
+    for id in [json!(123), json!({ "id": "x" })] {
+        open["request_id"] = id;
+        assert_conforms(&schema, &open, "a body request_id that is not a string");
+        let decoded: Response = serde_json::from_value(open.clone()).unwrap();
+        assert_eq!(decoded.request_id, None, "{}", open["request_id"]);
+        assert_eq!(decoded.extra.keys().collect::<Vec<_>>(), ["routing"]);
+    }
 }
 
 // ---------------------------------------------------------------------------

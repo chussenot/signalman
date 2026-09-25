@@ -496,7 +496,41 @@ async fn conservative_does_not_retry_5xx() {
         .system_one(&"s", &one_noul())
         .await
         .unwrap_err();
-    assert!(matches!(err, Error::Http { status: 503, .. }), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            Error::Http {
+                status: 503,
+                attempts: 1,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_http_error_names_its_attempts_and_an_empty_body() {
+    // A gateway 503 with no body, retried by the default statuses until the
+    // retries ran out: the message says so, and does not end on a colon.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let err = client(&server, fast_retries(2))
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Http { status: 503, attempts: 3, body, .. } if body.is_empty()),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "unexpected HTTP status 503 after 3 attempts: no body"
+    );
 }
 
 #[tokio::test]
@@ -1427,6 +1461,55 @@ async fn an_unknown_kind_extra_fields_and_no_usage_are_tolerated() {
     );
     assert_eq!(response.extra.len(), 1, "{:?}", response.extra);
     assert_eq!(response.request_id.as_deref(), Some("req_tolerant"));
+}
+
+#[tokio::test]
+async fn an_unknown_kind_under_an_asked_question_fails_the_call_and_is_not_recorded() {
+    // Decoding keeps the unknown answer, but the question was asked, so the
+    // whole call fails, the other answer with it, and a Recorder over the
+    // client writes nothing.
+    let dir = std::env::temp_dir().join(format!(
+        "judgment-an_unknown_kind_under_an_asked_question-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(REQUEST_ID_HEADER, "req_rank")
+                .set_body_json(json!({
+                    "model": "jev-2.0.0",
+                    "answers": {
+                        "x": { "type": "noul", "noul": 0.75 },
+                        "order": { "type": "rank", "ranking": ["b", "a"] }
+                    },
+                    "usage": { "input_tokens": 3, "output_tokens": 1 }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = one_noul();
+    q.noul("order", "?", None).unwrap();
+
+    let recorder = Recorder::new(client(&server, fast_retries(2)), &dir);
+    let err = recorder
+        .answer(&json!("s"), "jev-latest", &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::AnswerTypeMismatch { id, expected: "noul", actual, request_id: Some(rid) }
+                if id == "order" && actual == "rank" && rid == "req_rank"
+        ),
+        "{err:?}"
+    );
+    assert!(err.is_unfit());
+    let written = std::fs::read_dir(&dir).map_or(0, Iterator::count);
+    assert_eq!(written, 0, "nothing is recorded");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A choice over [`Department`] and a four-level Score, and the body of a

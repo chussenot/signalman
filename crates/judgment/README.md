@@ -63,18 +63,19 @@ crates for the same API were not adopted.
 - `answer`: `Probability` and `Confidence` newtypes that refuse values outside
   `[0, 1]`, the wire `Answer`, and `Response::get(&handle)` returning `Noul`,
   `Choice<T>` or `Score`. Decoding is tolerant and reading is strict: an
-  answer of a kind this release does not know is kept as `Answer::Unknown`
-  (the client logs it at `warn`) instead of failing the whole response, a
-  missing `usage` reads as zero, and undocumented top-level fields (Laya's
-  `routing`, say) are kept in `Response::extra`; a known answer that breaks
-  its shape is still an error, and reading an unknown one through a handle
-  is `AnswerTypeMismatch` naming its kind. `Response::verify(&questions)`
-  holds a response against the questions it was sent for: an answer under
-  every id, of the question's primitive, a Choice naming only options it
-  offered, a Score whose legend is the levels sent and whose value is on
-  their scale. The SDKs check the shape of an answer and stop there; an
-  answer that names an option nobody offered is an error here, never read as
-  a guess.
+  answer of a kind this release does not know decodes as `Answer::Unknown`
+  (the client logs it at `warn`), a missing `usage` reads as zero, and
+  undocumented top-level fields (Laya's `routing`, say) are kept in
+  `Response::extra`; a known answer that breaks its shape is still an error.
+  Decoding does not fail on an unknown answer: the response is refused, as
+  `AnswerTypeMismatch` naming its kind, only when the answer sits under a
+  question that was asked, and under an unasked id it is kept.
+  `Response::verify(&questions)` holds a response against the questions it
+  was sent for: an answer under every id, of the question's primitive, a
+  Choice naming only options it offered, a Score whose legend is the levels
+  sent and whose value is on their scale. The SDKs check the shape of an
+  answer and stop there; an answer that names an option nobody offered is an
+  error here, never read as a guess.
 - `client` (feature `http`, default): `Client` with the official SDKs'
   defaults and `RetryPolicy`: two retries of 408, 429, 5xx and transport
   failures, exponential backoff whose jitter only shortens a wait, and the

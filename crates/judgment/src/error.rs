@@ -13,19 +13,24 @@
 //!   [`Error::ReservedField`] (a per-call option or a default header that
 //!   would replace something the client sets itself, refused before anything
 //!   is sent) and [`Error::Url`]. Fix the request; no retry helps either.
-//! * Transient, retries exhausted: [`Error::RateLimited`] (429, carrying the
-//!   server's `Retry-After` when it sent one) and [`Error::Overloaded`] (529,
-//!   which carries no header). Both are returned only after the retry policy
-//!   ran out and both carry the attempt count. They are kept apart because
-//!   the remedies differ: 429 is the account's rate limit and the remedy is
-//!   to slow down; 529 is TypeSafe's capacity and the remedy is to wait.
+//! * Transient: [`Error::RateLimited`] (429, with the last response's wait
+//!   when it named one) and [`Error::Overloaded`] (529). Both come back once
+//!   the retry policy stopped (the variants say when that is;
+//!   [`crate::RetryPolicy::conservative`] does not retry a 529 at all), and
+//!   both carry the attempt count and the request id. They are kept apart
+//!   because the remedies differ: 429 is the account's rate limit and the
+//!   remedy is to slow down; 529 is TypeSafe's capacity and the remedy is to
+//!   wait.
 //! * Transport and decode: [`Error::Transport`] (network, TLS or timeout,
-//!   after retries), [`Error::Http`] (any other non-success status, body
-//!   truncated) and [`Error::Decode`] (a body that is not the documented
-//!   shape). Look at the network, the base URL and the API changelog. An
-//!   answer of a kind this release does not know is not a decode error: it
-//!   is kept as [`crate::Answer::Unknown`], and reading it is the
-//!   [`Error::AnswerTypeMismatch`] below.
+//!   once the retry policy stopped), [`Error::Http`] (any other non-success
+//!   status, with the attempt count and the body truncated) and
+//!   [`Error::Decode`] (a body that is not the documented shape). An
+//!   [`Error::Http`] is most often the API's own 408 or 5xx (other than 529)
+//!   once the retry policy stopped, and the remedy is to wait and try again
+//!   later; otherwise look at the network, the base URL and the API
+//!   changelog. An answer of a kind this release does not know is not a
+//!   decode error: it is kept as [`crate::Answer::Unknown`], and under a
+//!   question that was asked it is the [`Error::AnswerTypeMismatch`] below.
 //! * An answer that does not fit its question: [`Error::MissingAnswer`],
 //!   [`Error::AnswerTypeMismatch`], [`Error::UnknownOption`] and
 //!   [`Error::InvalidAnswer`] ([`Error::is_unfit`] is true for these four).
@@ -36,8 +41,11 @@
 //!   id they carry. Reading through a handle raises them too, when the
 //!   handle, the option set or a recording does not match the answer; fix
 //!   the code or record again. When the answer is of a kind this release
-//!   does not know, upgrade the crate instead. [`Error::NotAProbability`] is
-//!   a value outside `[0, 1]` on the wire or in a [`crate::Fake`].
+//!   does not know, upgrade the crate instead.
+//! * [`Error::NotAProbability`] comes from [`crate::Probability::new`] or
+//!   [`crate::Confidence::new`], so from a [`crate::Fake`] or the caller's
+//!   own code. An out-of-range value in a response is [`Error::Decode`] of
+//!   that response and carries its request id.
 //! * Recordings: [`Error::Io`] and [`Error::NoRecording`]. Fix the path, or
 //!   record the request before replaying it.
 //!
@@ -186,15 +194,25 @@ pub enum Error {
         /// The last response's `x-typesafe-request-id`, when it had one.
         request_id: Option<String>,
     },
-    /// Any other non-success HTTP status: a proxy in the way, a base URL
-    /// that is not the API (a 3xx among them, since the client follows no
-    /// redirect), or a status the API did not have when this crate was
-    /// written. The truncated body says which.
-    #[error("unexpected HTTP status {status}: {body}{}", request_id_suffix(.request_id.as_deref()))]
+    /// Any other non-success HTTP status. Most often the API's own 408 or
+    /// 5xx (other than 529) once the retry policy stopped: `attempts` says
+    /// whether it was retried, and the remedy is to wait and try again
+    /// later. Otherwise a proxy in the way, a base URL that is not the API
+    /// (a 3xx among them, since the client follows no redirect), or a status
+    /// the API did not have when this crate was written. The truncated body
+    /// says which; the message reads `no body` when it was empty or blank.
+    #[error(
+        "unexpected HTTP status {status} after {attempts} attempts: {}{}",
+        body_or_none(.body),
+        request_id_suffix(.request_id.as_deref())
+    )]
     Http {
         /// Status code.
         status: u16,
-        /// Response body, truncated.
+        /// Total attempts made, including the first.
+        attempts: u32,
+        /// Response body, truncated, as it came (empty when the response
+        /// had none).
         body: String,
         /// The last response's `x-typesafe-request-id`, when it had one. A
         /// proxy or a server that is not the API usually sends none.
@@ -328,14 +346,20 @@ pub enum Error {
     /// server answered a different question; report it with the request id.
     /// From `get` on a recording, the enum changed since it was recorded;
     /// fix the enum or record again.
+    ///
+    /// The option is the server's string, so the message quotes it escaped
+    /// and cut to 64 characters (a short one that needs no escaping reads as
+    /// it came); the `option` field keeps it whole, for code that compares
+    /// it.
     #[error(
-        "answer {id:?} names option {option:?}, which its question does not offer{}",
+        "answer {id:?} names option \"{}\", which its question does not offer{}",
+        crate::answer::sanitize_server_str(.option),
         request_id_suffix(.request_id.as_deref())
     )]
     UnknownOption {
         /// Question id.
         id: String,
-        /// The option string the API returned.
+        /// The option string the API returned, whole.
         option: String,
         /// The response's `x-typesafe-request-id`, when it had one.
         request_id: Option<String>,
@@ -361,8 +385,11 @@ pub enum Error {
         /// The response's `x-typesafe-request-id`, when it had one.
         request_id: Option<String>,
     },
-    /// A probability or confidence was outside `[0, 1]`: the wire sent one,
-    /// or a [`crate::Fake`] was built with one. The value is reported.
+    /// A probability or confidence outside `[0, 1]` was given to
+    /// [`crate::Probability::new`] or [`crate::Confidence::new`], directly or
+    /// by building a [`crate::Fake`]. The value is reported. An out-of-range
+    /// value on the wire is [`Error::Decode`] instead, because serde folds
+    /// this error into its message.
     #[error("value {value} is not a probability in [0, 1]")]
     NotAProbability {
         /// The offending value.
@@ -511,7 +538,20 @@ impl Error {
 /// question id second and its type third (`questions.urgency.score.criteria`
 /// in the OpenAPI document's example), because `FastAPI` puts the tag of the
 /// question's discriminated union in the location.
+///
+/// Non-exhaustive, so a field such as `ctx` can be added in a minor release:
+/// the fields are public to read, and only this crate builds one.
+///
+/// ```compile_fail
+/// // Outside this crate a struct literal does not compile.
+/// let issue = judgment::ValidationIssue {
+///     loc: vec!["body".to_owned()],
+///     msg: "Field required".to_owned(),
+///     kind: "missing".to_owned(),
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ValidationIssue {
     /// Where the invalid value is, as the server sent it: the request
     /// location (`body`) followed by field names and array indices. An
@@ -563,6 +603,18 @@ fn request_id_suffix(id: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+/// An [`Error::Http`] body as its message shows it: `no body` when it is
+/// empty or blank, so the message does not end on a dangling colon (as
+/// `InvalidRequest`'s detail reads for the same body). The field itself
+/// keeps what the server sent.
+fn body_or_none(body: &str) -> &str {
+    if body.trim().is_empty() {
+        "no body"
+    } else {
+        body
+    }
+}
+
 /// The server's-wait clause of a rate-limit error message (from
 /// `retry-after-ms` or `Retry-After`), empty when the server named none.
 /// Shared with the error types of other clients built on
@@ -581,7 +633,7 @@ mod tests {
 
     /// The variants built from an HTTP error response, each with its
     /// message as it reads without an id.
-    fn http_variants(request_id: Option<&str>) -> [(Error, &'static str); 7] {
+    fn http_variants(request_id: Option<&str>) -> [(Error, &'static str); 8] {
         let id = || request_id.map(str::to_owned);
         [
             (
@@ -631,10 +683,20 @@ mod tests {
             (
                 Error::Http {
                     status: 500,
+                    attempts: 3,
                     body: "boom".into(),
                     request_id: id(),
                 },
-                "unexpected HTTP status 500: boom",
+                "unexpected HTTP status 500 after 3 attempts: boom",
+            ),
+            (
+                Error::Http {
+                    status: 503,
+                    attempts: 1,
+                    body: " \n".into(),
+                    request_id: id(),
+                },
+                "unexpected HTTP status 503 after 1 attempts: no body",
             ),
         ]
     }

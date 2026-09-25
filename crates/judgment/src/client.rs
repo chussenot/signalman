@@ -93,14 +93,15 @@
 //!   [`Error::Overloaded`]. Like [`Error::Transport`], both come back once
 //!   the retry policy stopped: retries used up, the budget reached, or a
 //!   status or transport failure the policy does not retry.
-//! * Any other non-success status is [`Error::Http`] with the body. A 404
-//!   stays there: both paths are fixed and carry no resource id, so a 404
-//!   always means a base URL that is not the API or a server without the
-//!   path, and the body is what says which.
-//! * A 2xx whose body is not the documented shape is [`Error::Decode`], not
-//!   retried, and reported to the process-wide observer as a failed attempt
-//!   with status `decode`; a transport failure is [`Error::Transport`] once
-//!   the policy stopped.
+//! * Any other non-success status is [`Error::Http`], with the attempt count
+//!   and the body. Most often it is the API's own 408 or 5xx once the retry
+//!   policy stopped. A 404 stays there: both paths are fixed and carry no
+//!   resource id, so a 404 always means a base URL that is not the API or a
+//!   server without the path, and the body is what says which.
+//! * A 2xx whose body does not decode (what the API may add is tolerated,
+//!   below) is [`Error::Decode`], not retried, and reported to the
+//!   process-wide observer as a failed attempt with status `decode`; a
+//!   transport failure is [`Error::Transport`] once the policy stopped.
 //! * A 2xx that decodes but does not answer the questions it was sent is
 //!   the error [`crate::Response::verify`] names: [`Error::MissingAnswer`],
 //!   [`Error::AnswerTypeMismatch`], [`Error::UnknownOption`] or
@@ -126,12 +127,14 @@
 //! both (the key is the question id, or any string at all for an answer to a
 //! question that was not asked): the sign that the API has a primitive this
 //! build cannot read, and that upgrading the crate is due.
-//! The Python SDK logs a warning too and skips the answer; this client keeps
-//! it, so a recording and a caller can still see it, and reading it through
-//! a handle is [`Error::AnswerTypeMismatch`]. An absent `usage` reads as
-//! zero, and undocumented top-level fields are kept in [`Response::extra`]
-//! without a warning, since a compatible server may add them to every
-//! response. A [`Replay`](crate::Replay), a [`Fake`](crate::Fake) and
+//! The Python SDK logs a warning too, skips that answer and returns the
+//! rest. This client keeps it only under an id that was not asked, in the
+//! returned response and so in a recording; under an asked id it refuses the
+//! response with [`Error::AnswerTypeMismatch`], after the `warn` line and
+//! the usage report (the `unfit` case under `# Errors`). An absent `usage`
+//! reads as zero, and undocumented top-level fields are kept in
+//! [`Response::extra`] without a warning, since a compatible server may add
+//! them to every response. A [`Replay`](crate::Replay), a [`Fake`](crate::Fake) and
 //! [`crate::eval::read_recording`] do not warn: a Fake answers what its
 //! test scripted, and a recorded answer was warned about when the client
 //! received it.
@@ -976,6 +979,7 @@ fn classify(
         // the path, and the body is what tells the two apart.
         code => Error::Http {
             status: code,
+            attempts,
             body: http::truncate(body),
             request_id,
         },

@@ -10,9 +10,10 @@
 //! them differently (act when the probability of yes is above 0.6; refuse to
 //! act when the confidence is below 0.5), and swapping them is a silent bug,
 //! so they are distinct types. Both refuse values outside `[0, 1]` on
-//! construction and on deserialisation: a wire value of 1.2 is
-//! [`Error::NotAProbability`] at decode time, never a number downstream. The
-//! cost is a `.value()` call wherever the raw `f64` is wanted.
+//! construction and on deserialisation: a wire value of 1.2 fails the decode
+//! ([`Error::Decode`], whose message names the value), never a number
+//! downstream. The cost is a `.value()` call wherever the raw `f64` is
+//! wanted.
 //!
 //! # What confidence means, and does not mean
 //!
@@ -47,9 +48,12 @@
 //!
 //! * An answer whose `type` is a string other than `noul`, `choice` or
 //!   `score` decodes as [`Answer::Unknown`], the answer as it came. The
-//!   client logs it at `warn`, naming the question and the kind. Reading it
-//!   through a handle is [`Error::AnswerTypeMismatch`], so the question that
-//!   needed it fails and the others are still read.
+//!   client logs it at `warn`, naming the question and the kind. Under a
+//!   question that was asked, [`Response::verify`], which every backend
+//!   runs, refuses the whole response as [`Error::AnswerTypeMismatch`]
+//!   ([`Error::is_unfit`]); under an id nobody asked, the answer is kept.
+//!   Read with [`Response::get`] from a response that was not verified, such
+//!   as one read from a recording by case id, it fails only that question.
 //! * A known kind is decoded as strictly as before: `{"type": "noul",
 //!   "noul": 1.2}` claims a shape and breaks it, and is [`Error::Decode`],
 //!   not an unknown answer. So is an answer with no `type`, a `type` that is
@@ -59,16 +63,21 @@
 //!   still [`Error::Decode`].
 //! * Top-level fields other than `model`, `answers`, `usage` and
 //!   `request_id` are kept in [`Response::extra`] and written back where
-//!   they were, so a recording keeps them. Fields inside an answer that this
-//!   crate does not model are ignored, as in the Python SDK.
+//!   they were, so a recording keeps them. A body `request_id` that is not a
+//!   string reads as `None` rather than failing the response. Fields inside
+//!   an answer that this crate does not model are ignored, as in the Python
+//!   SDK.
 //!
-//! The cost is that an answer this release cannot read, from a later API or
-//! from a server that answers something else, no longer fails the response
-//! at decode time: it fails where it is read, or not at all when nothing
-//! reads it. The `warn` line is what shows it, and upgrading this crate (or
-//! fixing the server) is the remedy. The Python SDK
-//! logs a warning and skips such an answer; this crate keeps it, so a caller
-//! or a recording can still look at what the server sent.
+//! An answer this release cannot read, from a later API or from a server
+//! that answers something else, therefore no longer fails the response at
+//! decode time. Under a question that was asked it still fails the whole
+//! call, in every backend, because [`Response::verify`] refuses it: the
+//! client counts it as a failed attempt with status `unfit`, and a
+//! [`crate::Recorder`] writes nothing. Only an unknown answer under an id
+//! nobody asked reaches the caller and a recording. The `warn` line is what
+//! shows it, and upgrading this crate (or fixing the server) is the remedy.
+//! The Python SDK logs a warning, skips only that answer and returns the
+//! rest, so on this point this crate is stricter than the SDK.
 //!
 //! # What `Response::verify` checks
 //!
@@ -319,14 +328,15 @@ pub enum Answer {
     /// that `type`, and reading it through a handle is
     /// [`Error::AnswerTypeMismatch`]. The client logs one at `warn`.
     ///
-    /// It serialises back as that object, so a [`crate::Recorder`] keeps it
-    /// and a [`crate::Replay`] returns it. A hand-built `Unknown` whose
-    /// `type` is `noul`, `choice` or `score` serialises as that kind, and
-    /// decodes back as the known variant (or fails to). When a later release
-    /// learns a kind, answers of it stop decoding as `Unknown`; that is a
-    /// change in behaviour for code that inspects `Unknown`, so such code
-    /// should look at [`Answer::kind`] rather than rely on a kind staying
-    /// unknown.
+    /// It serialises back as that object, so a [`crate::Recorder`] keeps one
+    /// filed under an id nobody asked and a [`crate::Replay`] returns it
+    /// (under an asked id, [`Response::verify`] refuses the response first).
+    /// A hand-built `Unknown` whose `type` is `noul`, `choice` or `score`
+    /// serialises as that kind, and decodes back as the known variant (or
+    /// fails to). When a later release learns a kind, answers of it stop
+    /// decoding as `Unknown`; that is a change in behaviour for code that
+    /// inspects `Unknown`, so such code should look at [`Answer::kind`]
+    /// rather than rely on a kind staying unknown.
     #[serde(untagged)]
     Unknown(Value),
 }
@@ -365,9 +375,11 @@ const SERVER_STR_MAX_CHARS: usize = 64;
 /// an exported span event.
 ///
 /// The one bound for every such string, so they all read the same way: an
-/// unknown answer's kind, and an answer's key in the client's warning about
-/// it, which is the server's own string when no question by that id was
-/// asked.
+/// unknown answer's kind, an answer's key in the client's warning about it
+/// (the server's own string when no question by that id was asked), an
+/// off-list option in [`Error::UnknownOption`]'s message and a probability
+/// key in a Score's [`Error::InvalidAnswer`] reason. A short string that
+/// needs no escaping reads as it came.
 pub(crate) fn sanitize_server_str(text: &str) -> String {
     text.escape_debug().take(SERVER_STR_MAX_CHARS).collect()
 }
@@ -470,7 +482,8 @@ impl<'de> Deserialize<'de> for Answer {
     }
 }
 
-/// What serde calls `value` in an "invalid type" message.
+/// What serde calls `value` in an "invalid type" message. A string is named
+/// by its type alone, never quoted, so a message cannot grow with it.
 fn unexpected(value: &Value) -> Unexpected<'_> {
     match value {
         Value::Null => Unexpected::Unit,
@@ -480,7 +493,9 @@ fn unexpected(value: &Value) -> Unexpected<'_> {
             .map(Unexpected::Unsigned)
             .or_else(|| n.as_i64().map(Unexpected::Signed))
             .unwrap_or_else(|| Unexpected::Float(n.as_f64().unwrap_or(f64::NAN))),
-        Value::String(s) => Unexpected::Str(s),
+        // Not the string itself: the server chose it, and serde would quote
+        // all of it in the message.
+        Value::String(_) => Unexpected::Other("string"),
         Value::Array(_) => Unexpected::Seq,
         Value::Object(_) => Unexpected::Map,
     }
@@ -494,6 +509,15 @@ where
     T: Default + Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// Reads a string as itself and anything else (`null`, a number, an
+/// object) as `None`, for a field the documented body does not have.
+fn string_or_none<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    Ok(match Value::deserialize(deserializer)? {
+        Value::String(text) => Some(text),
+        _ => None,
+    })
 }
 
 /// Token usage for one request. Output tokens are free; input tokens are billed.
@@ -534,7 +558,8 @@ pub struct Response {
     /// request used an alias. Log it: thresholds are tuned per version.
     pub model: String,
     /// One answer per question id. An answer of a kind this release does not
-    /// know is [`Answer::Unknown`], not a failed response.
+    /// know is [`Answer::Unknown`], not a failed decode; under a question
+    /// that was asked, [`Response::verify`] refuses it.
     pub answers: BTreeMap<String, Answer>,
     /// Token accounting; zero for a count, or a whole `usage`, the server
     /// did not report ([`Usage`]).
@@ -554,7 +579,16 @@ pub struct Response {
     /// is serialised only when present, so a [`crate::Recorder`] keeps it, a
     /// [`crate::Replay`] returns the recorded call's id, and a response
     /// without one serialises as it did before the field existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// A body `request_id` that is not a string (a number, an object) reads
+    /// as `None` and does not fail the response: the documented body has no
+    /// such field, so a compatible server may send one of any type, and on
+    /// the live path the header replaces it anyway.
+    #[serde(
+        default,
+        deserialize_with = "string_or_none",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub request_id: Option<String>,
     /// Every top-level field of the body other than `model`, `answers`,
     /// `usage` and `request_id`, as it came: what a server adds beyond the
@@ -677,7 +711,9 @@ impl Response {
 
 /// Whether a Score answer is on the scale of `levels`, or why not. The
 /// reasons never quote a level's text: it is the caller's own question, it
-/// can be long, and the index says which level.
+/// can be long, and the index says which level. A probability key is the
+/// server's string, so it is quoted escaped and cut
+/// ([`sanitize_server_str`]).
 fn score_fits(
     levels: &[Value],
     score: f64,
@@ -703,7 +739,8 @@ fn score_fits(
     }
     if let Some(key) = probabilities.keys().find(|key| !is_level_key(key, n)) {
         return Err(format!(
-            "probability key {key:?} is not a level of its question"
+            "probability key \"{}\" is not a level of its question",
+            sanitize_server_str(key)
         ));
     }
     // A question has 2 to 10 levels (`Questions::score`), so the top index
@@ -931,17 +968,13 @@ impl FromAnswer for Score {
 /// The error for an answer of another primitive than `expected`, with no
 /// request id (the caller that has the response adds it). An unknown
 /// answer's kind is the server's own string, so it is escaped and cut
-/// ([`sanitize_server_str`]) before it becomes part of a message.
+/// ([`sanitize_server_str`]) before it becomes part of a message; the three
+/// known kinds pass through it unchanged.
 fn mismatch(id: &str, expected: &'static str, actual: &Answer) -> Error {
-    let kind = actual.kind();
     Error::AnswerTypeMismatch {
         id: id.to_owned(),
         expected,
-        actual: if matches!(actual, Answer::Unknown(_)) {
-            sanitize_server_str(kind)
-        } else {
-            kind.to_owned()
-        },
+        actual: sanitize_server_str(actual.kind()),
         request_id: None,
     }
 }
@@ -1179,11 +1212,19 @@ mod tests {
                 json!(["noul", 0.5]),
                 "invalid type: sequence, expected an answer object",
             ),
+            // A string is named by its type, not quoted: the server chose it.
+            (
+                json!("noul"),
+                "invalid type: string, expected an answer object",
+            ),
         ];
         for (bad, message) in cases {
             let err = decode::<Answer>(&bad).unwrap_err();
             assert!(err.to_string().contains(message), "{bad}: {err}");
         }
+        let long = json!({ "model": "m", "answers": { "x": "y".repeat(10_000) } });
+        let err = decode::<Response>(&long).unwrap_err().to_string();
+        assert!(err.len() < 200, "{} bytes: {err}", err.len());
     }
 
     #[test]
@@ -1257,6 +1298,69 @@ mod tests {
         assert_eq!(sanitize_server_str("rank"), "rank");
         assert_eq!(sanitize_server_str(&"r".repeat(64)), "r".repeat(64));
         assert_eq!(sanitize_server_str(&"r".repeat(65)), "r".repeat(64));
+    }
+
+    #[test]
+    fn server_strings_in_fit_errors_are_escaped_and_bounded() {
+        let long = "o".repeat(10_000);
+        let bounded = |err: &Error| {
+            let message = err.to_string();
+            assert!(message.len() < 400, "{} bytes: {message}", message.len());
+            assert!(!message.contains('\n'), "{message}");
+            message
+        };
+
+        // An off-list option through verify: the message is cut, the field
+        // keeps the server's string whole.
+        let Asked { q, dept, .. } = asked();
+        let err = with(
+            "owner",
+            json!({ "type": "choice", "choice": long, "probabilities": {}, "confidence": 1.0 }),
+        )
+        .verify(&q)
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::UnknownOption { option, .. } if *option == long),
+            "{err:?}"
+        );
+        let message = bounded(&err);
+        assert!(
+            message.contains(&format!("option \"{}\",", "o".repeat(64))),
+            "{message}"
+        );
+
+        // The same through a typed Choice's `get`, with a line break in it.
+        let r = with(
+            "dept",
+            json!({ "type": "choice", "choice": format!("a\nb{long}"),
+                    "probabilities": {}, "confidence": 1.0 }),
+        );
+        let err = r.get(&dept).unwrap_err();
+        assert!(matches!(&err, Error::UnknownOption { .. }), "{err:?}");
+        assert!(bounded(&err).contains(r#"option "a\nb"#), "{err}");
+
+        // A probability key that is not a level of a Score.
+        let mut probs = json!({ "0": 0.0, "1": 0.0, "2": 1.0 });
+        probs[long.as_str()] = json!(0.0);
+        let err = with("impact", score_answer(2.0, &legend(), &probs))
+            .verify(&q)
+            .unwrap_err();
+        assert!(reason(&err).starts_with("probability key \""), "{err}");
+        bounded(&err);
+
+        // A short option that needs no escaping reads as `{:?}` would put it.
+        let err = with(
+            "owner",
+            json!({ "type": "choice", "choice": "made-up-team", "probabilities": {},
+                    "confidence": 1.0 }),
+        )
+        .verify(&q)
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("names option {:?},", "made-up-team")),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1382,6 +1486,20 @@ mod tests {
             decode(&json!({ "model": "m", "answers": {}, "request_id": "req_1" })).unwrap();
         assert_eq!(r.request_id.as_deref(), Some("req_1"));
         assert!(r.extra.is_empty(), "{:?}", r.extra);
+        // One that is not a string reads as none and fails nothing: the
+        // documented body has no such field.
+        for id in [
+            json!(123),
+            json!({ "a": 1 }),
+            json!(["req"]),
+            json!(true),
+            json!(null),
+        ] {
+            let body = json!({ "model": "m", "answers": {}, "request_id": id });
+            let r: Response = decode(&body).unwrap();
+            assert_eq!(r.request_id, None, "{body}");
+            assert!(r.extra.is_empty(), "{body}: {:?}", r.extra);
+        }
         // A response is an object: the array form a derived struct accepted
         // is gone (nothing sent or recorded it).
         assert!(serde_json::from_str::<Response>(r#"["m", {}, {}]"#).is_err());
