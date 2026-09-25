@@ -38,5 +38,15 @@ wiremock = { workspace = true }
 name = "client"
 required-features = ["http"]
 
+# Live checks against a real server; every test is #[ignore] (see tests/live.rs).
+[[test]]
+name = "live"
+required-features = ["http"]
+
+# The benchmark replay talks to a server, so it needs the client.
+[[example]]
+name = "typed_decisions"
+required-features = ["http"]
+
 [lints]
 workspace = true

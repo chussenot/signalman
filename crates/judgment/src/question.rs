@@ -344,6 +344,16 @@ impl Questions {
     ) -> Result<Handle<Score>> {
         let id = id.into();
         let criteria: Vec<Value> = levels.into_iter().map(Into::into).collect();
+        // A level is "described in words", a string or an object; the API
+        // has no meaning for a null level and a lenient backend would echo
+        // the null into the legend. Refuse it here, where the question id is
+        // known, rather than let it fail a round trip.
+        if let Some(index) = criteria.iter().position(Value::is_null) {
+            return Err(Error::InvalidQuestion {
+                id,
+                reason: format!("Score level {index} is null; every level needs a description"),
+            });
+        }
         if criteria.len() < 2 || criteria.len() > MAX_SCORE_LEVELS {
             return Err(Error::InvalidQuestion {
                 id,
@@ -397,6 +407,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use serde_json::json;
 
     options! {
         enum Colour {
@@ -437,6 +448,18 @@ mod tests {
         assert!(q.score("one", "?", ["only"]).is_err());
         assert!(q.score("many", "?", vec!["l"; 11]).is_err());
         assert!(q.score("ok", "?", ["low", "high"]).is_ok());
+    }
+
+    #[test]
+    fn a_null_score_level_is_refused_before_the_wire() {
+        let mut q = Questions::new();
+        let err = q
+            .score("s", "?", vec![json!("low"), json!(null), json!("high")])
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidQuestion { id, reason } if id == "s" && reason.contains("level 1 is null")),
+            "{err}"
+        );
     }
 
     #[test]

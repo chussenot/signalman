@@ -1,0 +1,76 @@
+{
+  "case": "000158dd1bb9105f",
+  "response": {
+    "model": "laya-rl-agent",
+    "answers": {
+      "action": {
+        "type": "choice",
+        "choice": "escalate_to_human",
+        "probabilities": {
+          "answer_directly": 0.2684,
+          "close_no_action": 0.0415,
+          "escalate_to_human": 0.3308,
+          "execute_refund": 0.1515,
+          "request_information": 0.2078
+        },
+        "confidence": 0.0907
+      },
+      "category": {
+        "type": "choice",
+        "choice": "billing",
+        "probabilities": {
+          "account": 0.1355,
+          "billing": 0.6107,
+          "delivery": 0.0345,
+          "refund": 0.1461,
+          "technical": 0.0732
+        },
+        "confidence": 0.2788
+      },
+      "churn_risk": {
+        "type": "score",
+        "score": 2.195,
+        "legend": {
+          "0": "No sign of dissatisfaction.",
+          "1": "Mild frustration, but the relationship is intact.",
+          "2": "Clearly unhappy; repeat problems or explicit complaints.",
+          "3": "Imminent: threatening to cancel, dispute or leave."
+        },
+        "probabilities": {
+          "0": 0.0201,
+          "1": 0.1634,
+          "2": 0.4177,
+          "3": 0.3987
+        },
+        "confidence": 0.2022
+      },
+      "needs_human": {
+        "type": "noul",
+        "noul": 0.5745
+      },
+      "urgency": {
+        "type": "score",
+        "score": 2.6306,
+        "legend": {
+          "0": "No time pressure; can wait indefinitely.",
+          "1": "Routine; handle within the normal queue.",
+          "2": "Elevated; should be handled within the same week.",
+          "3": "Critical; requires action within the same day."
+        },
+        "probabilities": {
+          "0": 0.0117,
+          "1": 0.0641,
+          "2": 0.2061,
+          "3": 0.7181
+        },
+        "confidence": 0.429
+      }
+    },
+    "usage": {
+      "input_tokens": 1776,
+      "output_tokens": 0
+    }
+  },
+  "elapsed_ms": 4727,
+  "request_hash": "000158dd1bb9105f"
+}

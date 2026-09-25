@@ -48,6 +48,7 @@ use std::fmt;
 use std::hash::Hash;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::question::Options;
@@ -170,8 +171,12 @@ pub enum Answer {
     Score {
         /// Weighted position; may fall between levels.
         score: f64,
-        /// Level index (as string) to level description.
-        legend: BTreeMap<String, String>,
+        /// Level index (as string) to the level as it was sent: a string,
+        /// or the object a structured level was described with. The API
+        /// echoes the level, it does not summarise it, so the value is kept
+        /// as JSON rather than forced into a string that a structured level
+        /// would fail to decode into.
+        legend: BTreeMap<String, Value>,
         /// Level index (as string) to probability.
         probabilities: BTreeMap<String, Probability>,
         /// Distribution concentration.
@@ -335,7 +340,11 @@ impl FromAnswer for Choice<String> {
 pub struct Score {
     /// Probability-weighted position, `0.0 ..= levels.len() - 1`.
     pub value: f64,
-    /// Level descriptions, lowest first, as echoed by the API.
+    /// Level descriptions, lowest first, as echoed by the API. A level sent
+    /// as a string is that string; a structured level (an object with
+    /// `what` and `examples`, say) is rendered as compact JSON, so a label
+    /// is always available for a log line or a note without the caller
+    /// re-deriving it from the question.
     pub levels: Vec<String>,
     /// Probability per level, same order as `levels`.
     pub probabilities: Vec<Probability>,
@@ -359,6 +368,14 @@ impl Score {
     }
 }
 
+/// The text of a legend entry: a string as is, anything else as compact JSON.
+fn level_label(level: &Value) -> String {
+    match level {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
 impl FromAnswer for Score {
     const KIND: &'static str = "score";
     fn from_answer(id: &str, answer: &Answer) -> Result<Self> {
@@ -372,7 +389,7 @@ impl FromAnswer for Score {
             return Err(mismatch(id, Self::KIND, answer));
         };
         // Keys are level indices as strings; order them numerically.
-        let mut indexed: Vec<(usize, &String)> = legend
+        let mut indexed: Vec<(usize, &Value)> = legend
             .iter()
             .map(|(k, v)| {
                 k.parse::<usize>().map(|i| (i, v)).map_err(|_| {
@@ -383,7 +400,7 @@ impl FromAnswer for Score {
             })
             .collect::<Result<_>>()?;
         indexed.sort_by_key(|(i, _)| *i);
-        let levels: Vec<String> = indexed.iter().map(|(_, v)| (*v).clone()).collect();
+        let levels: Vec<String> = indexed.iter().map(|(_, v)| level_label(v)).collect();
         let probs = indexed
             .iter()
             .map(|(i, _)| {
@@ -501,6 +518,29 @@ mod tests {
         assert_eq!(s.levels[9], "L9");
         assert_eq!(s.nearest_level(), 9);
         assert_eq!(s.nearest_label(), "L9");
+    }
+
+    #[test]
+    fn a_structured_level_is_echoed_as_json_and_labelled_as_text() {
+        // The API accepts a level described as an object and echoes it back
+        // in the legend as that object, not as a string; a legend typed as
+        // strings fails to decode the whole response.
+        let mut q = Questions::new();
+        let h = q
+            .score(
+                "s",
+                "?",
+                vec![json!({"what": "low", "examples": ["a"]}), json!("high")],
+            )
+            .unwrap();
+        let r = response(&json!({
+            "s": { "type": "score", "score": 0.4,
+                   "legend": {"0": {"what": "low", "examples": ["a"]}, "1": "high"},
+                   "probabilities": {"0": 0.6, "1": 0.4}, "confidence": 0.2 }
+        }));
+        let s = r.get(&h).unwrap();
+        assert_eq!(s.levels, vec![r#"{"examples":["a"],"what":"low"}"#, "high"]);
+        assert_eq!(s.nearest_label(), r#"{"examples":["a"],"what":"low"}"#);
     }
 
     #[test]

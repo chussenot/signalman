@@ -107,6 +107,26 @@ let again = replay.answer(&state, "jev-latest", &questions).await?;
 assert_eq!(live, again);
 ```
 
+## Checking a real server
+
+The unit and integration tests never leave the process, so they cannot tell
+whether a server speaks the wire the way the mocks assume. Two things can:
+
+- `tests/live.rs` holds `#[ignore]` tests that run the three primitives, a
+  structured level, the model list, an unknown model name, a bearer check
+  and a record-then-replay against whatever `JUDGMENT_LIVE_BASE_URL` points
+  at. `cargo test` skips them; run them by hand with `-- --ignored`.
+- `examples/typed_decisions.rs` replays the
+  [typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions)
+  benchmark (400 cases, 2,000 typed decisions) through the crate and scores it
+  with `judgment::eval`, live or from recordings. `examples/typed-decisions/`
+  holds a 40-case sample and the script that exports the full split.
+
+Both were run against Laya's `typed-decisions` checkpoint through
+`laya-serve`; what they found, including the one decoding bug they caught,
+is in the signalman documentation page
+[judgment against Laya typed-decisions](../../docs/judgment-laya-typed-decisions.md).
+
 ## Status
 
 `0.1.0`, a workspace member of the signalman repository, not yet on crates.io.
