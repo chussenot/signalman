@@ -2,12 +2,26 @@
 //! questions, grade every judgment and the resulting decision, and report
 //! accuracy, calibration and latency.
 //!
-//! Two modes share one grader. `run` calls the model and can record every
-//! raw response; `replay` re-grades recorded responses under the current
-//! configuration without calling the model, which is how thresholds and
-//! wording are tuned: the judgments do not change when the policy does
-//! (decision 0002), so inference need not be repeated to see a different
-//! decision.
+//! Two modes share one grader. `run` calls the model and can record the raw
+//! response of every graded case; `replay` re-grades recorded responses
+//! under the current configuration without calling the model, which is how
+//! thresholds and wording are tuned: the judgments do not change when the
+//! policy does (decision 0002), so inference need not be repeated to see a
+//! different decision.
+//!
+//! A live run keeps going past a case whose answer does not fit its
+//! questions (an option the question never offered, a Score off its scale):
+//! the client refuses such a response, and one bad answer should not throw
+//! away the rest of a paid run. The case is listed in [`Report::failed`]
+//! with the error and its request id and is not graded, so the accuracy is
+//! over the graded cases. Under `--record` it has no `<id>.json` (one left
+//! by an earlier run is removed, so a replay cannot grade it as this run's
+//! answer) and is listed in [`FAILED_FILE`] instead, which a replay reads
+//! back into [`Report::failed`]. Any other error (the network, a key, a case
+//! that does not build) stops the run. A replay stays strict otherwise: a
+//! case with neither a recording nor a failed entry is an error, and so is
+//! a recording that no longer fits, which means the setup changed under it;
+//! grading around it would hide that.
 //!
 //! Cases are JSON Lines: one object per line with an `id`, an `alert` in the
 //! shape `signalman triage` accepts, and an `expected` block whose fields
@@ -107,10 +121,29 @@ pub struct DecisionMetrics {
     pub confusion: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
+/// The file, beside the recordings, that lists the cases a recorded live
+/// run could not grade: one [`FailedCase`] as JSON per line. Its extension
+/// is not `.json`, so nothing that reads a directory of recordings (a
+/// [`judgment::backend::Replay`], say) takes it for one.
+pub const FAILED_FILE: &str = "failed.jsonl";
+
+/// A case a live run could not grade: the model's answer did not fit the
+/// questions it was sent ([`judgment::Error::is_unfit`]), so the client
+/// refused it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FailedCase {
+    /// Case id.
+    pub id: String,
+    /// What did not fit, naming the question.
+    pub error: String,
+    /// TypeSafe's request id for the call, to report the answer with.
+    pub request_id: Option<String>,
+}
+
 /// The report.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Report {
-    /// Cases graded.
+    /// Cases graded. A failed case is not counted here.
     pub cases: usize,
     /// Distinct versioned models seen (one, unless recordings mix).
     pub models: BTreeSet<String>,
@@ -126,6 +159,12 @@ pub struct Report {
     pub output_tokens: u64,
     /// Every graded case, for drill-down.
     pub graded: Vec<Graded>,
+    /// Cases a live run could not grade because the answer did not fit the
+    /// questions; left out of every metric above. A replay lists the ones
+    /// its recorded run wrote to [`FAILED_FILE`]. Omitted from the JSON when
+    /// empty, so a report where every case was graded reads as before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<FailedCase>,
 }
 
 /// Harness failure.
@@ -218,8 +257,15 @@ pub struct Setup<'a> {
     pub policy: &'a Policy,
 }
 
-/// Call the model for every case, grade, and optionally record each raw
+/// Call the model for every case, grade, and optionally record each graded
 /// response as `<record>/<id>.json`.
+///
+/// A case whose answer does not fit its questions is listed in
+/// [`Report::failed`] and the run continues; it is not graded. Under
+/// `record` its `<id>.json`, if an earlier run left one, is removed, and
+/// every failed case is written to `<record>/`[`FAILED_FILE`] (removed when
+/// none failed), so [`replay`] reports the same cases as failed. Any other
+/// error stops the run.
 pub async fn run(
     backend: &dyn SystemOne,
     model: &str,
@@ -228,6 +274,7 @@ pub async fn run(
     record: Option<&Path>,
 ) -> Result<Report> {
     let mut graded = Vec::with_capacity(cases.len());
+    let mut failed = Vec::new();
     for case in cases {
         let questions = TriageQuestions::for_alert_with_texts(
             &case.alert,
@@ -236,7 +283,23 @@ pub async fn run(
         )?;
         let state = TriageQuestions::state(&case.alert);
         let started = Instant::now();
-        let response = backend.answer(&state, model, &questions.questions).await?;
+        let response = match backend.answer(&state, model, &questions.questions).await {
+            Ok(r) => r,
+            Err(e) if e.is_unfit() => {
+                if let Some(dir) = record {
+                    // An answer from an earlier run would otherwise be
+                    // graded on replay as if this run had given it.
+                    remove_if_present(&judgment::eval::recording_path(dir, &case.id))?;
+                }
+                failed.push(FailedCase {
+                    id: case.id.clone(),
+                    error: e.to_string(),
+                    request_id: e.request_id().map(str::to_owned),
+                });
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(dir) = record {
             judgment::eval::write_recording(
@@ -257,14 +320,25 @@ pub async fn run(
             elapsed_ms,
         )?);
     }
-    Ok(report(graded))
+    if let Some(dir) = record {
+        write_failed(dir, &failed)?;
+    }
+    Ok(report(graded, failed))
 }
 
 /// Grade recorded responses under the current setup without calling the
-/// model. Every case needs `<dir>/<id>.json`.
+/// model. Every case needs `<dir>/<id>.json`, or an entry in
+/// `<dir>/`[`FAILED_FILE`], which puts it in [`Report::failed`] as the
+/// recorded run did.
 pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>) -> Result<Report> {
+    let recorded_failures = read_failed(dir)?;
     let mut graded = Vec::with_capacity(cases.len());
+    let mut failed = Vec::new();
     for case in cases {
+        if let Some(f) = recorded_failures.get(&case.id) {
+            failed.push(f.clone());
+            continue;
+        }
         let rec = judgment::eval::read_recording(dir, &case.id)?;
         let questions = TriageQuestions::for_alert_with_texts(
             &case.alert,
@@ -279,7 +353,72 @@ pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>) -> Result<Report> {
             rec.elapsed_ms,
         )?);
     }
-    Ok(report(graded))
+    Ok(report(graded, failed))
+}
+
+/// Remove `path`; a file that is not there is already removed.
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io {
+            path: path.display().to_string(),
+            source: e,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Write `failed` to `<dir>/`[`FAILED_FILE`], one case per line, or remove
+/// the file when nothing failed, so it always describes the latest run.
+fn write_failed(dir: &Path, failed: &[FailedCase]) -> Result<()> {
+    let path = dir.join(FAILED_FILE);
+    if failed.is_empty() {
+        return remove_if_present(&path);
+    }
+    std::fs::create_dir_all(dir).map_err(|source| Error::Io {
+        path: dir.display().to_string(),
+        source,
+    })?;
+    let mut text = String::new();
+    for f in failed {
+        let line = serde_json::to_string(f).map_err(|source| Error::Json {
+            context: path.display().to_string(),
+            source,
+        })?;
+        text.push_str(&line);
+        text.push('\n');
+    }
+    std::fs::write(&path, text).map_err(|source| Error::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+/// The cases `<dir>/`[`FAILED_FILE`] lists, by id; none when there is no
+/// such file.
+fn read_failed(dir: &Path) -> Result<BTreeMap<String, FailedCase>> {
+    let path = dir.join(FAILED_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(source) => {
+            return Err(Error::Io {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    let mut out = BTreeMap::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let f: FailedCase = serde_json::from_str(line).map_err(|source| Error::Json {
+            context: format!("{}:{}", path.display(), i + 1),
+            source,
+        })?;
+        out.insert(f.id.clone(), f);
+    }
+    Ok(out)
 }
 
 /// Read the answers through the handles, decide, and grade against the labels.
@@ -388,9 +527,9 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
     out
 }
 
-/// Aggregate graded cases.
+/// Aggregate graded cases, beside the cases that could not be graded.
 #[allow(clippy::cast_precision_loss)] // counts and milliseconds, far below 2^52
-pub fn report(graded: Vec<Graded>) -> Report {
+pub fn report(graded: Vec<Graded>, failed: Vec<FailedCase>) -> Report {
     let mut by_question: BTreeMap<String, Vec<&Judgment>> = BTreeMap::new();
     let mut decision = DecisionMetrics::default();
     let mut latencies = Vec::with_capacity(graded.len());
@@ -434,6 +573,7 @@ pub fn report(graded: Vec<Graded>) -> Report {
         input_tokens,
         output_tokens,
         graded,
+        failed,
     }
 }
 
@@ -534,6 +674,19 @@ impl Report {
             let _ = writeln!(s, "\nmismatches ({}):", mismatches.len());
             for m in mismatches {
                 let _ = writeln!(s, "{m}");
+            }
+        }
+        if !self.failed.is_empty() {
+            let _ = writeln!(
+                s,
+                "\nfailed ({}), not graded: the answer did not fit the questions, so the \
+                 figures above are over the {} graded cases:",
+                self.failed.len(),
+                self.cases
+            );
+            // The error ends with ` [request_id …]` when the call had one.
+            for f in &self.failed {
+                let _ = writeln!(s, "  {:<14} {}", f.id, f.error);
             }
         }
         s

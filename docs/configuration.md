@@ -2,7 +2,7 @@
 title: Configuration
 description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [configuration, kubernetes]
 ---
 
@@ -33,6 +33,8 @@ Secrets are environment only. The file schema has no key for them; `api_key = â€
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 | `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
 | `OTEL_EXPORTER_OTLP_HEADERS` | the OTLP exporter, when the collector needs a token or key ([Observability](observability.md#configuration)) | `key=value,key2=value2`, for example `authorization=Bearer â€¦`; read by the exporter itself, never by `src/config.rs`; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way |
+
+`TYPESAFE_API_KEY` is trimmed before use, so a trailing newline from a key file or a `Secret` is fine. A key with whitespace inside it, a control character, a non-ASCII character or a byte-order mark is refused at start-up with an `InvalidApiKey` error naming the variable and what is wrong, as the Python SDK (0.7.1) refuses it; a blank one reads as unset. The key itself is never printed.
 
 Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 

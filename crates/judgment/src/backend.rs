@@ -21,6 +21,16 @@
 //! backend and writes every response to a directory; [`Replay`] answers
 //! from such a directory without any model, keyed by a content hash of the
 //! request, so a suite can run against yesterday's real answers offline.
+//!
+//! Every one of them returns only a response that answers the questions it
+//! was given ([`Response::verify`]), so the code consuming judgments can
+//! rely on it whichever backend is behind the trait: a test with a [`Fake`]
+//! cannot pass on a scripted answer the real client would have refused, and
+//! a [`Replay`] never answers questions it was not recorded for. The request
+//! hash covers the questions, so a changed question set is
+//! [`Error::NoRecording`], and a recording filed under the right hash that
+//! no longer fits (edited by hand, or made by an older release that did not
+//! check) fails naming the question.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -35,12 +45,21 @@ use serde_json::Value;
 use crate::answer::{Answer, Confidence, Probability, Response, Usage};
 use crate::error::{Error, Result};
 use crate::eval::{Recording, request_hash};
-use crate::question::Questions;
+use crate::question::{Question, Questions};
 
 /// A boxed, sendable future: what a trait object can return.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Something that answers typed questions about a state.
+///
+/// The contract: an implementation returns only a [`Response`] that fits
+/// `questions`, that is one [`Response::verify`] accepts, and an error
+/// otherwise (one of the [`Error::is_unfit`] errors when the answer came
+/// back but does not fit). Every backend in this crate verifies, so a caller
+/// reads the answers through its handles without checking them again. A
+/// backend written elsewhere should call [`Response::verify`] before it
+/// returns, since nothing else will; [`Recorder`] verifies what the backend
+/// it wraps returns, because that may be one of those.
 pub trait SystemOne: Send + Sync {
     /// Answer `questions` about `state` with `model` (a name or alias; a
     /// backend that has one model may ignore it and report its own).
@@ -101,6 +120,12 @@ impl<T: SystemOne + ?Sized> SystemOne for Box<T> {
     }
 }
 
+/// Through [`Client::evaluate`](crate::client::Client::evaluate), with the
+/// client's own settings and default headers: per-call options do not cross
+/// the trait (`client` module docs, `# Per-call options`). If extra body
+/// fields ever do, they must enter [`request_hash`], with an empty set
+/// hashing as it does today, or a [`Replay`] would answer a different
+/// request.
 #[cfg(feature = "http")]
 impl SystemOne for crate::client::Client {
     fn answer<'a>(
@@ -139,15 +164,75 @@ pub struct Call {
 ///
 /// Every question in a request must have an answer, or the call fails with
 /// [`Error::MissingAnswer`] naming it: a test that forgets a question learns
-/// so from the fake, not from a wrong decision downstream. The answers are
-/// returned as given; whether they fit the question's primitive is checked
-/// where every answer is checked, in [`Response::get`].
+/// so from the fake, not from a wrong decision downstream. The response is
+/// verified against the questions like the client's ([`Response::verify`]),
+/// so a scripted answer of the wrong primitive, a Choice option the question
+/// does not offer or a Score off its scale fails the call, as it would from
+/// the real client, and a test cannot pass on an answer the client would
+/// have refused. A refused call is not recorded in [`Fake::calls`]. A test
+/// that needs a malformed response builds the [`Response`] directly.
+///
+/// A Score is scripted as probabilities only ([`Fake::score`]); its legend
+/// is the levels of the question it answers, filled in when it answers, so
+/// the echo the client checks is the one a server would send.
 #[derive(Debug, Default)]
 pub struct Fake {
     model: String,
-    answers: BTreeMap<String, Answer>,
+    answers: BTreeMap<String, Scripted>,
     usage: Usage,
     calls: Mutex<Vec<Call>>,
+}
+
+/// One scripted answer: a wire answer as given, or a Score whose legend and
+/// score are derived from the question it answers.
+#[derive(Debug, Clone)]
+enum Scripted {
+    Answer(Answer),
+    Score {
+        probabilities: Vec<Probability>,
+        confidence: Confidence,
+    },
+}
+
+impl Scripted {
+    /// The wire answer to `question`. A scripted Score echoes `question`'s
+    /// levels as its legend when `question` is a Score, and has an empty
+    /// legend otherwise, so the check then reports the primitive rather
+    /// than the legend.
+    #[allow(clippy::cast_precision_loss)] // at most ten levels
+    fn answer(&self, question: &Question) -> Answer {
+        match self {
+            Self::Answer(answer) => answer.clone(),
+            Self::Score {
+                probabilities,
+                confidence,
+            } => {
+                let legend = match question {
+                    Question::Score { criteria, .. } => criteria
+                        .iter()
+                        .enumerate()
+                        .map(|(i, level)| (i.to_string(), level.clone()))
+                        .collect(),
+                    _ => BTreeMap::new(),
+                };
+                let score = probabilities
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| i as f64 * p.value())
+                    .sum();
+                Answer::Score {
+                    score,
+                    legend,
+                    probabilities: probabilities
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| (i.to_string(), *p))
+                        .collect(),
+                    confidence: *confidence,
+                }
+            }
+        }
+    }
 }
 
 impl Fake {
@@ -175,10 +260,11 @@ impl Fake {
 
     /// The wire answer for question `id`, stored as given: for a shape the
     /// helpers below do not build, or to feed a real recorded answer back
-    /// through a fake.
+    /// through a fake. It is verified like any other when the fake answers,
+    /// so a Score given here must carry the question's levels as its legend.
     #[must_use]
     pub fn with_answer(mut self, id: impl Into<String>, answer: Answer) -> Self {
-        self.answers.insert(id.into(), answer);
+        self.answers.insert(id.into(), Scripted::Answer(answer));
         self
     }
 
@@ -193,7 +279,9 @@ impl Fake {
     /// is the most probable one and the confidence is as given. Fails when a
     /// probability or the confidence is outside `[0, 1]`. Whether the
     /// probabilities sum to 1 is not checked, since the wire layer does not
-    /// check it either.
+    /// check it either. Every option named here must be one the question
+    /// offers, or the fake refuses the call with [`Error::UnknownOption`];
+    /// an offered option left out reads as zero.
     pub fn choice<'p>(
         self,
         id: impl Into<String>,
@@ -219,34 +307,37 @@ impl Fake {
         ))
     }
 
-    /// A Score answer from one probability per level, lowest level first;
-    /// the score is the probability-weighted position and the legend names
-    /// the levels `level 0`, `level 1` and so on. Fails when a probability or
+    /// A Score answer from one probability per level, lowest level first.
+    /// When the fake answers, the legend is the levels of the question it
+    /// answers, as a server echoes them, and the score is the
+    /// probability-weighted position `Σ i·p_i`. Fails when a probability or
     /// the confidence is outside `[0, 1]`.
-    #[allow(clippy::cast_precision_loss)] // at most ten levels
+    ///
+    /// Fewer probabilities than the question has levels read as zero for the
+    /// rest; more than it has levels is [`Error::InvalidAnswer`] when the
+    /// fake answers. The probabilities should sum to at most 1, or the
+    /// derived score can leave the scale: `[0, 0, 1, 1]` on four levels gives
+    /// a score of 5, which the fake refuses with [`Error::InvalidAnswer`] as
+    /// the client would.
     pub fn score(
-        self,
+        mut self,
         id: impl Into<String>,
         probabilities: impl IntoIterator<Item = f64>,
         confidence: f64,
     ) -> Result<Self> {
-        let mut probs = BTreeMap::new();
-        let mut legend = BTreeMap::new();
-        let mut score = 0.0;
-        for (i, p) in probabilities.into_iter().enumerate() {
-            probs.insert(i.to_string(), Probability::new(p)?);
-            legend.insert(i.to_string(), Value::String(format!("level {i}")));
-            score += p * i as f64;
-        }
-        Ok(self.with_answer(
-            id,
-            Answer::Score {
-                score,
-                legend,
-                probabilities: probs,
-                confidence: Confidence::new(confidence)?,
+        let probabilities = probabilities
+            .into_iter()
+            .map(Probability::new)
+            .collect::<Result<Vec<_>>>()?;
+        let confidence = Confidence::new(confidence)?;
+        self.answers.insert(
+            id.into(),
+            Scripted::Score {
+                probabilities,
+                confidence,
             },
-        ))
+        );
+        Ok(self)
     }
 
     /// Every request received so far, oldest first: what a test asserts to
@@ -265,14 +356,23 @@ impl SystemOne for Fake {
         questions: &'a Questions,
     ) -> BoxFuture<'a, Result<Response>> {
         Box::pin(async move {
-            let mut answers = BTreeMap::new();
-            for id in questions.ids() {
-                let answer = self
-                    .answers
-                    .get(id)
-                    .ok_or_else(|| Error::MissingAnswer(id.to_owned()))?;
-                answers.insert(id.to_owned(), answer.clone());
-            }
+            let answers = questions
+                .iter()
+                .filter_map(|(id, question)| {
+                    self.answers
+                        .get(id)
+                        .map(|scripted| (id.to_owned(), scripted.answer(question)))
+                })
+                .collect();
+            let response = Response {
+                model: self.model.clone(),
+                answers,
+                usage: self.usage,
+                request_id: None,
+                extra: BTreeMap::new(),
+            };
+            // A question without a script is the verify's MissingAnswer.
+            response.verify(questions)?;
             if let Ok(mut calls) = self.calls.lock() {
                 calls.push(Call {
                     state: state.clone(),
@@ -280,11 +380,7 @@ impl SystemOne for Fake {
                     question_ids: questions.ids().map(str::to_owned).collect(),
                 });
             }
-            Ok(Response {
-                model: self.model.clone(),
-                answers,
-                usage: self.usage,
-            })
+            Ok(response)
         })
     }
 }
@@ -296,6 +392,18 @@ impl SystemOne for Fake {
 /// A backend that passes every request to another and writes the response
 /// to `dir/<request hash>.json` as a [`Recording`], so a [`Replay`] over the
 /// same directory answers the same requests later without a model.
+///
+/// The response is written as received, [`Response::request_id`] included,
+/// so a recording still names the call TypeSafe can look up.
+///
+/// The inner response is verified against the questions before anything is
+/// written ([`Response::verify`]), and a response that does not fit is
+/// returned as the error with no file written: a recording is only ever a
+/// response a replay can return. The error and its request id are then the
+/// only trace of that response. For the crate's own backends the check has
+/// already been made; it matters for a third-party backend behind the
+/// recorder, which the [`SystemOne`] contract asks to verify but nothing
+/// forces to.
 #[derive(Debug)]
 pub struct Recorder<B> {
     inner: B,
@@ -329,6 +437,7 @@ impl<B: SystemOne> SystemOne for Recorder<B> {
             let hash = request_hash(state, questions);
             let started = Instant::now();
             let response = self.inner.answer(state, model, questions).await?;
+            response.verify(questions)?;
             let recording = Recording {
                 case: hash.clone(),
                 response: response.clone(),
@@ -346,6 +455,18 @@ impl<B: SystemOne> SystemOne for Recorder<B> {
 
 /// A backend that answers from recordings keyed by request hash, and
 /// nothing else: a request nobody recorded is [`Error::NoRecording`].
+///
+/// A replayed response carries the recorded call's
+/// [`Response::request_id`], not a new one: it is that call's answers, and
+/// the id is how to find that call in TypeSafe's logs. A recording made
+/// before the field existed replays with `None`.
+///
+/// A recorded response is verified against the questions of the request
+/// that found it ([`Response::verify`]), as the client verifies a live one,
+/// so a recording that no longer fits (edited by hand, or made by an older
+/// release that did not check) fails naming the question rather than
+/// replaying an answer the client would refuse. The request hash covers the
+/// questions, so a recording found by hash was made for these questions.
 #[derive(Debug, Default)]
 pub struct Replay {
     by_hash: BTreeMap<String, Response>,
@@ -405,10 +526,13 @@ impl SystemOne for Replay {
     ) -> BoxFuture<'a, Result<Response>> {
         Box::pin(async move {
             let hash = request_hash(state, questions);
-            self.by_hash
+            let response = self
+                .by_hash
                 .get(&hash)
                 .cloned()
-                .ok_or(Error::NoRecording(hash))
+                .ok_or(Error::NoRecording(hash))?;
+            response.verify(questions)?;
+            Ok(response)
         })
     }
 }

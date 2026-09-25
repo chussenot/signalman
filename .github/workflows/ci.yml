@@ -41,6 +41,9 @@ jobs:
 
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features
+      # The judgment crate must build without its `http` feature, for a
+      # project that brings its own transport; its tests are checked too.
+      - run: cargo check -p judgment --no-default-features --all-targets
       - run: cargo test --workspace --all-features
       - run: cargo doc --workspace --no-deps --document-private-items
         env:

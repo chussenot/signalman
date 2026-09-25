@@ -31,6 +31,8 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | How to use the judgment core in another project | [TypeSafe client](typesafe-client.md), the crate README |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | Whether the judgment crate works against Laya, and what the benchmark measured | [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) |
+| What the open Jev reproductions and the Decision Index mean for provider choice, self-hosting, question design and thresholds | [Open System One models](research/open-system-one-models.md) |
+| What the other System One clients and the official SDKs do that judgment does not, and which of it to adopt | [System One client libraries](research/system-one-client-libraries.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |
 | What is unverified or missing | [Roadmap](roadmap.md) |
@@ -243,7 +245,7 @@ Where to read about the crate itself:
 
 - `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
 - `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
-- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate mirrors the Python SDK's defaults so a failure looks the same from either language.
+- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements, with the [OpenAPI document](https://api.typesafe.ai/openapi.json) TypeSafe publishes beside it. That document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json` and contract-tested: `crates/judgment/tests/contract.rs` checks every request shape the builders produce, every `Fake` response and every committed recording against it, and pins where the crate is deliberately stricter or looser (the reference page's 255-option and 10-level limits, which the schema does not state, among them); `tests/typesafe_contract.rs` checks signalman's own triage requests and TypeSafe mocks. An ignored drift test, `crates/judgment/tests/openapi_drift.rs`, compares the copy with the live document and is the only way to refresh it. The crate README's "Checking against the published contract" lists every pinned difference and why. There is no official Rust SDK; the crate's retries take the official SDKs' retry count, backoff and retried statuses, and the rustdoc of `RetryPolicy` states where they deliberately differ (the total budget and the server-wait cap among them).
 
 This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
 
@@ -269,25 +271,33 @@ sequenceDiagram
     R-->>Code: Noul{yes: 0.95}
 ```
 
+A handle checks one answer when it is read; the whole response is checked before anyone reads it. The client holds every response against the questions it sent (`Response::verify`): an answer for every question, of the question's primitive, a Choice that names only options it was offered (its choice and every key of its distribution), and a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error naming the question and the option or level, carrying TypeSafe's request id when the server sent one (Laya sends none); it is not retried, since the call was billed, its token usage is still reported, and it is counted in `signalman.upstream.errors` as `status="unfit"` (a 2xx whose body does not decode is `decode`). The `Fake`, `Replay` and `Recorder` backends verify too, and signalman's `TriageQuestions::read` verifies again for a recording replayed by case id. For signalman this means an owner or an incident the model was never offered fails the triage instead of being read as the no-match option ([Triage](triage.md#which-questions-are-asked)); the official SDKs check the shape of each answer and stop there.
+
 ## Retries
 
-A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs; the defaults (two retries, 0.5 s doubling to 5 s with jitter, `Retry-After` honoured up to 30 s, 408, 429 and 5xx retried) and the reasons for each are in the rustdoc of `RetryPolicy`.
+A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs. The defaults are the official SDKs': two retries; 0.5 s doubling to 5 s, with a jitter that only ever shortens a wait; 408, 429, every 5xx and every transport failure retried; the server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date, measured against the response's `Date` header) honoured on any retried status up to 30 s; and no overall budget, which a caller may set. The reasons for each, and a table of where the crate matches the SDKs and where it deliberately differs, are in the rustdoc of `RetryPolicy`. `RetryPolicy::conservative()` retries only 408, 429 and a connection that was never made, for a caller who would rather fail a billed call than pay for it twice. signalman uses the defaults for all three upstreams and sets no budget; in `serve`, each triage's own deadline bounds it instead ([Operations](operations.md#backpressure)).
 
 ```mermaid
 flowchart TD
     S[send request] --> R{response?}
-    R -->|transport error| T{attempt ≤ max_retries?}
-    R -->|status| C{408, 429 or 5xx?}
+    R -->|status| C{"in http_statuses?<br/>default 408, 429, 5xx"}
+    R -->|"transport error, or body cut short"| X{"transport level retries it?<br/>Any: yes; BeforeSend: only when<br/>the connection was never made; Never: no"}
     C -->|no| DONE[return status and body to the client for classification]
-    C -->|yes| T
-    T -->|no| FAIL[return last error or status]
-    T -->|yes| W{Retry-After present<br/>and ≤ retry_after_max?}
-    W -->|yes| SLEEP1[sleep Retry-After]
-    W -->|no| SLEEP2[sleep backoff_initial × 2^retry, capped at backoff_max, ± jitter]
-    SLEEP1 & SLEEP2 --> S
+    C -->|yes| T{"attempt ≤ max_retries?"}
+    X -->|yes| T
+    X -->|no| FAIL[return last error or status]
+    T -->|no| FAIL
+    T -->|yes| W{"server's wait present<br/>and ≤ retry_after_max?"}
+    W -->|yes| D1["wait = the server's wait<br/>(retry-after-ms, seconds or a date)"]
+    W -->|no| D2["wait = backoff_initial × 2^(retry − 1), capped at backoff_max,<br/>minus a random share of at most backoff_jitter"]
+    D1 & D2 --> B{"budget set, and<br/>elapsed + wait ≥ budget?"}
+    B -->|yes| FAIL
+    B -->|no| SLEEP[sleep the wait] --> S
 ```
 
-Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
+Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type. The client follows no redirect, as the Python SDK follows none: a 3xx is `Error::Http` with that status, not retried. The API never redirects its two paths, so a 3xx means `typesafe.base_url` points somewhere else, and following it would send a gateway header, and on a 307 or 308 the caller's state, to wherever the redirect names.
+
+TypeSafe identifies a call by an `x-typesafe-request-id` response header, which both official SDKs expose: the one link from a failed call or a surprising answer to TypeSafe's own logs. The client keeps it in three places: `Error::request_id()` on every error that came from an HTTP response (a 2xx whose body does not decode included), a ` [request_id …]` suffix at the end of that error's message, so a log line that keeps only the message still has it, and the `request_id` field of the `typesafe.evaluate` and `typesafe.list_models` spans ([Observability](observability.md#spans)). A successful response carries it too, as `Response::request_id`. Quote it to TypeSafe support when a call fails or an answer looks wrong. It is the last attempt's id when the call was retried, there is none after a transport failure (no response came back, or its body could not be read), and it is optional everywhere: the published OpenAPI document lists no response headers, the [Laya](laya.md) server sends none, and the hosted API has not yet been seen sending one to this client.
 
 ## How signalman uses it
 
@@ -295,12 +305,13 @@ Errors are separated by what fixes them rather than by status code; the variants
 - The binary builds the client from `typesafe.base_url`, `typesafe.model` and `typesafe.timeout_seconds` ([Configuration](configuration.md)); the key comes from `TYPESAFE_API_KEY` and nowhere else. Any server that speaks the System One wire works, which is how [Laya](laya.md) was run with no code change.
 - signalman implements `judgment::Observer` in `src/telemetry.rs` and installs it as the process-wide observer in `Providers::init`, before the first client exists. That is why the crate's token usage and failed attempts appear as `signalman.typesafe.tokens` and `signalman.upstream.errors` ([Observability](observability.md#metrics)) while the crate names no instrument.
 - The incident.io and Backstage clients call `judgment::http::send_with_retries` with their own service label, so all three upstreams retry the same way and every failed attempt is counted once.
+- signalman sets no per-call options and no default headers: every call is `Client::system_one` (or `Client::evaluate`, in `signalman triage`, which can print the request it sends) with the configured timeout and the default retry policy, and the model is `typesafe.model`, the client's default. The crate's `Client::evaluate_with` takes a `CallOptions` for one call's timeout, retry policy, headers and extra body fields, and refuses, before anything is sent, a header or field the client sets itself (the key, the content type, the user agent, `x-typesafe-retry-count`, the headers HTTP owns such as `content-length` and `host`, and `state`, `model` and `questions`), where the official SDKs silently keep or overwrite it. The options do not cross the `SystemOne` trait: the client behind the trait uses its own settings, and `Fake`, `Recorder` and `Replay` take none. A recording is filed under a hash of the state and the questions, and an extra field can change the answer, so extras could only cross the trait by entering that hash; until a backend needs them, keeping them off leaves every existing recording valid.
 - The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and `Texts` makes the wording data that can be tuned without touching the handles ([Triage](triage.md)).
 - The [evaluation harness](evaluation.md) grades through `judgment::eval`: recordings, per-question grading and the calibration metrics are the crate's; the labels and the decision are signalman's.
 
 ## What the crate does not do
 
-- No sync client: the API documents one endpoint and every consumer so far is async.
+- No sync client: the API documents one evaluation endpoint (and a model listing) and every consumer so far is async.
 - No batching or streaming: the API documents one request shape, and no consumer has asked.
 - No metrics backend: a library that named instruments would force its telemetry stack on every consumer; the `Observer` trait hands the numbers to whoever owns the instruments.
 - No second backend in the product yet: the crate has a `SystemOne` trait with `Fake` and `Replay` implementations, but signalman's `Triager` holds a concrete `Client` rather than a `dyn SystemOne` until a second backend is needed there. The trait is the seam an official SDK or a local model would plug into.
@@ -311,7 +322,7 @@ Errors are separated by what fixes them rather than by status code; the variants
 
 # Laya as a model provider
 
-[Laya](https://huggingface.co/convaiinnovations/laya) (Convai Innovations, Apache 2.0) is an open-weights System One decision model: a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass. It takes the same request shape as TypeSafe's API, a `state` plus `noul`, `choice` and `score` questions with `instructions` and `criteria`, and returns the same answer shape with probabilities and confidence. It never generates text. Three checkpoints ship in one repository: English (root), multilingual (`mmBERT-base`, 322M) and `typed-decisions`, the English model fine-tuned on a four-workflow typed-decisions benchmark.
+[Laya](https://huggingface.co/convaiinnovations/laya) ([source](https://github.com/NandhaKishorM/laya); Convai Innovations, Apache 2.0) is an open-weights System One decision model: a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass. It takes the same request shape as TypeSafe's API, a `state` plus `noul`, `choice` and `score` questions with `instructions` and `criteria`, and returns the same answer shape with probabilities and confidence. It never generates text. Three checkpoints ship in one repository: English (root), multilingual (`mmBERT-base`, 322M) and `typed-decisions`, the English model fine-tuned on a four-workflow typed-decisions benchmark.
 
 This page is an experiment, not a supported configuration. Jev's per-token cost, its latency and the fact that alert text leaves the network are real costs, and an open-weights model that speaks the same wire shape is the obvious way to remove them; the question is whether its judgments are good enough to route on. Nothing in the binary knows about Laya, the only artefact in the repository is a shim under `examples/`, and the measurement below is three synthetic alerts. It becomes `current` when the [evaluation harness](evaluation.md) has compared both models on labelled alert history and Laya, fine-tuned, matches Jev's accuracy and calibration per question; at that point self-hosting becomes a documented `typesafe.model` option rather than a page. Until then the page records what was tried so nobody repeats it.
 
@@ -365,7 +376,7 @@ Since this page was written the typed client became the `judgment` crate and Lay
 
 The [judgment crate](typesafe-client.md) was written against TypeSafe's documented wire and tested against mocks of it. A mock encodes what the client author believed about the wire; only a real server can contradict that belief. This page records the first such contradiction test: the crate against [Laya](laya.md)'s `typed-decisions` checkpoint, served by Laya's own HTTP server, on the benchmark the checkpoint was fine-tuned for. The question was narrow: does the crate work, unchanged, against a second implementation of the System One wire, and if not, what has to change on which side.
 
-The short answer: yes, after one fix in the crate that TypeSafe's own API would have needed too. Everything the crate sends is accepted, everything Laya returns decodes through the typed handles, retries and error classification behave as documented, and the benchmark replays through the crate's evaluation module to numbers in line with the model card. Four differences between the two servers were found; none needs code, all are recorded below so the next person does not rediscover them.
+The short answer: yes, after one fix in the crate that TypeSafe's own API would have needed too. Everything the crate sends is accepted, everything Laya returns decodes through the typed handles, errors are classified as documented (a 401 is `Unauthorized` and is not retried; no run has provoked a status that is retried), and the benchmark replays through the crate's evaluation module to numbers in line with the model card. Four differences between the two servers were found; none needs code, all are recorded below so the next person does not rediscover them.
 
 ## What was tested, and with what
 
@@ -397,16 +408,27 @@ Each test exists for one belief the mocks could not check.
 
 | Test | Asserts | Why it is there |
 |---|---|---|
-| `the_three_primitives_round_trip_through_typed_handles` | A Choice over an `options!` enum, a Noul with criteria and a three-level Score come back through their handles: the chosen option is the arg max of a distribution that sums to 1 within rounding, the legend echoes the levels in order, the score lies on the level line, confidence and probability are in `[0, 1]`, the response names a model and counts input tokens | The whole promise of the crate is that the handle fixes the answer's type. Laya rounds every probability to four decimals and adds fields the API does not have (`answer_confidence`, `action`, `routing`); the test shows the typed views survive both |
+| `the_three_primitives_round_trip_through_typed_handles` | A Choice over an `options!` enum, a Noul with criteria and a three-level Score come back through their handles: the chosen option is the arg max of a distribution that sums to 1 within rounding, the legend echoes the levels in order, the score lies on the level line, confidence and probability are in `[0, 1]`, the response names a model and counts input tokens. It also prints the request id and the names of the undocumented top-level fields, without asserting either | The whole promise of the crate is that the handle fixes the answer's type. Laya rounds every probability to four decimals and adds fields the API does not have (`answer_confidence`, `action`, `routing`); the test shows the typed views survive both |
 | `a_structured_score_level_comes_back_decoded` | A level sent as an object (`{"what": …, "examples": […]}`) decodes, and its label is the object's JSON | This is the test that failed first. See [the bug](#the-bug-the-run-caught) |
+| `a_structured_score_level_is_echoed` | An object level, an array level and a string level are sent, the body fetched directly rather than through the client, the legend printed exactly as the server echoed it, and `Response::verify` passes on it | `verify` accepts a structured level echoed either as itself or as its compact JSON; the test records which of the two a server actually does, so the rule can be tightened to it. Added with judgment 0.2 |
 | `a_choice_option_without_a_description_is_accepted` | `dynamic_choice` with `None` descriptions is answered | TypeSafe documents `null` descriptions; Laya's README says every option needs a description. The server accepts them |
-| `the_model_list_is_either_served_or_absent` | `list_models` returns a non-empty list or exactly `Error::Http { status: 404 }`; anything else fails | `GET /v1/models` is observed on TypeSafe's API, not documented. A compatible server may not have it, and the crate must fail cleanly rather than hang or misdecode |
+| `the_model_list_is_either_served_or_absent` | `list_models` returns a non-empty list or exactly `Error::Http { status: 404 }`; anything else fails | `GET /v1/models` is in TypeSafe's OpenAPI document and both SDKs call it, but the HTTP API reference page leaves it out, and a compatible server may not serve it. The crate must fail cleanly rather than hang or misdecode |
 | `a_model_name_the_server_does_not_know_is_still_answered` | A client sending the crate's default `jev-latest` gets an answer | A consumer that only changed `base_url` must not be broken by the model name it never set |
 | `a_live_answer_replays_offline_from_its_recording` | `Recorder` over the live client, then `Replay` over the directory, return the same `Response` for the same state and questions | The request hash that keys a recording is computed on the crate side; this proves it is stable across a real round trip, which the mocks could not, since they never see a serialised request |
-| `the_builder_refuses_what_the_wire_would_reject` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server |
-| `a_wrong_bearer_token_is_unauthorized_and_the_right_one_is_not` | Against a second server started with `LAYA_API_KEY`, a wrong key is `Error::Unauthorized` and the right one is answered; skipped unless `JUDGMENT_LIVE_AUTH_BASE_URL` is set | The retry loop must not retry a 401 and the error must be the one whose remedy is "check the key". Laya returns FastAPI's `{"detail": …}` body rather than TypeSafe's `{"error": …}`; the classification is by status, so the body shape does not matter |
+| `an_unknown_extra_field_is_answered_or_refused_by_name` | A request carrying an unknown `CallOptions::extra` field is either answered or refused as `Error::InvalidRequest` with status 400 or 422, and the test prints which; a 5xx, a transport failure or a decode error fails | The crate sends extra fields as given and leaves the choice to the server, so either outcome is a pass, but only a run says which one a server takes. Added with judgment 0.2 |
+| `the_builder_refuses_what_the_reference_page_forbids` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server. The limits are the HTTP API reference page's; TypeSafe's OpenAPI document states none above and only one level below, so the builder is the stricter, and what a server does past them is unverified (`crates/judgment/tests/contract.rs` pins the difference). Named `the_builder_refuses_what_the_wire_would_reject` when this run was made |
+| `a_wrong_bearer_token_is_unauthorized_and_the_right_one_is_not` | Against a second server started with `LAYA_API_KEY`, a wrong key is `Error::Unauthorized` and the right one is answered, and the 401's request id is printed; skipped unless `JUDGMENT_LIVE_AUTH_BASE_URL` is set | The retry loop must not retry a 401 and the error must be the one whose remedy is "check the key". Laya returns FastAPI's `{"detail": …}` body rather than TypeSafe's `{"error": …}`; the classification is by status, so the body shape does not matter |
 
-All eight passed on 2026-09-24 against the two servers described above.
+The eight tests of the first run, all but the two added with judgment 0.2, passed on 2026-09-24 against the two servers described above.
+
+With judgment 0.2.0, all ten passed on 2026-09-25 against the same two servers, `laya-serve` 0.3.20. What that run showed, beyond the assertions:
+
+- Structured levels are echoed verbatim: the object level came back as a JSON object and the array level as a JSON array, never as their compact JSON in a string, so `verify`'s second form has still not been observed.
+- The unknown extra field was answered, not refused.
+- The top-level `routing` field arrived in `Response::extra`.
+- The server sends no `x-typesafe-request-id` header, so the printed request id was `None`. This is an observation from the printed output; no test asserts it.
+
+The benchmark was not re-run live; the committed recordings replay under 0.2 to the same report as before ([below](#what-the-benchmark-measured)).
 
 The benchmark replay is `crates/judgment/examples/typed_decisions.rs`. It reads one case per line, builds the crate's `Questions` from each case's wire JSON through the public builders, sends every case through one `dyn SystemOne`, and grades each answer against the gold label with `judgment::eval`:
 
@@ -433,12 +455,12 @@ The fix is in the crate. The legend now holds JSON values, and the typed `Score`
 
 None of these needs a code change; each is a fact to know when pointing the crate at Laya.
 
-- **The model name routes, and the response does not say where.** `laya-serve` maps `model` onto a checkpoint by name: `typed-decisions` or the full repository id picks the fine-tuned one, and any other value, including the crate's default `jev-latest`, lets Laya's router choose by language, which for English text means the base checkpoint, loaded on demand. With `LAYA_MODELS=typed-decisions` preloaded, a request that named no model still took 78 s the first time while the base checkpoint downloaded. The response's `model` field is `laya-rl-agent` for every checkpoint; which one answered is in a `routing` object the crate ignores. Consequence: set `.model("typed-decisions")` on the builder, or `TYPESAFE_MODEL` in signalman, and do not rely on `Response::model` to tell checkpoints apart.
+- **The model name routes, and the response does not say where.** `laya-serve` maps `model` onto a checkpoint by name: `typed-decisions` or the full repository id picks the fine-tuned one, and any other value, including the crate's default `jev-latest`, lets Laya's router choose by language, which for English text means the base checkpoint, loaded on demand. With `LAYA_MODELS=typed-decisions` preloaded, a request that named no model still took 78 s the first time while the base checkpoint downloaded. The response's `model` field is `laya-rl-agent` for every checkpoint; which one answered is in a top-level `routing` object. The crate ignored it when this run was made; since judgment 0.2 it is kept, as it came, in `Response::extra`, the map of every top-level field the API does not document, so a caller can log it without a second decoder. Consequence: set `.model("typed-decisions")` on the builder, or `TYPESAFE_MODEL` in signalman, and do not rely on `Response::model` to tell checkpoints apart; read `Response::extra["routing"]` when the checkpoint matters.
 - **No `GET /v1/models`.** Laya's README documents it; the 0.3.20 server has `/health` and `POST /v1/systemone` only. `list_models` returns `Error::Http { status: 404 }`. signalman's `models` command is therefore the one command that does not work against `laya-serve`; the shim under `examples/laya/` still serves it.
 - **Latency is seconds, and the default timeout is ten.** A five-question case takes about two seconds on four CPU cores, warm. The crate's default per-attempt timeout mirrors the hosted API's hundreds of milliseconds; the example and the live tests set 120 s. In signalman, `typesafe.timeout_seconds` is the setting.
-- **Confidence means something else.** TypeSafe computes `confidence` from the spread of the distribution; Laya reports one minus the normalised entropy under that name and adds `answer_confidence`, the probability of the reported answer, which its model card says to gate on. Both are in `[0, 1]`, so the typed `Confidence` accepts either, but a threshold tuned on Jev's confidence does not carry over. The server also warned at start-up that the checkpoint's temperature for Choice questions with eleven or more options is outside the range it trusts and was clamped; confidence on such questions is uncalibrated by Laya's own account.
+- **Confidence means something else.** TypeSafe computes `confidence` from the spread of the distribution; Laya reports one minus the normalised entropy under that name and adds `answer_confidence`, the probability of the reported answer, which its model card says to gate on. Both are in `[0, 1]`, so the typed `Confidence` accepts either, but a threshold tuned on Jev's confidence does not carry over. The answer-level extras, `answer_confidence` and the `action` object, are still ignored: `Response::extra` keeps top-level fields only, and fields inside an answer that the crate does not model are dropped, as the Python SDK drops them. A caller that wants to gate on `answer_confidence` recomputes it from the answer's own `probabilities`. The server also warned at start-up that the checkpoint's temperature for Choice questions with eleven or more options is outside the range it trusts and was clamped; confidence on such questions is uncalibrated by Laya's own account.
 
-Limits were probed as well. Laya answered 200 options and 11 levels, past its README's stated budget; the crate's builder stops at TypeSafe's 255 and 10 regardless, so the stricter of the two bounds applies. A malformed body is a 400 with a FastAPI `detail`, and the crate reports it as `Error::Http` with the body, not retried.
+Limits were probed as well. Laya answered 200 options and 11 levels, past its README's stated budget; the crate's builder stops at TypeSafe's 255 and 10 regardless, so the stricter of the two bounds applies. A malformed body is a 400 with a FastAPI `detail`. The run reported it as `Error::Http` with the body; the crate now reports it as `Error::InvalidRequest { status: 400, .. }`, the same variant as TypeSafe's 422, with the message read from `detail` (or `error`, which the shim under `examples/laya/` sends), and still not retried.
 
 ## What the benchmark measured
 
@@ -461,7 +483,7 @@ The numbers also say what the card says about the model. Mean answer probability
 
 Latency, per five-question case on four CPU cores, warm, with nothing else running: p50 2.1 s, p95 2.2 s. During the full run, which shared the cores with the build gate and a second server, it was p50 4.1 s and p95 6.2 s; the run is I/O-free, so the difference is CPU contention. The card's tens of milliseconds are on a T4.
 
-The 40-case sample committed with the example was recorded from the same server into `examples/typed-decisions/recordings/`; replaying it offline produces the identical report (accuracy 0.725 on 200 questions, the same to every digit as the live run that wrote it), which is the recording round trip checked at benchmark scale rather than on one request.
+The 40-case sample committed with the example was recorded from the same server into `examples/typed-decisions/recordings/`; replaying it offline produces the identical report (accuracy 0.725 on 200 questions, the same to every digit as the live run that wrote it), which is the recording round trip checked at benchmark scale rather than on one request. The recordings hold none of Laya's extras (no `routing`, no `action`): the `Recorder` writes the decoded `Response`, and the crate that recorded them dropped what it did not model. A test (`the_committed_recordings_decode_and_rewrite_byte_for_byte` in `crates/judgment/tests/backend.rs`) checks that all 40 still decode, with no unknown answer and nothing in `Response::extra`, and write back byte for byte.
 
 ## What this does and does not establish
 
@@ -545,7 +567,11 @@ flowchart TD
 
 Every question references the state by backticked path (`alert.title`, `alert.component.owner`). The owner question's instructions change when a catalog component is present: they name `alert.component.owner` as the registered owner and say when to deviate.
 
-Answers are confined to what was asked. A Choice that names an option the question never offered is read as that question's no-match option (`none_of_these` for the owner, `none` for the dedup), and keys the question never offered are dropped from the distribution; a Score whose legend is not the four-level scale the question sent, or whose value falls off the end of that scale, is refused outright. Everything downstream therefore holds: the policy cannot attach to an incident that was not a candidate, and `judgments` in the [outcome contract](#the-outcome-contract) lists one row per option offered.
+Answers are confined to what was asked, and are checked twice: in the TypeSafe client, which holds every response against the questions it sent (`Response::verify` in the `judgment` crate) before signalman sees it, and again in `TriageQuestions::read`, for a response that did not come through the client (a recording replayed by `signalman eval --replay`, or one built by hand). A Choice that names an option the question never offered, as its choice or anywhere in its distribution, fails the triage; so does a Score whose legend is not the levels the question sent, or whose value falls off the end of their scale. The error names the question and the option or level, and carries TypeSafe's request id when the API sent one. No answer is read as the no-match option in its place ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md): an unknown option is an explicit error naming the question): reading an unoffered owner as `none_of_these` would route the alert on an answer the model did not give, and reading an unoffered incident as `none` would page someone on the strength of a duplicate that was never a candidate.
+
+The cost is stated plainly: in `serve`, a triage that fails this way leaves the alert with no tags and no note. What shows it is the `triage failed` error log line and `signalman.upstream.errors{service="typesafe",status="unfit"}`; the recovery is `signalman incidentio triage-alert <id>` by hand once the cause is known ([Operations](operations.md#failure-modes)). The CLI exits non-zero, the MCP `qualify_alert` tool returns a tool-level error with the client's message ([MCP](mcp.md)), and `signalman eval` records the case as failed and carries on.
+
+What stays tolerant: an offered option missing from a Choice's distribution reads as zero, and a distribution that does not sum exactly to 1 is not an error. Everything downstream therefore holds: the policy cannot attach to an incident that was not a candidate, and `judgments` in the [outcome contract](#the-outcome-contract) lists one row per option offered. The level text signalman sends on (the `impact_label` metadata of `--forward-to-incidentio`) is therefore its own `[triage.text] impact_levels` wording: the legend the model echoes is checked against it, so the echo cannot put other words there.
 
 ### Owner candidates
 
@@ -612,7 +638,7 @@ Output of `signalman triage examples/alerts/crashloop.json --json` against a moc
 ```json
 {
   "schema_version": 1,
-  "signalman_version": "0.3.0",
+  "signalman_version": "0.4.0",
   "decided_at": "2026-09-22T06:14:28.206474153Z",
   "time_to_qualify_seconds": null,
   "alert": {
@@ -885,7 +911,7 @@ A Choice answer carries both the probability of each option and a confidence, wh
 Every decision carries its typed judgments in [the outcome contract](#the-outcome-contract): the chosen option, the confidence, the full option list with probabilities, and the four-level impact distribution. The raw wire answers do not travel with it; only the [evaluation harness](evaluation.md) keeps those, under `--record`. That harness turns labelled alerts into accuracy, calibration and decision-agreement numbers. The loop:
 
 1. Collect alerts with the expected team, impact, actionability and action into a cases file.
-2. `signalman eval cases.jsonl --record runs/<model>`: one model call per case, every raw response kept.
+2. `signalman eval cases.jsonl --record runs/<model>`: one model call per case, every graded response kept, and a case whose answer did not fit listed as failed beside them.
 3. Read `conf|right` against `conf|wrong` per question and set thresholds in `[policy]`, higher for actions that are expensive when wrong.
 4. `signalman eval cases.jsonl --replay runs/<model>` to see the decisions under the new thresholds, without calling the model.
 5. Pin `typesafe.model` to the version recorded against in the same file and re-evaluate before moving to a new one.
@@ -944,7 +970,7 @@ The best labels are observed outcomes: the team that actually took the alert, th
 
 ```sh
 signalman eval examples/eval/cases.jsonl                       # call the model, print the report
-signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every raw response
+signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every graded response
 signalman eval cases.jsonl --replay runs/jev-1.13.0            # re-grade under the current configuration, no model call
 signalman eval cases.jsonl --json > report.json                # the full report, every case included
 ```
@@ -996,18 +1022,27 @@ Replaying the same recordings with `suppress_below = 0.55` in `[policy]` moved d
 
 Confidence is the Choice or Score confidence for those primitives and `max(p, 1 - p)` for a Noul. The JSON report adds per-question confusion tables, the decision confusion table, and every graded case with its full distributions.
 
+### An answer that does not fit
+
+The TypeSafe client checks every response against the questions it was sent (`Response::verify` in the `judgment` crate): an answer for every question, of the right primitive, a Choice naming only options it was offered, a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error, not an answer to grade. A live run does not stop there: one such case would otherwise throw away the rest of a run that has already been paid for. The case is listed under `failed` in the JSON report, and after the mismatches in the text report, with the error naming the question and the option or level, and TypeSafe's request id, when the API sent one, to report it with. It is not graded, so every figure above is over the graded cases, and `cases` counts only those. Under `--record` it gets no `<id>.json` (one an earlier run left there is removed, so it cannot be graded as this run's answer) and is listed instead in `failed.jsonl` beside the recordings, one case per line; the file is removed by a run in which nothing failed. A `--replay` of the directory over the same cases file reports those cases as failed again, rather than stopping at the missing recording. A case with neither a recording nor a line in `failed.jsonl` still stops a replay. Any other error (the network, the key, a case that does not parse) still stops the run. A report in which every case was graded has no `failed` key, so it reads as before.
+
+```
+failed (1), not graded: the answer did not fit the questions, so the figures above are over the 2 graded cases:
+  oom            answer "owner" names option "made-up-team", which its question does not offer [request_id req-…]
+```
+
 ## Tuning without re-running inference
 
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
 
 1. `signalman eval cases.jsonl --record runs/<model>` once per model version.
-2. Edit `[policy]` (or `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file.
+2. Edit `[policy]` (or the question and guidance wording in `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file. Not `impact_levels` or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
 3. `signalman eval cases.jsonl --replay runs/<model> --config candidate.toml` and compare decision agreement.
 4. Pin `typesafe.model` to the version recorded against, in the same file as the thresholds.
 
 Pick thresholds from the `conf|right` and `conf|wrong` columns per question: the automatic-routing threshold should sit above most wrong confidences, the human-triage threshold below most right ones. When the two means are close, no threshold will separate them and the fix is the question's wording or the state, not the number.
 
-Wording changes do need a new run: they change the request. Record each variant under its own directory and compare.
+Wording changes do need a new run to be measured: they change the request, and a replay reads the old answers under the new wording. Record each variant under its own directory and compare. A replay whose recordings no longer fit the questions (reworded levels, a renamed team) stops with an error naming the question; re-record rather than edit the recordings.
 
 ## Comparing models
 
@@ -1160,7 +1195,7 @@ The multi-value filter form is inferred from single-value examples and is unveri
 
 ## Errors
 
-`incidentio::Error` maps 401, 403, 404, 422 and 429 to variants carrying the `request_id` and, for 422, the field-level messages from the documented error body. `Retry-After` on 429 is honoured. Everything else is `Http` with the truncated body.
+`incidentio::Error` maps 401, 403, 404, 422 and 429 to variants carrying the `request_id` and, for 422, the field-level messages from the documented error body. The server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date) is honoured on any retried status, up to 30 s, and the backoff's jitter only ever shortens a wait. Everything else is `Http` with the truncated body.
 
 
 <!-- source: docs/changes.md -->
@@ -1308,7 +1343,7 @@ Each tool answers one question an agent asks during an investigation, and each m
 | `lookup_owner` | Catalog resolution for a component: its record, owner candidates, and the TechDocs runbook excerpt. Needs Backstage configured. | `signalman backstage lookup` |
 | `open_incidents` | Incidents currently open in incident.io, the dedup candidate list. | `signalman incidentio open-incidents` |
 
-Every tool in this table has `read_only_hint: true`. Every result carries the value as structured content (validated against the tool's declared output where one is fixed, such as `qualify_alert`'s [outcome contract](triage.md#the-outcome-contract)) and a short text summary, for a client that renders content instead of structured JSON. A tool that runs and fails (an unreachable upstream, a missing catalog entry) returns a tool-level error the client shows; a malformed request (both or neither of two mutually exclusive fields) is refused as a protocol-level error before anything runs.
+Every tool in this table has `read_only_hint: true`. Every result carries the value as structured content (validated against the tool's declared output where one is fixed, such as `qualify_alert`'s [outcome contract](triage.md#the-outcome-contract)) and a short text summary, for a client that renders content instead of structured JSON. A tool that runs and fails (an unreachable upstream, a missing catalog entry) returns a tool-level error the client shows; a malformed request (both or neither of two mutually exclusive fields) is refused as a protocol-level error before anything runs. A TypeSafe answer that does not fit the questions (an owner or an incident the question never offered, a Score off its scale) is one of those tool-level errors: `qualify_alert` returns a tool-level error carrying the client's message (after `qualify_alert: ` for `alert_id`, after `qualify_alert: TypeSafe call failed: ` for an inline `alert`), which names the question and the option or level and ends with ` [request_id …]` when TypeSafe sent one. It fails there, in the client, rather than while reading the answer, and nothing is written ([Triage](triage.md#which-questions-are-asked)).
 
 ## Writing
 
@@ -1472,6 +1507,8 @@ Secrets are environment only. The file schema has no key for them; `api_key = �
 | `SIGNALMAN_CHANGES_TOKEN` | the [change feed](changes.md); unset leaves `POST /changes` unrouted | any long random string, given to the delivery tools that post changes |
 | `SIGNALMAN_MCP_TOKEN` | the [MCP server](mcp.md#transports) over HTTP: `serve` mounts `/mcp` only when it is set; `mcp` with `transport = "http"` fails at start-up without it | any long random string, given to the agents' MCP client configuration; a different secret from the two above |
 | `OTEL_EXPORTER_OTLP_HEADERS` | the OTLP exporter, when the collector needs a token or key ([Observability](observability.md#configuration)) | `key=value,key2=value2`, for example `authorization=Bearer …`; read by the exporter itself, never by `src/config.rs`; the per-signal `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` work the same way |
+
+`TYPESAFE_API_KEY` is trimmed before use, so a trailing newline from a key file or a `Secret` is fine. A key with whitespace inside it, a control character, a non-ASCII character or a byte-order mark is refused at start-up with an `InvalidApiKey` error naming the variable and what is wrong, as the Python SDK (0.7.1) refuses it; a blank one reads as unset. The key itself is never printed.
 
 Secrets are marked sensitive in HTTP headers and redacted from the `Debug` output of every client. In Kubernetes they come from a `Secret` through `envFrom`; see [Operations](operations.md#kubernetes).
 
@@ -1640,7 +1677,7 @@ The response is `200` when every upstream answered and `503` otherwise, with the
 }
 ```
 
-`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. The TypeSafe error text ends with `[request_id …]` when the API sent an `x-typesafe-request-id`, as incident.io's does with the request id from its error body: the id to quote to that vendor's support. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
 
 Two settings shape the probe, both under `[server]` with the usual layers and no flags ([Configuration](configuration.md#server)):
 
@@ -1785,7 +1822,7 @@ The same line carries `outcome`: [the outcome contract](triage.md#the-outcome-co
 
 signalman installs one subscriber with the human-readable `tracing` text formatter (and, when an OTLP endpoint is set, the OpenTelemetry layer beside it, which changes nothing in the log); there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
 
-Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
+Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. An answer of a kind the judgment crate in this build does not know logs `answer of a kind this client does not know; kept as Answer::Unknown` at `warn`, once per such answer, inside the `typesafe.evaluate` span, with `question` (the answer's key: the question id, or whatever key the server sent for an answer to a question that was not asked) and `kind` (TypeSafe's `type` for it), both escaped and cut to 64 characters. It means TypeSafe answers with a primitive this build cannot read, and upgrading judgment, which is a new signalman build, is the remedy; the failure-mode table below says what happens to the triage meanwhile. A spent retry budget logs `retry budget spent; returning the last failure` at `warn`, with the attempt, the wait it refused, the time elapsed and the budget; only a client given a budget logs it, and signalman sets none. Catalog enrichment details are at `debug`.
 
 ## Failure modes
 
@@ -1799,6 +1836,8 @@ Each row says what the operator sees and whether the hub's retry, a manual re-ru
 | Component not in the catalog | triage continues with all team groups as candidates |
 | Backstage transport or auth error | triage fails and is logged; the alert stays untagged |
 | TypeSafe or incident.io error in the flow | logged at `error`; alert stays untagged; no retry because the delivery was already acknowledged |
+| TypeSafe returned an answer kind this build does not know | the `warn` line above, naming the question and the kind; an answer under an id signalman did not ask is kept and the triage goes on; under an asked id the client refuses the response (`AnswerTypeMismatch`, counted as `status="unfit"`), the triage is logged at `error` and leaves the alert untagged, as in the row above; upgrade judgment (a new signalman build), then re-run with `incidentio triage-alert` |
+| TypeSafe answered outside the questions (an option not offered, a legend not the levels sent) | logged at `error` as `triage failed`, the message naming the question and the option or level and ending with TypeSafe's request id when the API sent one; the alert stays untagged with no note, and nothing is paged or suppressed; `signalman.upstream.errors{service="typesafe",status="unfit"}` counts it; the call is not retried (it was billed); recover with `signalman incidentio triage-alert <id>`, and report the request id, if any, to TypeSafe |
 | Notification fails | logged at `warn`; tags and attachment stay |
 | Process restart | the in-memory `webhook-id` set is lost; a resend within the window is processed again; tag adds are idempotent |
 
@@ -1851,7 +1890,8 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 | `triage.flow` | `Triager::triage_alert`: enrich, ask, decide, write back | `alert_id`, `decision` (recorded at the end) |
 | `incidentio.write_back` | the tags, attachment, note and notification writes; absent on a dry run | `tags` (count), `attach`, `note` (booleans) |
 | `incidentio.get_alert`, `incidentio.list_incidents`, `incidentio.list_firing_alerts`, `incidentio.add_alert_tags`, `incidentio.attach_alert`, `incidentio.list_alert_notes`, `incidentio.create_alert_note`, `incidentio.update_alert_note`, `incidentio.send_alert_event`, `incidentio.identity` | one per incident.io call | the call's identifiers (`alert_id`, `max`, and so on); never the body |
-| `typesafe.evaluate`, `typesafe.list_models` | one per TypeSafe call | `model`, `input_tokens` (recorded from the response) |
+| `typesafe.evaluate` | one per TypeSafe evaluation | `model`, `input_tokens` (recorded from the response; zero when the server reports none), `request_id`: the last attempt's `x-typesafe-request-id`, recorded on success, on an HTTP error and on a body that does not decode; absent after a transport failure or when the API sends none |
+| `typesafe.list_models` | one per TypeSafe model listing (the readiness check) | `request_id`, as on `typesafe.evaluate` |
 | `backstage.enrich`, `backstage.notify_owner` | catalog resolution and the owner notification | `hints`; `owner` |
 | `readiness.check` | one per uncached `GET /readyz`, wrapping the upstream calls (`typesafe.list_models`, `incidentio.identity`, the Backstage query) | none |
 
@@ -1859,7 +1899,7 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 
 `triage.background` is not a child of `webhook.receive`. The receiver answers `202` and the request span ends, while the triage runs on for seconds. The triage span therefore *follows from* the request span, which OpenTelemetry renders as a span link: the trace of a delivery links to the trace of its triage, and a backend that shows links lets you cross from one to the other. The two are separate traces.
 
-Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly.
+Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly. The TypeSafe `request_id` is TypeSafe's own identifier for the call, not a secret: it is what TypeSafe support asks for, so a trace of a surprising decision leads straight to the call behind it. A value that is empty, not printable ASCII, or longer than 256 bytes is ignored rather than recorded.
 
 ## Metrics
 
@@ -1871,7 +1911,7 @@ Names are OpenTelemetry dotted names with a unit. A Prometheus exporter renders 
 | `signalman.triage.duration` | histogram | `s` | `decision` | from the start of the triage to its decision and write-back done |
 | `signalman.alert.time_to_qualify` | histogram | `s` | `decision` | from the alert's creation in incident.io to signalman's decision; recorded only when the alert carried `created_at` |
 | `signalman.typesafe.tokens` | counter | `{token}` | `model`, `direction` (`input`, which is billed, or `output`) | TypeSafe token usage |
-| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, or `transport`) | every failed attempt, retried or not, counted in the shared retry loop |
+| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, `transport`, or for `typesafe` `decode` and `unfit`) | every failed attempt, retried or not, counted in the shared retry loop; a 2xx the TypeSafe client could not use is counted by the client as `decode` (the body did not decode) or `unfit` (the answers did not fit the questions sent), neither retried |
 | `signalman.webhook.deliveries` | counter | `{delivery}` | `result` (the `webhook.receive` values) | what the receiver did with each delivery |
 | `signalman.triage.inflight` | observable gauge | `{triage}` | `state` (`running` or `queued`) | this replica's in-flight triages, read at each export; registered by `serve` only |
 
@@ -1947,9 +1987,10 @@ mise tasks          # everything below
 
 | Task | What it runs |
 |---|---|
-| `check` | `fmt:check`, `lint`, `test`, `doc`, `docs:check`, in CI order |
+| `check` | `fmt:check`, `lint`, `check:minimal`, `test`, `doc`, `docs:check`, in CI order |
 | `fmt` / `fmt:check` | `cargo fmt --all` / with `--check` |
 | `lint` | `cargo clippy --all-targets --all-features` with `RUSTFLAGS=-D warnings` |
+| `check:minimal` | `cargo check -p judgment --no-default-features --all-targets`: the judgment crate and its tests without the `http` feature |
 | `test` | `cargo test --all-features` |
 | `doc` | `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS=-D warnings` |
 | `docs:check` | frontmatter on `README.md` and `docs/**`; `docs/llms.txt` and `docs/llms-full.txt` match the nav and frontmatter |
@@ -1966,13 +2007,15 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the libraries carry: the crate-level walkthroughs in `src/lib.rs` and `crates/judgment/src/lib.rs` are `no_run`, so they compile against the public API on every test run without an API key; the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys; and the `RetryPolicy` example in `crates/judgment/src/http.rs` builds a policy with a budget by struct update, which pins that the struct stays constructible that way. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
-The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and nothing in the default gate exercises that configuration. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
+The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and `mise run check` and CI run it as `check:minimal`. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
 
-The one exception to "tests never reach the network" is `crates/judgment/tests/live.rs`: every test there is `#[ignore]`, so the gate never runs it, and `cargo test -p judgment --test live -- --ignored` runs it by hand against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) is the record of one such run. The crate's `typed_decisions` example is the same idea at benchmark scale.
+The exceptions to "tests never reach the network" are two targets whose tests are all `#[ignore]`, so the gate builds them and never runs them. `crates/judgment/tests/live.rs` runs by hand with `cargo test -p judgment --test live -- --ignored` against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) is the record of one such run. The crate's `typed_decisions` example is the same idea at benchmark scale. `crates/judgment/tests/openapi_drift.rs` is the second: one ignored test that needs only the network (no key, no server of your own), described below.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
+
+The TypeSafe OpenAPI document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json`, a copy of <https://api.typesafe.ai/openapi.json>, and it is never hand-edited. `crates/judgment/tests/contract.rs` validates against it every request shape the crate's builders produce (with the method, path, content type and bearer scheme the document names, and against a closed copy of the request components, since the published schema closes no object and would take a misspelt optional field as an extra key), every `Fake` response and every committed recording, and pins each place the crate and the schema disagree at its own path, except an answer of a kind the document does not name, which the discriminator-mapping check catches instead; `tests/typesafe_contract.rs` does the same for signalman's own traffic: the triage request for every example alert, the shared TypeSafe mocks in `tests/common/` and the committed Jev run. Both run offline in the default gate. The copy goes stale only when TypeSafe publishes a new document, and `cargo test -p judgment --test openapi_drift -- --ignored` says so, naming the paths and schemas that differ. `JUDGMENT_OPENAPI_WRITE=1 cargo test -p judgment --test openapi_drift -- --ignored` refreshes it, written canonically (sorted keys, final newline, which `contract.rs` checks) so the diff is only the contract's change. Review a refresh by rerunning `cargo test -p judgment --test contract`: a pinned gap the new document closes fails at its own path, and every request, Fake and recording is checked against the new schemas.
 
 `docs/llms.txt` and `docs/llms-full.txt` ([llmstxt.org](https://llmstxt.org)) are generated the same way, by `scripts/gen-llms-txt.sh` from the `mkdocs.yml` nav and each page's frontmatter: one line per page with its title and description, in nav order, top-level pages first and each nav group as its own section, linking the raw Markdown on the default branch; the full file concatenates the pages. A page opts out of both with `llms: false` in its frontmatter, which only the decision-record template does. `docs:check` regenerates both into a temporary directory and fails when the committed files differ, so a new page, a changed description or a nav edit cannot leave the index stale; a page under `docs/` that the nav does not list fails the check too. `mise run docs:llms` rewrites them. The script is POSIX `sh` and `awk`, like `check-frontmatter.sh`, so it needs nothing `mise install` does not already provide.
 
@@ -2000,14 +2043,20 @@ flowchart TD
 ```
 crates/judgment/   the judgment crate (decision 0010): the typed client, reusable on its own
   src/client.rs    TypeSafe HTTP client
-  src/http.rs      shared retry loop, backoff, Retry-After (the other clients use it too)
+  src/http.rs      shared retry loop, backoff, the server's wait (the other clients use it too)
   src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
-  src/answer.rs    Answer wire shape, Probability/Confidence, typed views
+  src/answer.rs    Answer wire shape, Probability/Confidence, typed views, Response::verify
   src/error.rs     TypeSafe-side error enum
   src/backend.rs   SystemOne: the trait; Client, Fake, Recorder and Replay implement it
   src/eval/        recordings, one Judgment per answer and label, per-question metrics
   src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
   tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
+  tests/spans.rs   what the client records on its spans, through a capturing layer
+  tests/observer.rs what the client reports to the global observer; a target of its own
+                   because the global observer is set once per process
+  tests/contract.rs requests, Fakes and recordings against the vendored OpenAPI document
+  tests/openapi_drift.rs ignored: the vendored OpenAPI document against the live one (network only)
+  tests/fixtures/  the vendored typesafe-openapi.json (written only by openapi_drift.rs) and models.json
   tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
   examples/        typed_decisions.rs replays the typed-decisions benchmark; typed-decisions/ holds a sample and the export script
 src/               the signalman application, depending on judgment by path
@@ -2022,7 +2071,7 @@ src/               the signalman application, depending on judgment by path
   config.rs        configuration layers: file schema, env, flags, resolve
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
-tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers, the committed schema)
+tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers and model list, the committed schema); tests/typesafe_contract.rs checks signalman's TypeSafe requests and mocks against the vendored OpenAPI document
 examples/          sample alerts and a sample webhook delivery
 docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
 scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh, incidentio-create-key.sh
@@ -2119,7 +2168,6 @@ GitHub Actions has never run in this repository: every job is refused at schedul
 
 ## Smaller known gaps
 
-- `Retry-After` in HTTP-date form falls back to backoff.
 - The in-memory `webhook-id` set does not survive restarts; tag adds are idempotent, so the consequence is a repeated model call.
 - Without Backstage, the built-in fallback team list encodes one organisation's ownership model; `[[triage.teams]]` in the configuration file replaces it, and `[triage.text]` the impact rubric, but both remain guesses until tuned on real alerts.
 
@@ -2264,7 +2312,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
-A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
+A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
 
 ## Failure containment
 
@@ -2276,9 +2324,10 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | Component not in the catalog | Enricher | Every catalog group whose `spec.type` is in `backstage.group_types` becomes a candidate, capped at 24; the triage continues. The compiled team list is used only when no catalog is configured at all |
 | Backstage transport or auth error | Enricher | The triage fails and is logged; the alert stays untagged. A token without the `techdocs` plugin only loses the runbook, at `warn` |
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
+| TypeSafe answer does not fit the questions | Client (`Response::verify`) | Triage fails and is logged; alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |
-| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
+| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with backoff jittered downward; the server's wait honoured up to 30 s |
 | OTLP collector down or slow | OpenTelemetry SDK, on its own thread | The SDK logs a warning; no triage waits on export or fails because of it |
 
 The receiver acknowledges before the flow runs, so an upstream failure never causes incident.io to redeliver. That is deliberate: a redelivery would re-run the model on the same alert. The cost is that a failed triage needs the `incidentio triage-alert` command to retry by hand.
@@ -2494,6 +2543,253 @@ C4Component
 ## Where the model boundary sits
 
 Only `TriageQuestions` and the TypeSafe client know the model exists. `Policy` receives typed answers; `Triager` receives a `Decision`; `Outcome` carries probabilities but never calls anything. Replacing the model, or adding a question, touches `questions.rs` and the policy field that reads it, nothing else. The MCP server sits on the other side of `Triager`: it can start a dry-run triage and replay an `Outcome`, and it cannot reach a question or an answer directly.
+
+
+<!-- source: docs/research/open-system-one-models.md -->
+
+
+# Open System One models
+
+signalman depends on one hosted model, Jev, through one wire shape, `POST /v1/systemone`. Two decisions keep coming back: whether to keep paying for and depending on that model, and how to write questions and thresholds that survive a change of model. Both need facts about the field rather than opinions, and the field moved fast enough in September 2026 that the facts were spread across a leaderboard, a news tracker and one project's README. This page pulls them into one place and says what each one changes for this project. It is a research note, not a decision record: it feeds [decision 0002](../decisions/0002-calibrated-judgments-over-generated-text.md), [decision 0010](../decisions/0010-extract-the-judgment-core-into-a-crate.md) and the roadmap items on evaluation and self-hosting, and it is meant to be re-read when a provider choice comes up.
+
+Sources, read on 2026-09-25:
+
+- The [Jev Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index), a community leaderboard and news tracker maintained by multimodalart (apolinario), edition 0.2 of 2026-09-24: nearly fifty open reproductions plus Jev 1.13.0 on one frozen suite, with a [methodology](https://huggingface.co/spaces/multimodalart/jev-decision-index/blob/main/methodology.html) page and the [build scripts](https://github.com/apolinario/decision-index). Unofficial and not affiliated with TypeSafe.
+- The [Laya repository](https://github.com/NandhaKishorM/laya) (Convai Innovations, Apache 2.0), README at 0.3.20, its [documentation site](https://nandhakishorm.github.io/laya/) and the [typed-decisions dataset](https://huggingface.co/datasets/LocalLLaMA/typed-decisions).
+- This project's own runs: [Laya as a model provider](../laya.md) (2026-09-21, zero-shot on three alerts) and [judgment against Laya typed-decisions](../judgment-laya-typed-decisions.md) (2026-09-24, the crate against the fine-tuned checkpoint on its benchmark).
+
+Numbers from the first two are as published by their authors; nothing on this page was re-measured except where the third source says so. Confidence in each conclusion is stated where it is less than high.
+
+## The landscape in one paragraph
+
+Jev's interface is public and simple: a state, typed questions, one pass, a probability per option. Its weights, its training method (RLCD, reinforcement learning for calibrated decisions) and its data are not. Within a week of the launch the open community had rebuilt the interface three ways, and the tracker lists over sixty artifacts. **Parallel constrained decoding** prefills the state once on a stock language model and reads every option's logit in one batched pass: no new weights, Jev's shape and speed, none of its training. **Diffusion language models** (DiffusionGemma) are patched to fill the typed slots of a schema in parallel. **Trained heads and fine-tunes** put a scoring head on a frozen backbone, LoRA or fully fine-tune a 0.6B to 35B decoder, or train a small encoder from scratch; Laya is in this group. The tracker's own summary of what is still not in the open, as of its 2026-09-24 snapshot: TypeSafe's weights, the RLCD algorithm, and any open model matching Jev's calibration claims. The best open scorers reach about 90% agreement with Jev on TypeSafe's public cases (Bespoke Nimble), and the independent studies (jev-on-a-laptop, snapjudge) find that a stock model's softmax over option logits does not reliably flag its own errors.
+
+## What the Decision Index measures, and why its rules matter here
+
+The index is the first apples-to-apples comparison, and its rules are a better evaluation method than the one this project has. Edition 0.2 runs 40 static benchmarks in five equal-weight areas (knowledge and reasoning, language understanding, retrieval and classification, tools, arts) over 121,057 requests, every model answering byte-identical requests on one 96 GB GPU, Jev over its hosted API. The headline is chance-corrected: each benchmark's score is mapped to (score − chance) / (1 − chance) before averaging, so a yes/no benchmark no longer hands out fifty free points and 0 means guessing. Calibration is measured on 32 benchmarks as the probability placed on the chosen option against whether it was right.
+
+The hard rules are the part to copy. No truncation: a request the model's context cannot hold is recorded as unsupported, never shortened. No label filtering: the full option set is offered, so a model that caps options at 26 letters loses those rows. No prompt tuning: each entrant runs its own published inference code. No correctness-based retry: transport errors retry twice, a valid wrong answer never. Native abstentions stand. Everything is recorded: state, questions, native output, mapped answer, probabilities, errors and synchronised wall time, with model load and warm-up excluded. Answer gaps are mined into one line per cause and shown next to the score, so a model that refuses 12% of requests because it supports 26 options is ranked on what it answered and labelled with what it did not.
+
+Jev 1.13.0 on that suite: skill index 51.7 (raw accuracy 63.9), calibration accuracy 0.739 at mean confidence 0.812, ECE 0.074, median 253 ms and p95 437 ms over HTTPS. Per area its ECE ranges from 0.02 on tool selection to 0.15 on retrieval and classification, which is the kind of question signalman asks. A separate study on the tracker (jev-ood-calibration) refit a temperature of 2.7 on 900 rule-generated tickets Jev cannot have seen, against 0.96 to 1.35 on public benchmarks, and found Choice and Score over-confident and the boolean primitive under-confident out of domain. Alert triage is out of domain.
+
+## The leaderboard, read for this project
+
+The full board has nearly fifty rows; these are the ones that inform a decision here. Skill is the chance-corrected index (Jev 51.7); ECE and accuracy are the calibration sample; latency is in-process on the index's GPU, not comparable with Jev's network figure.
+
+| Model | Kind | Base and size | Skill | ECE | Acc. | Median ms | Weights |
+|---|---|---|---|---|---|---|---|
+| AutoJev-27B | full fine-tune | Qwen3.8-27B | 50.9 | 0.018 | 0.730 | 105 | open |
+| Surogate Rune 26B-A4B | full fine-tune, MoE | Gemma-4-26B-A4B | 47.2 | 0.171 | 0.695 | 680 | open, GGUF |
+| Decider chat | inference technique | stock Qwen3.6-27B | 46.1 | 0.021 | 0.697 | 918 | none needed |
+| Jevfire | inference technique | stock Qwen3.8-27B | 45.7 | 0.052 | 0.689 | 78 | none needed |
+| Winnow-12B | LoRA | Gemma-4-12B | 45.1 | 0.168 | 0.670 | 49 | open |
+| Decider 35B-A3B | full fine-tune, MoE | Qwen3.5-35B-A3B | 43.5 | 0.023 | 0.696 | 99 | open |
+| Decision 1.0 Lux | head and adapter | Qwen3.5-9B | 39.0 | 0.076 | 0.664 | 47 | open |
+| Xor | full fine-tune, multimodal | Qwen3.6-35B-A3B | 38.8 | 0.015 | 0.709 | 180 | open |
+| Bespoke Nimble 9B v2 | LoRA, open data and recipe | Qwen3.5-9B | 36.7 | 0.024 | 0.643 | 76 | open |
+| Decider 4B | full fine-tune | Qwen3.5-4B | 36.6 | 0.084 | 0.649 | 23 | open |
+| Kev 9B | LoRA and head, train-it-yourself | Qwen3.5-9B | 35.4 | 0.138 | 0.652 | 52 | open |
+| Tev1-4B | supervised fine-tune, hosted at Together | Qwen3.5-4B | 26.3 | 0.104 | 0.635 | 31 | open |
+| Decision 1.0 Kai | encoder, multilingual | mmBERT-base, 308M | 7.0 | 0.185 | 0.358 | 30 | open |
+| Laya | encoder | ModernBERT-large, 421M | 5.5 | 0.140 | 0.377 | 18 | open |
+| Verdict (heman10x) | encoder with an abstain option | GLiClass ModernBERT, 151M | 1.8 | 0.154 | 0.369 | 11 | open |
+
+Five readings.
+
+1. **Jev is matched, not beaten, and only at 27B.** AutoJev-27B reaches 50.9 against Jev's 51.7 with a better ECE. Everything within ten points of Jev is a 12B to 35B model. That size class needs a data-centre GPU, which is not a cost this project's alert volume justifies.
+2. **A stock model with the decoding trick gets 90% of the way.** Decider chat and Jevfire train nothing and score 46. The interface is the easy part; the last five points and the calibration are what training buys.
+3. **Calibration is independent of accuracy, and open models can beat Jev at it.** Decider, Xor, AutoJev and Nimble sit at ECE 0.015 to 0.025 against Jev's 0.074. Calibration comes from a fitting step on held-out data, not from the base model, and the best of them (Hopper) sets a temperature per option count, state length, answer type and entropy without changing the answer. This is the strongest argument that thresholds belong to a model version, not to a question.
+4. **Small models land at 25 to 37, encoders below 10.** A 4B decoder fine-tune (Decider 4B) is a plausible self-hosted engine for a narrow domain; a 421M encoder is not a general engine at all. Laya's 5.5 on this index and its 0.766 on the benchmark it was fine-tuned for are the same fact from two sides: capability comes from fine-tuning on the target distribution, and none is left over for anything else.
+5. **Option caps are the most common failure.** JevK5, SemIf, Tev1, reflex, Solomon and mini-jev refuse 12% to 23% of the suite because they answer with one of 16 to 26 letters or accept 2 to 8 options. Nimble v2 raised its cap to 255 and moved up. Abstention is the other way to lose rows: the Verdict on the board chose its own abstain option on 47% of requests, and the index counts that as unanswered. Any question whose option list can grow (owners from a catalog, candidate incidents) has to be capped in code before the wire, whatever the model.
+
+Two rows deserve a note because they change the provider question. **meraGPT Decider 1** is a proprietary hosted model that tops the typed-decisions dataset's own leaderboard at 0.768 with a Brier of 0.052 against Jev's 0.727 and 0.148, answers `/v1/systemone` at meragpt.com at $0.03 per million input tokens, and is not on the Decision Index. **Tev1-4B** is served on Together's serverless at $0.042 per million tokens, Jev's list price, with the data recipe published. Either is a second hosted provider on the same wire; neither has been tried here.
+
+## Laya, precisely
+
+Laya is a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass, trained with RLCD against strictly proper scoring rules (log, spherical and ranked probability). Three checkpoints: English (512-token context), multilingual (mmBERT-base, 322M, 1,024 up to 8,192) and typed-decisions (English, fine-tuned). A `Router` picks by script and language before the forward pass, because the English checkpoint scores 0.000 on Khmer at 0.952 confidence: the model's own confidence gives no warning, so the routing decision cannot come after inference. Published speed is 33 ms per question on a T4 and 7 ms per question batched; this project measured 2.1 s per five-question request on four CPU cores.
+
+What its README documents that a consumer must know, each confirmed against an issue number or a measurement:
+
+- **Options share a token budget** of 192 (English) or 256 tokens; at 77 options each label gets three or four tokens and accuracy collapses (Banking77 0.425 against Jev's 0.870). Past about 20 options, raise the budget, shortlist with embeddings first (`predict_shortlist`), or split the question.
+- **Boolean-word labels are unsafe.** Choice keys are rendered verbatim, and `true`/`false` or `yes`/`no` keys can be followed instead of the descriptions. Use semantic or opaque keys.
+- **Negation is not made safe by semantic labels.** Four of four negated cancellation requests chose `cancel_account` on the English checkpoint (issue 377).
+- **Noul can follow its option labels instead of the state** on the English checkpoint (issue 156). The `labels` override and explicit `true`/`false` criteria are the workaround.
+- **Score is the weakest primitive** (SST-5 0.372), and the multilingual checkpoint rarely picks the first level.
+- **`act_probability` carries no signal** (AUROC 0.30); gate on `confidence` (0.77) or on the answer's probability.
+- **Both base checkpoints are over-confident as shipped.** One temperature per question type and option count, fit on held-out data, moves ECE from 0.466 to 0.081. The multilingual checkpoint ships with no temperatures at all. At load, temperatures outside 0.5 to 5 are clamped with a warning; the typed-decisions checkpoint triggers that warning for Choice questions with eleven or more options.
+- **Fine-tuning is where the value is.** The base checkpoints sit below the majority-class baseline on typed-decisions (0.36 against 0.46); the fine-tune reaches 0.766 in four to five hours on Kaggle's free two T4s from 1,200 cases. A worked browser-agent example goes from 0.10 to 0.66 top-1 among 45 candidates on one 16 GB GPU.
+
+What it ships that this project can use: `laya-serve`, the wire-compatible server this project tested; prediction hooks (audit logging, redaction before inference, caching) that run inside the server rather than in every client; workflow presets, including `triage_questions` for support tickets, which are a reference for how the authors phrase questions; an MCP server exposing decisions as tools; ONNX and Apple-silicon runtimes from the community; and the fine-tuning notebook that fits temperatures as part of the loop.
+
+## What this changes for signalman
+
+### Provider portability is the asset; keep it
+
+The field converged on Jev's wire. More than a dozen of the projects on the tracker serve `/v1/systemone`, two of them as hosted APIs. That makes the choice of model a configuration and evaluation decision, not a code one, as long as the client stays generic. The `judgment` crate is that client, and the Laya run proved it drives a second implementation unchanged. The recommendation is to protect that property deliberately: no provider-specific field in the crate's public types, backend limits (option cap, level cap, context) expressed as data the caller can read rather than constants, and the `SystemOne` trait as the only seam. A second consequence is cheap resilience: a hosted fallback provider on the same wire is a `base_url`, a `model` and a threshold profile away, and is worth more than a self-hosted model for an alert path that must not stall when one API is down.
+
+### Self-hosting is a residency decision, not a cost decision
+
+The economics do not favour self-hosting for alert triage. An alert request is on the order of a thousand input tokens; at Jev's $0.042 per million that is well under a hundredth of a cent per alert, or about half a dollar a day at ten thousand alerts. Jev's 253 ms median is far inside an alert's budget. A GPU able to run a 9B model costs more per day than the API at that volume, and a 27B-class model that actually matches Jev needs a 96 GB card. The two reasons that can still justify self-hosting are data residency (alert text, which carries hostnames, customer identifiers and sometimes secrets in messages, leaving the network) and provider risk. Both are policy inputs, and the page should be re-read with the actual volume and the actual policy when the question is asked.
+
+If residency or risk does force it, the candidates in order: a fine-tuned Laya (CPU-capable, Apache 2.0, seconds per alert, the cheapest to run, but needs labelled alert history to fine-tune and stays weak outside what it was tuned on); a 4B to 9B decoder with an open recipe (Decider 4B, Bespoke Nimble, Kev: better breadth, calibration in the 0.02 to 0.08 range, needs one mid-range GPU); a 27B model only if the volume is shared with other workloads. Every path starts with the same prerequisite, labelled history in the [evaluation harness](../evaluation.md), which is why the roadmap orders it first.
+
+### Question design rules the field confirms
+
+signalman's questions were written from TypeSafe's guidance. The open reproductions, being weaker, expose which rules carry the most weight, and each of these is checked against the current questions:
+
+- **Cap dynamic option lists in code.** Owner candidates and duplicate candidates are dynamic Choices. Jev takes 255 options; most open models take 16 to 26 and Laya degrades past 20. Backstage enrichment caps owner candidates at 24 (`DEFAULT_MAX_CANDIDATES` in `src/backstage/enrich.rs`) plus the no-match option, 25 in all: inside Jev's limit and the 26-letter models, above the point where Laya's per-option token budget starts to bite. Related incidents are capped by the sync's own maximum. Passes for Jev; a smaller model wants the owner cap lowered to about 15, which is a setting, not a code change.
+- **No boolean-word keys.** The owner Choice uses team ids and `none_of_these`; the duplicate Choice uses incident ids and `none`. No key is a yes/no word. Passes.
+- **Every Choice has a no-match option.** Already a rule in this repository, and Verdict's conformal abstain set is the same idea from the other side. Passes.
+- **Phrase instructions positively.** Negation fails on small models. A pass over the question texts for "not", "no" and "never" in the instruction is cheap and worth doing when the texts are next edited.
+- **Score is the weakest primitive everywhere.** The impact Score has four levels and drives tags and the note. Laya scored it flat on the three example alerts. When labelled history exists, the first thing to measure is whether impact would be better as a Choice over the same four described levels; the wire cost is the same and a Choice reports a confidence the policy can use.
+- **Keep Noul criteria explicit.** The `NoulCriteria` type exists for this, since one checkpoint follows its option labels rather than the state when the criteria are absent. `actionable` names what yes and no mean; `caused_by_change` sends no criteria. Fails on one of two: the change question should describe both outcomes when the texts are next edited.
+
+### Calibration policy: thresholds belong to a model version
+
+Confidence is not one quantity. TypeSafe computes it from the spread of the distribution; Laya reports one minus normalised entropy under the same name and adds the answer's probability as `answer_confidence`; several open models report a temperature-scaled softmax. The policy's `attach_confidence` of 0.75 and `auto_route_confidence` of 0.70 were set against Jev and mean nothing against another provider until refit. Jev itself is over-confident out of domain by its own measured temperature. The rules that follow: the outcome document carries the model version (it does), thresholds are recorded with the version they were tuned on, the evaluation harness reports ECE per question and refuses to bless a threshold profile when the ECE at the threshold is above an agreed bound, and a change of `typesafe.model` is treated as a change of policy that needs a replay before it ships. A per-model threshold profile in the configuration, selected by the model name the response reports, is the mechanism; it is not built yet.
+
+### Evaluation method: adopt the index's rules
+
+The harness grades accuracy, Brier and ECE per question and decision agreement. Four things the index does that it does not: chance-corrected accuracy, so a yes/no question is not credited with fifty points; an answered rate with the refusal causes, so a provider that cannot take a question is visible rather than silently skipped; a frozen corpus with a content hash, so two runs are comparable by construction; and a paired comparison on identical requests when two models are compared, rather than two separate reports. The first two are small additions to `judgment::eval`; the third exists as the recording hash; the fourth is a reporting change. The Brier score should also be documented as the multi-class sum it is, since the benchmark and the model card use a different form and the numbers are not comparable.
+
+## What this changes for judgment
+
+- The crate is a client to a de-facto standard, and its value is that any of the servers above works with it. Keep it provider-neutral and test it against a second server on every release; the ignored live tests and the benchmark example exist for that.
+- Expose backend limits as data. A `Limits` value on the backend (maximum options, maximum levels, context in tokens) would let a caller shortlist before the wire and let the harness report a refusal as a gap rather than an error. Jev's 255 and 10 are the crate's constants today; a second backend wants its own.
+- Offer the answer's probability as a first-class accessor. Every open model and the benchmark grade on it; the crate's `Choice` and `Score` views make the caller compute it from the distribution. A method on the typed views removes that and makes the calibration numbers comparable across providers.
+- Keep unknown response fields. Done in judgment 0.2: top-level fields the crate does not model, such as Laya's `routing`, are kept in `Response::extra` and written back into recordings, so an operator can log which checkpoint answered without a second type change. Fields inside an answer, such as Laya's `answer_confidence` and `action`, are still ignored, as in the Python SDK; model them only when a consumer needs them.
+- Do not add batching, images or streaming on speculation. Two servers offer a batch endpoint and two accept images; neither is on the standard wire and no consumer here needs them.
+
+## Watch list
+
+Projects whose next release would change a conclusion above, with the reason to watch each:
+
+| Project | Why it matters here |
+|---|---|
+| [Bespoke Nimble](https://github.com/bespokelabsai/nimble) | The only fully open recipe (data curation included); 255 options; 90% agreement with Jev. The reference if a 9B self-host is ever built. |
+| [Decider](https://github.com/Mapika/decider) | Best calibration on the index across sizes; `pip install decider-ai`; a 4B checkpoint that fits one consumer GPU. |
+| [Kev](https://github.com/jaredpalmer/kev) | Train-it-yourself family with a Modal script; Kev-4B trains in 40 minutes on one H100. |
+| [Decision 1.0](https://huggingface.co/collections/llm-semantic-router/decision-10-6ab12177bd0002394d8409f9) | The vLLM Semantic Router team's encoders and decoders, 50 languages; Kai outscores Laya's base checkpoints. The multilingual alternative to Laya. |
+| [Hopper](https://github.com/hopit-ai/hopper) | A calibration map by option count, state length, answer type and entropy that never changes the answer: the design for a per-question-shape threshold profile. |
+| [Verdict](https://github.com/Manavarya09/verdict) (Manavarya09, not the one on the board) | Conformal abstention with a coverage guarantee, fit on the caller's labels in seconds on a CPU; runs in the browser via ONNX. The principled version of "none of these". |
+| [meraGPT Decider 1](https://meragpt.com/models/state-decider-1) | Hosted, same wire, tops the typed-decisions leaderboard, cheaper than Jev. The candidate second provider. |
+| [Laya](https://github.com/NandhaKishorM/laya) | The CPU-capable fine-tune path, the server this project tested, and the fine-tuning notebook that fits temperatures. |
+| [jev-benchmarks](https://github.com/AbdelStark/jev-benchmarks) and [jev-ood-calibration](https://github.com/scienthoon/jev-ood-calibration) | Independent calibration and selective-risk measurements of Jev itself; the latter is the evidence that Jev is over-confident out of domain. |
+
+## Open questions
+
+- **Jev's calibration on alerts is unmeasured.** Every number above is on public benchmarks or synthetic workflows. The out-of-domain temperature of 2.7 suggests the policy thresholds are optimistic; only labelled history can say by how much. Confidence: medium that the thresholds need lowering, low on the amount.
+- **Whether impact should be a Choice** is a measurement, not an argument; it waits on the same history.
+- **A second hosted provider has not been tried.** The crate would need no change; the policy would need its own threshold profile. Confidence that the wire works: high, given two independent implementations already do; on judgment quality on alerts: none, unmeasured.
+- **The Decision Index's interactive environments have not been run for any reproduction**, and its point estimates carry no confidence intervals yet (the changelog says bootstrap intervals are not calculated). Rankings within two or three points are not distinguishable.
+
+
+<!-- source: docs/research/system-one-client-libraries.md -->
+
+
+# System One client libraries
+
+The `judgment` crate was designed in one repository against one consumer. Between 2026-09-16 and 2026-09-25 about twenty-five other Rust crates for the same wire appeared on crates.io, TypeSafe's Python SDK reached 0.7.1, and a live OpenAPI document turned out to exist. Before spending more on the crate it is worth knowing what the field converged on, where judgment is ahead, and where it is behind. This page is that survey: every crate's source was read, not its README, and every claim about the official API was checked against the SDK reference or the OpenAPI document on 2026-09-25.
+
+The headline: the crate's architecture is confirmed, not contradicted. Three independent authors arrived at the same shape as judgment, typed keys that fix an answer's type, a backend trait with a fake behind it, and record-and-replay keyed by request content. What the field has that judgment lacks is wire hardening and parity with the official SDK: a request id on responses and errors, tolerance for answer kinds that do not exist yet, a contract test against the published schema, and the retry details the SDK documents. None of that is a reorientation. It is a 0.2, and it shipped as judgment 0.2.0 on 2026-09-25: [What shipped in judgment 0.2.0](#what-shipped-in-judgment-020) says how each ranked item landed.
+
+Sources: the crates listed below, downloaded from crates.io; [the Python SDK reference](https://docs.typesafe.ai/sdk/python/api.md) and [usage guide](https://docs.typesafe.ai/sdk/python/usage.md), [the JavaScript SDK reference](https://docs.typesafe.ai/sdk/javascript/api.md), [the HTTP API page](https://docs.typesafe.ai/api.md); and `https://api.typesafe.ai/openapi.json`, version 0.2.0. [Open System One models](open-system-one-models.md) covers the models; this page covers only the clients.
+
+## The field
+
+None of the Rust crates is official. TypeSafe's [SDK page](https://docs.typesafe.ai/sdk.md) lists Python and JavaScript only. One crate, `typesafe-io`, declares the official organisation's repository and a documentation page as its home; the crate is owned by an individual account, the documentation page does not exist, and the crate has no retries and no user agent. Treat the claim as false.
+
+The crates fall into five groups. Sizes are lines of Rust including tests; downloads are crates.io totals on 2026-09-25.
+
+| Crate | Lines (approx.) | Downloads | What it is | The one idea worth knowing |
+|---|---|---|---|---|
+| `typesafe-sdk-rust` (zchee) | 22,700 | 36 | A port of Python SDK 0.7.1 on hyper, 40% tests | Escapes and truncates every server string before it can reach a log; a tower `Service` transport so a recorder or proxy can sit under the retries |
+| `typesafe-client` (JedimEmO) | 6,900 | 59 | Typed keys and a `SystemOne` trait, the closest in spirit to judgment | Verifies the whole response against the questions before returning it, and tests its types against the vendored OpenAPI document |
+| `kunobi-jev` | 4,900 | 555 | The most downloaded; typed keys, per-call builder | A total timeout budget that shrinks each attempt and skips a retry that cannot fit; a credential provider asked per attempt; `Answer::Unknown` |
+| `typesafe-ai-sdk` (aoprisan) | 5,100 | 93 | SDK port with eleven examples and a REPL | Record and replay as "cassettes" keyed by the SHA-256 of the exact request body |
+| `typesafeai-sdk-community` | 10,900 | 74 | The largest feature set | A batch runner whose shared pacer pauses every task on one 429; a check that every backticked path in a question resolves in the state |
+| `typesafe-rs` (AbdelStark) | 4,000 | 22 | A `Backend` trait and OpenTelemetry-style span fields | A `conservative()` retry preset that does not retry 5xx or timeouts, because a retried POST is billed twice |
+| `system-one` (heyaozh) | 3,700 | 14 | Backend-agnostic with derive macros | A `Shadow` backend that sends every request to two backends and records both; `Replay::with_fallback`; a calibration report |
+| `systemone` (lu-zero) | 1,000 | 15 | Executor-agnostic on isahc | Choice option descriptions read from the enum's doc comments, by proc macro or by facet reflection |
+| `jev` (porky11) | 1,400 | 118 | Blocking client for hosted and self-hosted backends | A `Verdict::{Yes, Unsure, No}` view on a Noul; a documented evaluation of four backends |
+| `typesafe-jev` | 1,900 | 36 | Synchronous on ureq | An additive-increase, multiplicative-decrease concurrency limiter that halves on 429 or 529 |
+| the `typesafe-sdk-*` workspace (douglance) | 3,000 | ~200 each | Ten crates for one client | A real-socket test that the timeout covers a stalled body; environment read only through an injected `Process` |
+| `jev-rs`, `jev-bridge`, `zev-rs`, `jigor-cli` | 1,600 to 8,600 | 19 to 102 | Servers and bridges: the wire over a stock model's logprobs, an OpenAI-compatible API, a lexical scorer, local ONNX | Wire extensions: an OpenAI-shaped model list, a `debug` block, abstention sentinels, an `uncertainty` block, a `temperature` field, answers without `usage` |
+| `fuzzy-jev` | 5,400 | 44 | Jev through OpenRouter's decisions endpoint | The same request body at a different host; the response adds `id`, `provider` and `usage.cost` |
+
+Eleven more (`jev-sdk`, `typesafe-systemone`, `jevlin`, `typesafeai-sdk`, `typesafe-sdk`, `typesafe-rust-sdk`, `typesafe-ai-client`, `typesafe-api`, `sysone`, `gaise-provider-typesafe`, `a3s-apofasi`) are thin ports or wrappers whose one idea, where there is one, appears in the rankings below.
+
+Two facts about the population as a whole. Every crate that took the job seriously converged on the same three things judgment has: a typed key or handle that fixes the answer type (`typesafe-client`, `kunobi-jev`, `jevlin`), a trait over the wire with a scripted fake behind it (`typesafe-client`, `kunobi-jev`, `typesafe-rs`, `system-one`, `typesafe-jev`), and replay keyed by a hash of the request (`typesafe-ai-sdk`, `system-one`). Nobody has what judgment has in its `Observer` seam, its validated `Probability` and `Confidence` newtypes that refuse a bad value on deserialisation, its evaluation module wired to recordings, or a benchmark replay against a second implementation of the wire. Those are the parts to keep.
+
+## What the official sources say that the crate does not know
+
+This section and the ranking below describe judgment 0.1.0, the crate as it was surveyed; "the crate" means that release. What 0.2.0 changed is in [its own section](#what-shipped-in-judgment-020).
+
+The OpenAPI document at `api.typesafe.ai/openapi.json` is version 0.2.0, describes `POST /v1/systemone` and `GET /v1/models`, and is identical to the copy `typesafe-client` vendored on 2026-09-16. It settles several things the crate's rustdoc guesses at:
+
+- `GET /v1/models` is documented, with `ModelMetadata{name, description, release_date}`. The crate's note that the endpoint is "observed rather than documented" is wrong for the OpenAPI document, though the HTTP API page still omits it.
+- A Score level is a string, an object or an array, never null; the legend maps a level number to that same value. The fix made in [the Laya run](../judgment-laya-typed-decisions.md) is what the schema says. A Choice description may be null.
+- `instructions` is optional on every question type; the crate requires it. Score `criteria` has `minItems: 1`; the crate requires two, as the guidance recommends.
+- A 422 body is FastAPI's `{"detail": [{"loc", "msg", "type"}]}`. The crate keeps the body as text; it could name the field.
+- Nothing about 429, 529, `Retry-After` or a request id header is in the schema. Those are SDK behaviour, documented in the SDK reference and observed by every port.
+
+The Python SDK reference, 0.7.1, fixes the client behaviour the crate claims to mirror:
+
+- **Request id.** Every response and every API error carries `x-typesafe-request-id`. The exception carries status, body, headers, the endpoint without credentials and that id. The crate carries none of them, which is the first thing a support ticket asks for.
+- **Retry budget.** The policy has a `timeout` of 30 s per call, "including the initial attempt and delays", and "stops before a retry whose delay would reach or exceed the budget". Jitter is subtracted, never added. `Retry-After` and `retry-after-ms` are both honoured. The crate has no budget, symmetric jitter and reads delay-seconds only; its rustdoc documents each as a deviation, so the claim of SDK parity is a half-truth that should become either parity or a stated policy.
+- **Tolerance.** An answer whose `type` the SDK does not know is logged and skipped; `usage` fields are optional, "None when the API did not report it"; unknown fields are ignored. The crate, as of 0.1, fails the whole response on an unknown answer kind and requires `usage`. Every non-TypeSafe server in the survey exercised at least one of those: jigor returns no `usage`, zev adds answer fields, Laya adds three.
+- **Escape hatches.** Per-call `model`, `retry`, `timeout`, `extra_headers` and `extra_body` (shallow-merged, for fields such as `beam_width`), and `response_model` for a typed struct of answers. The crate has none of the per-call overrides and no way to send a field it does not know.
+- **Key hygiene.** The key is trimmed; an empty key, one with internal whitespace, control or non-ASCII characters is rejected before any request; an explicit empty key does not fall back to the environment. The crate filters blank keys and reports a bad one as a URL error.
+- **Gateways.** OpenRouter (`https://openrouter.ai/api`, model `~typesafe/jev-latest`) and Vercel's AI gateway (`https://ai-gateway.vercel.sh/typesafe`, model `typesafe-ai/jev`) are documented `base_url` targets. `fuzzy-jev` shows OpenRouter's response adds `id`, `provider` and `usage.cost`, so the tolerance above is what makes a gateway work.
+- **Confidence.** The reference gives the Choice confidence formula as approximately `(n·pmax − 1)/(n − 1)`, marked as a demonstration, and says a Noul has none. Useful for a `Fake` that wants realistic confidences; not a contract.
+
+## Ranked: what to change in judgment
+
+Each item names where the idea was seen, why it matters to this project, and the cost. The order is value per line of code.
+
+1. **Carry the request id.** `x-typesafe-request-id` on `Response`, on `Error::Http`, `RateLimited`, `Overloaded`, `InvalidRequest` and `Unauthorized`, and as a field on the client span. Seen in the official SDK and six crates. Cost: one header read in the retry loop, one field on the completed-response type. Do it first.
+2. **Decode tolerantly, validate strictly.** An unknown answer `type` becomes `Answer::Unknown(Value)` with a warning rather than a failed response, the known variants stay strict (kunobi's custom `Deserialize` is the pattern); `usage` and its fields default to zero when absent; unknown top-level fields are kept in a map so an operator can log Laya's `routing` or OpenRouter's `provider`. Seen in the SDK, kunobi, typesafe-rs, fuzzy-jev. Cost: small in code, but not additive: `Answer` was an exhaustive public enum, and under [Cargo's SemVer rules](https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new) a new variant on one is a major change, since a consumer's exhaustive `match` stops compiling. The same release should make the enum `#[non_exhaustive]` so the next kind is not.
+3. **Verify the response against the questions before returning it.** Every question id answered, every answer of the kind its question asked, every Choice key one of the options sent, every Score legend the levels sent. `typesafe-client` does this in the transport; judgment checks per handle, late, and only for the handles the caller reads. The same check makes `Fake` refuse a scripted answer that does not fit its question, which kunobi's fake does and which catches stale tests. Cost: one pass over the response, about sixty lines, and `Error::AnswerTypeMismatch` gains a sibling for an option outside the question.
+4. **Test against the OpenAPI document.** Vendor `openapi.json`, validate every request the builders produce and every response the `Fake` and the committed recordings hold against its schemas with a JSON Schema crate in dev-dependencies, and add an ignored live test that the vendored copy still matches the URL. This is exactly what signalman does for incident.io and what `typesafe-client` does for this wire. Cost: one dev-dependency, one test file, a copied JSON file.
+5. **Retry parity, stated.** Add `retry-after-ms` and HTTP-date `Retry-After` under the existing cap, make jitter one-sided, and add an optional total budget that skips a retry that cannot fit, off by default so no consumer's timing changes. Then the rustdoc can say which of the SDK's behaviours the crate matches and which it declines, rather than "mirrors" with footnotes. `typesafe-rs`'s `conservative()` preset, which does not retry 5xx because a retried POST is billed twice, is worth offering as a named policy for callers who prefer a failed triage to a doubled bill. Cost: medium, all in `http.rs`.
+6. **Per-call overrides and an extra body.** `model`, `timeout` and `retry` per request, and a flattened map of extra fields on `Request`, plus extra headers on the builder. The official SDK has all of them; jev-rs's `debug` block and zev's `temperature` are what a consumer would put there. Cost: small; `Request` grows three optional fields.
+7. **Fix the small things the schema shows.** `instructions` optional; 400 classified as `InvalidRequest` alongside 422 and 403 as its own variant, since jev-bridge returns 400 for a bad body; a dedicated `Error::InvalidApiKey` with the SDK's hygiene rules; parse the 422 `detail` list into field paths; correct the `/v1/models` note. Cost: trivial each.
+8. **Distribution helpers as pure functions.** `ranked()`, `margin()` between the top two, `top(n)` on a Choice; `probability_at_least(level)` on a Score; the probability of the reported answer as a method rather than a lookup. Seen in kunobi, typesafeai-sdk-community, typesafe-rust-sdk, jev. They are pure, they cost nothing, and signalman's policy and the benchmark example re-derive them by hand. jev-bridge's finding that order flips cluster where the top-two margin is at or below 0.24 is the kind of rule a policy wants `margin()` for. Cost: trivial. What stays out: a `decide(min_confidence)` that returns an option, a three-band verdict, a cost-matrix decision. Those are policy, and decisions 0002 and 0008 keep policy in the application.
+9. **Expose backend limits as data.** Maximum options, maximum levels and a context budget on the backend, so a caller can shortlist before the wire and the harness can report a refusal as a gap. Every small model in the [research note](open-system-one-models.md) caps options at 16 to 26; jev-bridge at 16; zev serves `/v1/limits`. Cost: a `Limits` value with a default for TypeSafe's 255 and 10, a method on the trait with a default implementation.
+10. **A `Shadow` backend.** Send each request to two backends, return the first, record both. `system-one` has it; the Jev-versus-Laya comparison the roadmap wants is exactly this, and the evaluation harness would get paired requests for free. Cost: about eighty lines on top of `Recorder`.
+11. **Order-flip rate in `eval`.** Rotate or reverse the option order and count changed answers; jev-rs averages rotations, jev-bridge measures the flip rate and found a real position bias on the reference endpoint. A `Replay` cannot do this, only a live run can, so it belongs beside the live tests. Cost: medium.
+12. **Concurrency control.** A semaphore on the client (kunobi) or an AIMD pacer that halves on 429 (typesafe-jev, the community batch runner). signalman answers one alert per webhook today; the day it replays history in bulk or serves a burst, this is the first thing it needs. Cost: small for the semaphore, medium for the pacer. Wait for the need.
+
+## Rejected, and why
+
+- **Ten crates for one client** (the douglance workspace). The split buys nothing at three thousand lines and costs a release dance for every change. judgment's feature flag already separates the questions from the transport.
+- **A cache of probabilistic answers** keyed by request (community SDK). A cached judgment is a stale judgment with a fresh timestamp; `Replay` exists for the one legitimate use, tests, and says so in its name.
+- **Policy in the wire crate**: cost-matrix `decide`, entropy-based gates, sampling from the distribution (`system-one`, `jev`). Decision 0002 puts thresholds in code the application owns and tunes; a helper that hides the threshold moves it into a dependency.
+- **A synchronous client.** Five crates ship one; no consumer here has asked, and blocking on the future costs one line.
+- **Untagged, dual-dialect answer parsing** (`jev`), which accepts answers without a `type`. Item 2 keeps unknown kinds without loosening the known ones; a server that omits `type` (jigor guesses the kind from the fields) is outside the schema and should be fixed there.
+- **Cassette compatibility with `typesafe-ai-sdk`**, whose key is the SHA-256 of the exact request body. judgment's key is a 64-bit hash of the canonical, key-sorted JSON, so two clients that serialise questions in a different order share a recording. The formats are documented on both sides; converting is a script, not a feature.
+- **Reading option descriptions from doc comments** (`systemone`). Charming, and it ties the API contract to rustdoc formatting; `options!` keeps the description next to the key where a reviewer looks for it.
+- **The `secrecy` crate for the key.** judgment redacts `Debug` and never logs the key; zeroising memory guards against a threat this deployment does not have.
+
+## What to do with this
+
+Items 1 to 4 are one release, small, and each removes a class of failure that a second provider or a support ticket would expose; they are worth a beads epic now. Items 5 to 7 are the "parity" release that makes the rustdoc's comparison with the official SDK true. Items 8 to 12 wait for the consumer that needs them, with 9 and 10 the first to arrive if the self-hosting question in the research note is ever answered yes. This paragraph first said that nothing on the list changes a signature a consumer holds except the `Answer` variant in item 2, and that the variant was additive. Both halves were wrong: a new variant on an exhaustive public enum breaks every exhaustive `match` outside the crate ([Cargo's SemVer rules](https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new)), and items 1, 3, 5 and 7 change error variants, public struct fields and a method's receiver as well. The release that did items 1 to 7 lists thirty-odd breaking changes in [its CHANGELOG](https://github.com/chussenot/signalman/blob/main/crates/judgment/CHANGELOG.md); from 0.2 on, `Error` and `Answer` are `#[non_exhaustive]`, so a new variant is additive for real.
+
+## What shipped in judgment 0.2.0
+
+Items 1 to 7 shipped together as judgment 0.2.0 (signalman 0.4.0 took it), in one epic, `signalman-7v9`, one bead per item. Items 8 to 12 still wait for their consumer. How each landed, and where it departs from the ranking above:
+
+| Item | What shipped | Where it differs from the ranking |
+|---|---|---|
+| 1. Request id | `x-typesafe-request-id` on `Response::request_id`, on every error that came from an HTTP response (`Error::request_id()`, and a `[request_id …]` suffix on the message), and as the `request_id` field of the `typesafe.evaluate` and `typesafe.list_models` spans | Read in `client.rs`, not in the shared retry loop, which stays generic across the three upstreams and hands back the last response's headers in `http::Completed::headers`. It is the last attempt's id only, and optional everywhere, because the OpenAPI document lists no response headers; Laya sends none |
+| 2. Tolerant decode | `Answer::Unknown(Value)` with a `warn` event naming the key and kind (escaped and cut to 64 characters); `Response::extra` keeps every undocumented top-level field, so Laya's `routing` or OpenRouter's `provider` can be logged; a missing `usage`, or null counts, read as zero | The known answer kinds stay strict, and `Answer` is now `#[non_exhaustive]` |
+| 3. Verify | `Response::verify(&Questions)` checks every id, kind, Choice key and Score legend, and every backend in the crate runs it: `Client`, `Fake`, `Replay`, `Recorder`. A 2xx that does not fit is an error (`Error::is_unfit`), reported to the observer as `unfit` and never retried | A structured Score level may be echoed as itself or as its compact JSON. Laya echoes it as itself; the compact form has not been seen from any server, and the hosted API's echo is still to be observed. signalman no longer reads an off-list Choice option as the no-match option: the triage fails, the alert keeps no tags and no note, and `eval` records the case as failed ([Triage](../triage.md)) |
+| 4. OpenAPI contract test | The vendored `api.typesafe.ai/openapi.json` (0.2.0) validates the requests the builders produce and the responses the `Fake` and the committed recordings hold (`crates/judgment/tests/contract.rs`); an ignored drift test compares the copy with the URL (`tests/openapi_drift.rs`); signalman validates its own TypeSafe traffic against the same document | As ranked |
+| 5. Retry parity, stated | `retry-after-ms`, then `Retry-After` in seconds, then as an HTTP date, all under `retry_after_max`; one-sided jitter; an optional total `budget`; `RetryPolicy::conservative()` (408, 429 and failures before the request left the process); a parity table on `RetryPolicy` that lists what matches Python 0.7.1 and JS 0.6.0, what deliberately differs and what is not implemented | The budget is off by default, so no consumer's timing changed. `x-typesafe-retry-count` is reserved (a caller cannot set it) but not yet sent. A `Retry-After` of `inf` or 1e20 used to panic in the loop; it is now ignored. The client follows no redirect, like the Python SDK |
+| 6. Per-call overrides | `Client::evaluate_with(&Request, &CallOptions)` with a per-call timeout, retry policy, headers and extra body fields, plus `ClientBuilder::default_header` | Not as fields on `Request`: `Request` is unchanged, so struct literals and signalman's `--print-request` keep the documented body. The model stays on `Request`, which is already per call, because a second override would make the span's `model` field and the `Recorder`'s hash name a model the call did not use |
+| 7. Schema fixes | A 400 is `Error::InvalidRequest` like 422, with the body's issues parsed into `ValidationIssue`s; 403 is `Error::PermissionDenied`; `Error::InvalidApiKey` applies the Python SDK's key hygiene at `build()`; the `/v1/models` and question-limit notes are corrected | `instructions` may be null, but a null is still sent as `"instructions": null` rather than left out: the schema accepts it and Laya's server reads the key unconditionally. A Noul with neither instructions nor criteria is refused, since the id is never shown to the model |
+
+The evidence, as of the release: the workspace tests (wiremock for the client, no network in the default run); the ten ignored live tests in `crates/judgment/tests/live.rs`, all passing against `laya-serve` ([judgment against Laya typed-decisions](../judgment-laya-typed-decisions.md)); the committed Laya recordings, which still replay to an accuracy of 0.725 on 200 questions under the stricter decoder; and signalman's committed Jev recordings (`examples/eval/runs/jev-1.13.0`), which replay to a decision agreement of 1.00. None of the 0.2 behaviour has been checked against a live TypeSafe account yet: the hosted API has answered this client once, under 0.1. The full list of changes, the breaking ones included, is in the crate's [CHANGELOG](https://github.com/chussenot/signalman/blob/main/crates/judgment/CHANGELOG.md).
 
 
 <!-- source: docs/decisions/README.md -->

@@ -2,7 +2,7 @@
 title: Observability
 description: What signalman exports over OpenTelemetry and when, the spans over one triage and its upstream calls, every metric with its attributes, how the OTLP endpoint is configured, how to verify the export against a local collector, and what is not instrumented.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [observability, operations, opentelemetry]
 ---
 
@@ -51,7 +51,8 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 | `triage.flow` | `Triager::triage_alert`: enrich, ask, decide, write back | `alert_id`, `decision` (recorded at the end) |
 | `incidentio.write_back` | the tags, attachment, note and notification writes; absent on a dry run | `tags` (count), `attach`, `note` (booleans) |
 | `incidentio.get_alert`, `incidentio.list_incidents`, `incidentio.list_firing_alerts`, `incidentio.add_alert_tags`, `incidentio.attach_alert`, `incidentio.list_alert_notes`, `incidentio.create_alert_note`, `incidentio.update_alert_note`, `incidentio.send_alert_event`, `incidentio.identity` | one per incident.io call | the call's identifiers (`alert_id`, `max`, and so on); never the body |
-| `typesafe.evaluate`, `typesafe.list_models` | one per TypeSafe call | `model`, `input_tokens` (recorded from the response) |
+| `typesafe.evaluate` | one per TypeSafe evaluation | `model`, `input_tokens` (recorded from the response; zero when the server reports none), `request_id`: the last attempt's `x-typesafe-request-id`, recorded on success, on an HTTP error and on a body that does not decode; absent after a transport failure or when the API sends none |
+| `typesafe.list_models` | one per TypeSafe model listing (the readiness check) | `request_id`, as on `typesafe.evaluate` |
 | `backstage.enrich`, `backstage.notify_owner` | catalog resolution and the owner notification | `hints`; `owner` |
 | `readiness.check` | one per uncached `GET /readyz`, wrapping the upstream calls (`typesafe.list_models`, `incidentio.identity`, the Backstage query) | none |
 
@@ -59,7 +60,7 @@ Spans come from `#[tracing::instrument]` on the flow and the client methods, so 
 
 `triage.background` is not a child of `webhook.receive`. The receiver answers `202` and the request span ends, while the triage runs on for seconds. The triage span therefore *follows from* the request span, which OpenTelemetry renders as a span link: the trace of a delivery links to the trace of its triage, and a backend that shows links lets you cross from one to the other. The two are separate traces.
 
-Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly.
+Never a span field: the qualification note's content, any request or response body, any secret. The note methods skip their `content` argument explicitly. The TypeSafe `request_id` is TypeSafe's own identifier for the call, not a secret: it is what TypeSafe support asks for, so a trace of a surprising decision leads straight to the call behind it. A value that is empty, not printable ASCII, or longer than 256 bytes is ignored rather than recorded.
 
 ## Metrics
 
@@ -71,7 +72,7 @@ Names are OpenTelemetry dotted names with a unit. A Prometheus exporter renders 
 | `signalman.triage.duration` | histogram | `s` | `decision` | from the start of the triage to its decision and write-back done |
 | `signalman.alert.time_to_qualify` | histogram | `s` | `decision` | from the alert's creation in incident.io to signalman's decision; recorded only when the alert carried `created_at` |
 | `signalman.typesafe.tokens` | counter | `{token}` | `model`, `direction` (`input`, which is billed, or `output`) | TypeSafe token usage |
-| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, or `transport`) | every failed attempt, retried or not, counted in the shared retry loop |
+| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, `transport`, or for `typesafe` `decode` and `unfit`) | every failed attempt, retried or not, counted in the shared retry loop; a 2xx the TypeSafe client could not use is counted by the client as `decode` (the body did not decode) or `unfit` (the answers did not fit the questions sent), neither retried |
 | `signalman.webhook.deliveries` | counter | `{delivery}` | `result` (the `webhook.receive` values) | what the receiver did with each delivery |
 | `signalman.triage.inflight` | observable gauge | `{triage}` | `state` (`running` or `queued`) | this replica's in-flight triages, read at each export; registered by `serve` only |
 

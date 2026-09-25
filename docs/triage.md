@@ -2,7 +2,7 @@
 title: Triage
 description: The state signalman builds for an alert, the questions it asks in one request, the policy that turns the answers into a decision, the outcome contract every triage emits, what of it is configuration and what is code, and how to tune it.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [triage, typesafe, policy]
 ---
 
@@ -53,7 +53,11 @@ flowchart TD
 
 Every question references the state by backticked path (`alert.title`, `alert.component.owner`). The owner question's instructions change when a catalog component is present: they name `alert.component.owner` as the registered owner and say when to deviate.
 
-Answers are confined to what was asked. A Choice that names an option the question never offered is read as that question's no-match option (`none_of_these` for the owner, `none` for the dedup), and keys the question never offered are dropped from the distribution; a Score whose legend is not the four-level scale the question sent, or whose value falls off the end of that scale, is refused outright. Everything downstream therefore holds: the policy cannot attach to an incident that was not a candidate, and `judgments` in the [outcome contract](#the-outcome-contract) lists one row per option offered.
+Answers are confined to what was asked, and are checked twice: in the TypeSafe client, which holds every response against the questions it sent (`Response::verify` in the `judgment` crate) before signalman sees it, and again in `TriageQuestions::read`, for a response that did not come through the client (a recording replayed by `signalman eval --replay`, or one built by hand). A Choice that names an option the question never offered, as its choice or anywhere in its distribution, fails the triage; so does a Score whose legend is not the levels the question sent, or whose value falls off the end of their scale. The error names the question and the option or level, and carries TypeSafe's request id when the API sent one. No answer is read as the no-match option in its place ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md): an unknown option is an explicit error naming the question): reading an unoffered owner as `none_of_these` would route the alert on an answer the model did not give, and reading an unoffered incident as `none` would page someone on the strength of a duplicate that was never a candidate.
+
+The cost is stated plainly: in `serve`, a triage that fails this way leaves the alert with no tags and no note. What shows it is the `triage failed` error log line and `signalman.upstream.errors{service="typesafe",status="unfit"}`; the recovery is `signalman incidentio triage-alert <id>` by hand once the cause is known ([Operations](operations.md#failure-modes)). The CLI exits non-zero, the MCP `qualify_alert` tool returns a tool-level error with the client's message ([MCP](mcp.md)), and `signalman eval` records the case as failed and carries on.
+
+What stays tolerant: an offered option missing from a Choice's distribution reads as zero, and a distribution that does not sum exactly to 1 is not an error. Everything downstream therefore holds: the policy cannot attach to an incident that was not a candidate, and `judgments` in the [outcome contract](#the-outcome-contract) lists one row per option offered. The level text signalman sends on (the `impact_label` metadata of `--forward-to-incidentio`) is therefore its own `[triage.text] impact_levels` wording: the legend the model echoes is checked against it, so the echo cannot put other words there.
 
 ### Owner candidates
 
@@ -120,7 +124,7 @@ Output of `signalman triage examples/alerts/crashloop.json --json` against a moc
 ```json
 {
   "schema_version": 1,
-  "signalman_version": "0.3.0",
+  "signalman_version": "0.4.0",
   "decided_at": "2026-09-22T06:14:28.206474153Z",
   "time_to_qualify_seconds": null,
   "alert": {
@@ -393,7 +397,7 @@ A Choice answer carries both the probability of each option and a confidence, wh
 Every decision carries its typed judgments in [the outcome contract](#the-outcome-contract): the chosen option, the confidence, the full option list with probabilities, and the four-level impact distribution. The raw wire answers do not travel with it; only the [evaluation harness](evaluation.md) keeps those, under `--record`. That harness turns labelled alerts into accuracy, calibration and decision-agreement numbers. The loop:
 
 1. Collect alerts with the expected team, impact, actionability and action into a cases file.
-2. `signalman eval cases.jsonl --record runs/<model>`: one model call per case, every raw response kept.
+2. `signalman eval cases.jsonl --record runs/<model>`: one model call per case, every graded response kept, and a case whose answer did not fit listed as failed beside them.
 3. Read `conf|right` against `conf|wrong` per question and set thresholds in `[policy]`, higher for actions that are expensive when wrong.
 4. `signalman eval cases.jsonl --replay runs/<model>` to see the decisions under the new thresholds, without calling the model.
 5. Pin `typesafe.model` to the version recorded against in the same file and re-evaluate before moving to a new one.

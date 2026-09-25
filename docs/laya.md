@@ -2,13 +2,13 @@
 title: Laya as a model provider
 description: What Laya is, how signalman ran against it unchanged through a local System One-compatible shim, what the three example alerts measured on CPU, and why Jev stays the default until an evaluation on real alert history says otherwise.
 status: experiment
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [typesafe, laya, model, evaluation]
 ---
 
 # Laya as a model provider
 
-[Laya](https://huggingface.co/convaiinnovations/laya) (Convai Innovations, Apache 2.0) is an open-weights System One decision model: a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass. It takes the same request shape as TypeSafe's API, a `state` plus `noul`, `choice` and `score` questions with `instructions` and `criteria`, and returns the same answer shape with probabilities and confidence. It never generates text. Three checkpoints ship in one repository: English (root), multilingual (`mmBERT-base`, 322M) and `typed-decisions`, the English model fine-tuned on a four-workflow typed-decisions benchmark.
+[Laya](https://huggingface.co/convaiinnovations/laya) ([source](https://github.com/NandhaKishorM/laya); Convai Innovations, Apache 2.0) is an open-weights System One decision model: a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass. It takes the same request shape as TypeSafe's API, a `state` plus `noul`, `choice` and `score` questions with `instructions` and `criteria`, and returns the same answer shape with probabilities and confidence. It never generates text. Three checkpoints ship in one repository: English (root), multilingual (`mmBERT-base`, 322M) and `typed-decisions`, the English model fine-tuned on a four-workflow typed-decisions benchmark.
 
 This page is an experiment, not a supported configuration. Jev's per-token cost, its latency and the fact that alert text leaves the network are real costs, and an open-weights model that speaks the same wire shape is the obvious way to remove them; the question is whether its judgments are good enough to route on. Nothing in the binary knows about Laya, the only artefact in the repository is a shim under `examples/`, and the measurement below is three synthetic alerts. It becomes `current` when the [evaluation harness](evaluation.md) has compared both models on labelled alert history and Laya, fine-tuned, matches Jev's accuracy and calibration per question; at that point self-hosting becomes a documented `typesafe.model` option rather than a page. Until then the page records what was tried so nobody repeats it.
 

@@ -2,7 +2,7 @@
 title: Operations
 description: Running the webhook receiver, its endpoints including liveness and readiness, its manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [operations]
 ---
 
@@ -53,7 +53,7 @@ The response is `200` when every upstream answered and `503` otherwise, with the
 }
 ```
 
-`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
+`error` is present only on a failed entry: the client's own error text, or `timed out after 3.0 s` when the deadline hit. The TypeSafe error text ends with `[request_id …]` when the API sent an `x-typesafe-request-id`, as incident.io's does with the request id from its error body: the id to quote to that vendor's support. `latency_ms` is how long that check took, whichever way it ended. The body has two entries, or three with Backstage.
 
 Two settings shape the probe, both under `[server]` with the usual layers and no flags ([Configuration](configuration.md#server)):
 
@@ -198,7 +198,7 @@ The same line carries `outcome`: [the outcome contract](triage.md#the-outcome-co
 
 signalman installs one subscriber with the human-readable `tracing` text formatter (and, when an OTLP endpoint is set, the OpenTelemetry layer beside it, which changes nothing in the log); there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
 
-Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
+Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. An answer of a kind the judgment crate in this build does not know logs `answer of a kind this client does not know; kept as Answer::Unknown` at `warn`, once per such answer, inside the `typesafe.evaluate` span, with `question` (the answer's key: the question id, or whatever key the server sent for an answer to a question that was not asked) and `kind` (TypeSafe's `type` for it), both escaped and cut to 64 characters. It means TypeSafe answers with a primitive this build cannot read, and upgrading judgment, which is a new signalman build, is the remedy; the failure-mode table below says what happens to the triage meanwhile. A spent retry budget logs `retry budget spent; returning the last failure` at `warn`, with the attempt, the wait it refused, the time elapsed and the budget; only a client given a budget logs it, and signalman sets none. Catalog enrichment details are at `debug`.
 
 ## Failure modes
 
@@ -212,5 +212,7 @@ Each row says what the operator sees and whether the hub's retry, a manual re-ru
 | Component not in the catalog | triage continues with all team groups as candidates |
 | Backstage transport or auth error | triage fails and is logged; the alert stays untagged |
 | TypeSafe or incident.io error in the flow | logged at `error`; alert stays untagged; no retry because the delivery was already acknowledged |
+| TypeSafe returned an answer kind this build does not know | the `warn` line above, naming the question and the kind; an answer under an id signalman did not ask is kept and the triage goes on; under an asked id the client refuses the response (`AnswerTypeMismatch`, counted as `status="unfit"`), the triage is logged at `error` and leaves the alert untagged, as in the row above; upgrade judgment (a new signalman build), then re-run with `incidentio triage-alert` |
+| TypeSafe answered outside the questions (an option not offered, a legend not the levels sent) | logged at `error` as `triage failed`, the message naming the question and the option or level and ending with TypeSafe's request id when the API sent one; the alert stays untagged with no note, and nothing is paged or suppressed; `signalman.upstream.errors{service="typesafe",status="unfit"}` counts it; the call is not retried (it was billed); recover with `signalman incidentio triage-alert <id>`, and report the request id, if any, to TypeSafe |
 | Notification fails | logged at `warn`; tags and attachment stay |
 | Process restart | the in-memory `webhook-id` set is lost; a resend within the window is processed again; tag adds are idempotent |

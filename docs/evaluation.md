@@ -2,7 +2,7 @@
 title: Evaluation harness
 description: How to replay labelled alerts through the triage questions, what the report measures (accuracy, Brier, calibration error, decision agreement, latency), how recording and replay separate inference from policy tuning, and how to use it to compare models.
 status: current
-last_reviewed: 2026-09-24
+last_reviewed: 2026-09-25
 tags: [evaluation, triage, tuning, typesafe]
 ---
 
@@ -50,7 +50,7 @@ The best labels are observed outcomes: the team that actually took the alert, th
 
 ```sh
 signalman eval examples/eval/cases.jsonl                       # call the model, print the report
-signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every raw response
+signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every graded response
 signalman eval cases.jsonl --replay runs/jev-1.13.0            # re-grade under the current configuration, no model call
 signalman eval cases.jsonl --json > report.json                # the full report, every case included
 ```
@@ -102,18 +102,27 @@ Replaying the same recordings with `suppress_below = 0.55` in `[policy]` moved d
 
 Confidence is the Choice or Score confidence for those primitives and `max(p, 1 - p)` for a Noul. The JSON report adds per-question confusion tables, the decision confusion table, and every graded case with its full distributions.
 
+### An answer that does not fit
+
+The TypeSafe client checks every response against the questions it was sent (`Response::verify` in the `judgment` crate): an answer for every question, of the right primitive, a Choice naming only options it was offered, a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error, not an answer to grade. A live run does not stop there: one such case would otherwise throw away the rest of a run that has already been paid for. The case is listed under `failed` in the JSON report, and after the mismatches in the text report, with the error naming the question and the option or level, and TypeSafe's request id, when the API sent one, to report it with. It is not graded, so every figure above is over the graded cases, and `cases` counts only those. Under `--record` it gets no `<id>.json` (one an earlier run left there is removed, so it cannot be graded as this run's answer) and is listed instead in `failed.jsonl` beside the recordings, one case per line; the file is removed by a run in which nothing failed. A `--replay` of the directory over the same cases file reports those cases as failed again, rather than stopping at the missing recording. A case with neither a recording nor a line in `failed.jsonl` still stops a replay. Any other error (the network, the key, a case that does not parse) still stops the run. A report in which every case was graded has no `failed` key, so it reads as before.
+
+```
+failed (1), not graded: the answer did not fit the questions, so the figures above are over the 2 graded cases:
+  oom            answer "owner" names option "made-up-team", which its question does not offer [request_id req-…]
+```
+
 ## Tuning without re-running inference
 
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
 
 1. `signalman eval cases.jsonl --record runs/<model>` once per model version.
-2. Edit `[policy]` (or `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file.
+2. Edit `[policy]` (or the question and guidance wording in `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file. Not `impact_levels` or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
 3. `signalman eval cases.jsonl --replay runs/<model> --config candidate.toml` and compare decision agreement.
 4. Pin `typesafe.model` to the version recorded against, in the same file as the thresholds.
 
 Pick thresholds from the `conf|right` and `conf|wrong` columns per question: the automatic-routing threshold should sit above most wrong confidences, the human-triage threshold below most right ones. When the two means are close, no threshold will separate them and the fix is the question's wording or the state, not the number.
 
-Wording changes do need a new run: they change the request. Record each variant under its own directory and compare.
+Wording changes do need a new run to be measured: they change the request, and a replay reads the old answers under the new wording. Record each variant under its own directory and compare. A replay whose recordings no longer fit the questions (reworded levels, a renamed team) stops with an error naming the question; re-record rather than edit the recordings.
 
 ## Comparing models
 

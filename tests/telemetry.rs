@@ -120,6 +120,10 @@ async fn a_triage_exports_its_spans_and_metrics_to_the_collector() {
         "service.name resource attribute missing"
     );
     assert!(
+        traces.contains("req-signalman"),
+        "typesafe.evaluate's request_id (the mock's x-typesafe-request-id) missing"
+    );
+    assert!(
         !traces.contains("incidentio.write_back"),
         "a dry run must not open the write-back span"
     );

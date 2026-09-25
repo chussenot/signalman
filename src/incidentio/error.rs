@@ -101,7 +101,8 @@ pub enum Error {
     RateLimited {
         /// Attempts made, including the first.
         attempts: u32,
-        /// Server's `Retry-After`, when present.
+        /// The last response's wait (`retry-after-ms`, or `Retry-After` in
+        /// seconds or as an HTTP date), when it named one.
         retry_after: Option<Duration>,
     },
     /// Any other non-success status.

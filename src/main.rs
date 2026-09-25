@@ -141,11 +141,16 @@ struct EvalArgs {
     /// Model name or alias [file: typesafe.model, env: TYPESAFE_DEFAULT_MODEL, default: jev-latest].
     #[arg(long)]
     model: Option<String>,
-    /// Write every raw model response to DIR/<id>.json for later --replay.
+    /// Write every graded model response to DIR/<id>.json, and the cases
+    /// whose answer did not fit to DIR/failed.jsonl, for later --replay.
     #[arg(long, value_name = "DIR", conflicts_with = "replay")]
     record: Option<PathBuf>,
     /// Grade recorded responses from DIR under the current configuration
-    /// instead of calling the model. Tune [policy] and [triage.text] this way.
+    /// instead of calling the model. Tune [policy] and question or guidance
+    /// wording this way, but not impact_levels or team keys: the recorded
+    /// answers echo the levels and choose among the keys they were asked
+    /// with, so a replay under others fails naming the question; changing
+    /// those needs a new recording.
     #[arg(long, value_name = "DIR")]
     replay: Option<PathBuf>,
     /// Emit the full report as JSON instead of text.
@@ -701,6 +706,13 @@ async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
                 report.cases,
                 dir.display()
             );
+            if !report.failed.is_empty() {
+                println!(
+                    "listed {} failed cases in {}, which a replay reports as failed",
+                    report.failed.len(),
+                    dir.join(eval::FAILED_FILE).display()
+                );
+            }
         }
     }
     Ok(())

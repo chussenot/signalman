@@ -69,10 +69,35 @@ struct Harness {
     app: axum::Router,
     outcomes: tokio::sync::mpsc::UnboundedReceiver<Result<incidentio::Outcome, String>>,
     incidentio: MockServer,
-    _typesafe: MockServer,
+    typesafe: MockServer,
+}
+
+/// What TypeSafe answers in the harness: application owns it, major impact,
+/// and a duplicate of INC-4821.
+fn attaching_answers() -> serde_json::Value {
+    json!({
+        "owner": { "type": "choice", "choice": "application",
+                   "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.7 },
+        "impact": { "type": "score", "score": 2.0, "legend": common::impact_legend(),
+                    "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
+        "actionable": { "type": "noul", "noul": 0.95 },
+        "duplicate_of": { "type": "choice", "choice": "INC-4821",
+                          "probabilities": { "INC-4821": 0.93, "none": 0.07 }, "confidence": 0.86 }
+    })
 }
 
 async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
+    harness_answering(write_back, expect_triage, attaching_answers()).await
+}
+
+/// The harness with TypeSafe answering `answers`. The incident.io writes
+/// (note, tags, attach) are expected once each when `expect_triage` and the
+/// write-back applies, and never otherwise.
+async fn harness_answering(
+    write_back: WriteBack,
+    expect_triage: bool,
+    answers: serde_json::Value,
+) -> Harness {
     let incidentio_srv = MockServer::start().await;
     let typesafe_srv = MockServer::start().await;
 
@@ -164,19 +189,15 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
             } },
             "questions": { "duplicate_of": { "criteria": { "INC-4821": "Checkout 5xx spike [Major]: payments-gateway returning errors" } } }
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "owner": { "type": "choice", "choice": "application",
-                           "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.7 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
-                            "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
-                "actionable": { "type": "noul", "noul": 0.95 },
-                "duplicate_of": { "type": "choice", "choice": "INC-4821",
-                                  "probabilities": { "INC-4821": 0.93, "none": 0.07 }, "confidence": 0.86 }
-            },
-            "usage": { "input_tokens": 700, "output_tokens": 40 }
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-typesafe-request-id", "req-webhook")
+                .set_body_json(json!({
+                    "model": "jev-1.13.0",
+                    "answers": answers,
+                    "usage": { "input_tokens": 700, "output_tokens": 40 }
+                })),
+        )
         .mount(&typesafe_srv)
         .await;
 
@@ -214,7 +235,7 @@ async fn harness(write_back: WriteBack, expect_triage: bool) -> Harness {
         app: router(Arc::new(state)),
         outcomes: rx,
         incidentio: incidentio_srv,
-        _typesafe: typesafe_srv,
+        typesafe: typesafe_srv,
     }
 }
 
@@ -256,6 +277,63 @@ async fn signed_alert_created_webhook_triages_tags_and_attaches() {
         matches!(outcome.decision().unwrap(), Decision::AttachToIncident { ref incident_id, .. } if incident_id == "INC-4821")
     );
     h.incidentio.verify().await;
+}
+
+#[tokio::test]
+async fn an_answer_the_question_never_offered_leaves_the_alert_untouched() {
+    // TypeSafe names an owner the question never offered. The client refuses
+    // the response, the triage fails, and nothing is written to incident.io:
+    // no tags, no note, no attach. What shows it is that incident.io saw no
+    // request but reads, whatever its body; the write mocks only match the
+    // bodies of a successful triage.
+    let mut answers = attaching_answers();
+    answers["owner"] = json!({ "type": "choice", "choice": "made-up-team",
+                               "probabilities": { "made-up-team": 0.9, "application": 0.1 },
+                               "confidence": 0.9 });
+    let mut h = harness_answering(WriteBack::Apply, false, answers).await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(signed(&alert_created("al-1"), "msg-unoffered", SECRET))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let result = tokio::time::timeout(Duration::from_secs(5), h.outcomes.recv())
+        .await
+        .expect("outcome in time")
+        .expect("channel open");
+    let Err(msg) = result else {
+        panic!("the triage must fail: {result:?}");
+    };
+    assert!(msg.contains("\"owner\""), "{msg}");
+    assert!(msg.contains("made-up-team"), "{msg}");
+    assert!(msg.contains("does not offer"), "{msg}");
+    assert!(
+        msg.contains("req-webhook"),
+        "the request id is reported: {msg}"
+    );
+    // The flow does not ask again. That the client does not retry an unfit
+    // answer is crates/judgment/tests/client.rs's to show, with retries on.
+    assert_eq!(
+        h.typesafe.received_requests().await.unwrap().len(),
+        1,
+        "asked once"
+    );
+    h.incidentio.verify().await;
+    let writes: Vec<String> = h
+        .incidentio
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() != "GET")
+        .map(|r| format!("{} {}", r.method, r.url.path()))
+        .collect();
+    assert!(
+        writes.is_empty(),
+        "no incident.io write on a refused answer: {writes:?}"
+    );
 }
 
 #[tokio::test]
@@ -552,7 +630,7 @@ async fn backstage_enrichment_drives_owner_candidates_runbook_and_notification()
             "answers": {
                 "owner": { "type": "choice", "choice": "payments",
                            "probabilities": { "payments": 0.9, "data-platform": 0.08, "none_of_these": 0.02 }, "confidence": 0.85 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": common::impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
                 "actionable": { "type": "noul", "noul": 0.95 }
             },
@@ -699,7 +777,7 @@ async fn change_feed_fills_recent_changes_and_asks_caused_by_change() {
             "answers": {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.8, "platform": 0.2 }, "confidence": 0.7 },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": common::impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 }, "confidence": 1.0 },
                 "actionable": { "type": "noul", "noul": 0.95 },
                 "caused_by_change": { "type": "noul", "noul": 0.8 }
@@ -1031,7 +1109,7 @@ async fn slow_receiver(
                     "answers": {
                         "owner": { "type": "choice", "choice": "platform",
                                    "probabilities": { "platform": 0.9, "none_of_these": 0.1 }, "confidence": 0.9 },
-                        "impact": { "type": "score", "score": 1.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                        "impact": { "type": "score", "score": 1.0, "legend": common::impact_legend(),
                                     "probabilities": { "0": 0.0, "1": 1.0, "2": 0.0, "3": 0.0 }, "confidence": 1.0 },
                         "actionable": { "type": "noul", "noul": 0.9 }
                     },

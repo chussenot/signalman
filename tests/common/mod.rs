@@ -1,7 +1,7 @@
 //! Fixtures shared by the integration tests: the clients pointed at mock
 //! servers, one incident.io alert with its open incident and blast radius,
-//! one TypeSafe answer set, the committed outcome schema, and the bare MCP
-//! client the in-process and HTTP transport tests both drive.
+//! one TypeSafe answer set and model list, the committed outcome schema, and
+//! the bare MCP client the in-process and HTTP transport tests both drive.
 //!
 //! The fixtures exist because four test files had grown the same `al-1` /
 //! `INC-4821` / `jev-1.13.0` scene by copy, and a change to one shape (a
@@ -209,7 +209,7 @@ impl SystemOne {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.8, "platform": 0.2 },
                            "confidence": self.owner_confidence },
-                "impact": { "type": "score", "score": 2.0, "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                "impact": { "type": "score", "score": 2.0, "legend": impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0 },
                             "confidence": self.impact_confidence },
                 "actionable": { "type": "noul", "noul": 0.95 },
@@ -227,10 +227,35 @@ impl SystemOne {
     pub async fn mount(&self, typesafe: &MockServer) {
         Mock::given(method("POST"))
             .and(path("/v1/systemone"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(self.body()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-typesafe-request-id", "req-signalman")
+                    .set_body_json(self.body()),
+            )
             .mount(typesafe)
             .await;
     }
+}
+
+/// A `GET /v1/models` body listing one model, as the readiness probe reads
+/// it. `tests/typesafe_contract.rs` checks it against the model-list schema
+/// of the vendored OpenAPI document.
+pub fn models_body() -> Value {
+    json!({
+        "models": [{ "name": "jev-latest", "release_date": "2026-01-01", "description": "d" }]
+    })
+}
+
+/// The legend TypeSafe echoes for the impact question: its levels as sent,
+/// keyed by index. The client checks the echo against the question
+/// (`Response::verify`), so a fixture legend must be the real levels.
+pub fn impact_legend() -> Value {
+    signalman::triage::Impact::LEVELS
+        .iter()
+        .enumerate()
+        .map(|(i, level)| (i.to_string(), json!(level)))
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
 }
 
 // ---------------------------------------------------------------------------

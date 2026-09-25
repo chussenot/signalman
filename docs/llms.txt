@@ -2,7 +2,7 @@
 
 > Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 
-This index is generated from the documentation nav (`mkdocs.yml`) and each page's frontmatter by `scripts/gen-llms-txt.sh`; the pages are the source of truth and every page carries `title`, `description`, `status` and `last_reviewed`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. Nothing here has been verified against a live TypeSafe, incident.io or Backstage account yet; pages say so where it matters.
+This index is generated from the documentation nav (`mkdocs.yml`) and each page's frontmatter by `scripts/gen-llms-txt.sh`; the pages are the source of truth and every page carries `title`, `description`, `status` and `last_reviewed`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. TypeSafe has answered live once (`jev-1.13.0`, the three example alerts), and the Backstage catalog and incident.io's read endpoints have been called once; no write has reached a live incident.io alert, and neither TechDocs nor Notifications has been reached. Everything else is checked against wiremock and the published OpenAPI documents; the Roadmap says what is still unverified, and pages say so where it matters.
 
 ## Start here
 
@@ -34,6 +34,11 @@ This index is generated from the documentation nav (`mkdocs.yml`) and each page'
 - [C4 level 1, system context](https://raw.githubusercontent.com/chussenot/signalman/main/docs/c4/context.md): signalman in its environment, the people and systems it exchanges information with, what flows between them, and why each system is in the picture or deliberately outside it.
 - [C4 level 2, containers](https://raw.githubusercontent.com/chussenot/signalman/main/docs/c4/container.md): The deployable units of signalman, one binary run as a receiver, an MCP server or a CLI over one library, the external services each one uses, and why there is no second process or database.
 - [C4 level 3, components](https://raw.githubusercontent.com/chussenot/signalman/main/docs/c4/component.md): Inside the signalman library, the modules that make up a triage, how they call one another, which external endpoint each client owns, and why each is a separate component.
+
+## Research
+
+- [Open System One models](https://raw.githubusercontent.com/chussenot/signalman/main/docs/research/open-system-one-models.md): What the open reproductions of TypeSafe's Jev, the Jev Decision Index leaderboard and the Laya project establish, and the engineering decisions for judgment and signalman that follow from it: provider portability, self-hosting economics, question design rules, calibration policy and evaluation method.
+- [System One client libraries](https://raw.githubusercontent.com/chussenot/signalman/main/docs/research/system-one-client-libraries.md): A survey of the twenty-five community Rust clients for the TypeSafe System One wire, the official Python and JavaScript SDKs and the live OpenAPI document, what each did that judgment 0.1 did not, the ranked changes worth making to the crate, the ones rejected and why, and what judgment 0.2.0 shipped of them.
 
 ## Decisions
 

@@ -40,22 +40,42 @@
 //!   type parameter is the answer type. [`Response::get`] checks the id and the
 //!   primitive, and maps a typed Choice's option key back to the enum. A
 //!   mismatch is an [`Error`], never a misread number.
+//! * A response answers the questions it was sent. [`Response::verify`]
+//!   checks that every question has an answer of its primitive, that a
+//!   Choice names only options it offered and that a Score is on the scale
+//!   it sent, and every backend ([`Client`], [`Fake`], [`Replay`],
+//!   [`Recorder`]) calls it before returning. A response that does not fit
+//!   is an [`Error`] naming the question and carrying the request id, never
+//!   an answer read as a guess.
 //! * Probabilities are validated newtypes. [`Probability`] and [`Confidence`]
 //!   refuse values outside `[0, 1]` on construction and on deserialisation,
 //!   and they are distinct types, so a caller cannot threshold one as the
 //!   other.
+//! * Decoding is tolerant and reading is strict. What the API may add does
+//!   not fail a response: an answer of a kind this release does not know is
+//!   kept as [`Answer::Unknown`] (and logged at `warn` by the client), a
+//!   missing `usage` reads as zero, and undocumented top-level fields are
+//!   kept in [`Response::extra`]. A known answer that breaks its own shape
+//!   is still an error. An unknown answer under a question that was asked
+//!   fails the call ([`Error::AnswerTypeMismatch`] through
+//!   [`Response::verify`], naming its kind); under an id nobody asked it is
+//!   kept.
 //! * Limits are checked before sending. 255 options per Choice, 2 to 10 levels
-//!   per Score and unique ids are enforced by the builder, so a bad question is
-//!   an error naming the question, not a 422 after a round trip.
-//! * Retries mirror the official SDK. The defaults are the Python SDK's, so
-//!   behaviour matches across languages and the worst case is bounded; the
-//!   reasoning is on [`RetryPolicy`].
+//!   per Score (the HTTP API reference page's limits, stricter than the
+//!   OpenAPI document, which bounds neither above) and unique ids are
+//!   enforced by the builder, so a bad question is an error naming the
+//!   question, not a round trip whose outcome nobody has observed.
+//! * Retries take the official SDKs' retry count, backoff and retried
+//!   statuses; [`RetryPolicy`] states where they differ (the total budget
+//!   and the server-wait cap among them), bounds the worst case, and gives
+//!   the reasoning behind each field.
 //!
 //! ## What it deliberately is not
 //!
 //! * Not a sync client, and no batching or streaming. The API documents one
-//!   endpoint and one request shape, and one request already carries many
-//!   questions. A caller that must block can block on the future.
+//!   evaluation endpoint (and a model listing) and one request shape, and one
+//!   request already carries many questions. A caller that must block can
+//!   block on the future.
 //! * Not a metrics backend. A library must not choose one for the application
 //!   that embeds it. The crate emits `tracing` spans and hands token usage and
 //!   failed attempts to an [`Observer`]; the application counts them where it
@@ -99,10 +119,13 @@
 //! ## Modules
 //!
 //! * [`question`] builds requests; each question returns a typed [`Handle`].
-//! * [`answer`] validates probabilities and converts wire answers into typed
-//!   views through those handles.
-//! * [`client`] (feature `http`, on by default) talks HTTP with
-//!   SDK-equivalent defaults, retries and errors.
+//! * [`answer`] validates probabilities, decodes wire answers tolerantly and
+//!   converts them into typed views through those handles.
+//! * [`client`] (feature `http`, on by default) talks HTTP with the SDKs'
+//!   defaults, retries and errors; the differences are stated on
+//!   [`RetryPolicy`]. [`Client::evaluate_with`] takes a [`CallOptions`] for
+//!   one call's timeout, retry policy, headers and extra body fields, and
+//!   refuses any that would replace what the client sets itself.
 //! * [`http`] (feature `http`) is the retry loop and
 //!   [`RetryPolicy`], public so another client over
 //!   `reqwest` can share them.
@@ -135,7 +158,9 @@ pub use answer::{
 };
 pub use backend::{Fake, Recorder, Replay, SystemOne};
 #[cfg(feature = "http")]
-pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
-pub use error::{Error, Result};
+pub use client::{
+    CallOptions, Client, ClientBuilder, ModelInfo, Request, RetryPolicy, TransportRetry,
+};
+pub use error::{Error, Result, ValidationIssue};
 pub use observer::Observer;
 pub use question::{Handle, NoulCriteria, Options, Question, Questions};

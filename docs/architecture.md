@@ -2,7 +2,7 @@
 title: Architecture
 description: The components of signalman, how an alert moves through them, what state each replica holds and why it is in memory, where the boundaries between catalog, model and code lie, and how failures are contained.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [architecture]
 ---
 
@@ -143,7 +143,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
-A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
+A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
 
 ## Failure containment
 
@@ -155,9 +155,10 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | Component not in the catalog | Enricher | Every catalog group whose `spec.type` is in `backstage.group_types` becomes a candidate, capped at 24; the triage continues. The compiled team list is used only when no catalog is configured at all |
 | Backstage transport or auth error | Enricher | The triage fails and is logged; the alert stays untagged. A token without the `techdocs` plugin only loses the runbook, at `warn` |
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
+| TypeSafe answer does not fit the questions | Client (`Response::verify`) | Triage fails and is logged; alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |
-| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
+| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with backoff jittered downward; the server's wait honoured up to 30 s |
 | OTLP collector down or slow | OpenTelemetry SDK, on its own thread | The SDK logs a warning; no triage waits on export or fails because of it |
 
 The receiver acknowledges before the flow runs, so an upstream failure never causes incident.io to redeliver. That is deliberate: a redelivery would re-run the model on the same alert. The cost is that a failed triage needs the `incidentio triage-alert` command to retry by hand.

@@ -17,6 +17,24 @@
 //! by its backticked path (`` `message` ``, `` `alert.title` ``) so the model
 //! knows what to judge.
 //!
+//! The instructions may be `null`, when the criteria carry the whole
+//! question: a Choice whose option descriptions already say what is being
+//! decided, a Noul whose meaning of yes and no does. Every builder accepts
+//! `()`, [`Value::Null`], `None::<&str>` or an `Option<String>` for them.
+//! Leave them null only then; with neither instructions nor criteria a Noul
+//! asks the model nothing, and [`Questions::noul`] refuses it, because the
+//! answer would still be a confident-looking probability. Criteria that
+//! describe neither outcome (`{}`, or both sides null) count as none.
+//!
+//! A null is sent as `"instructions": null`, not left out. The OpenAPI
+//! document requires only `type` (and `criteria` for a Choice or a Score)
+//! and accepts a null for all three primitives; the HTTP API reference page
+//! marks `instructions` required. The Python SDK omits a null field, the JS
+//! SDK sends null, and this crate sends null because Laya reads the key
+//! unconditionally (`qdef["instructions"]` in its `agent.py`), so a server
+//! that follows the reference page or Laya's code still gets the field, and
+//! the request hash of a recording does not change.
+//!
 //! # A Choice should carry a no-match option
 //!
 //! A Choice answer is always one of the options given, with the probability
@@ -40,12 +58,21 @@
 //!
 //! # Limits are checked here
 //!
-//! The API allows at most 255 options per Choice and between 2 and 10 levels
-//! per Score, and rejects a violation with a 422. The builder enforces the
-//! same limits ([`MAX_CHOICE_OPTIONS`], [`MAX_SCORE_LEVELS`]) and rejects a
-//! duplicate id before anything is sent: the error names the question, and no
-//! round trip, retry or token is spent finding out. The cost is that the
-//! limits are duplicated here and must follow the API when it changes them.
+//! The HTTP API reference page allows at most 255 options per Choice, and
+//! says a Score "should have at least two levels; the API accepts up to
+//! 10". The OpenAPI document TypeSafe publishes is looser: it bounds a
+//! Score's levels only below (`minItems: 1`) and a Choice's options not at
+//! all. The builder follows the reference page ([`MAX_CHOICE_OPTIONS`],
+//! [`MAX_SCORE_LEVELS`], at least 2 levels) and adds a minimum of 2 options,
+//! since a Choice of one option decides nothing. It is deliberately stricter
+//! than the schema, and it rejects a duplicate id too, before anything is
+//! sent: the error names the question, and no round trip, retry or token is
+//! spent finding out. What a server does past the reference page's limits
+//! (a 422, or an answer) has not been observed, so the stricter bound is the
+//! safe one. The cost is that the limits are duplicated here and must follow
+//! the API when it changes them; `tests/contract.rs` pins the difference
+//! from the schema in both directions, so a refreshed OpenAPI document that
+//! adds or moves a bound fails there.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -58,12 +85,17 @@ use serde_json::Value;
 use crate::answer::{Choice, Noul, Score};
 use crate::error::{Error, Result};
 
-/// Maximum options a Choice may define. The API's limit, checked by the
-/// builder so a violation is an error here rather than a 422 after a round
-/// trip.
+/// Maximum options a Choice may define: the HTTP API reference page's limit
+/// ("a maximum of 255 options per Choice"), checked by the builder so a
+/// violation is an error here rather than whatever a server does with it.
+/// The OpenAPI document states no maximum; the builder is deliberately the
+/// stricter of the two (module docs, `# Limits are checked here`).
 pub const MAX_CHOICE_OPTIONS: usize = 255;
-/// Maximum levels a Score may define. The API's limit, checked by the builder;
-/// the minimum is 2, since one level cannot be a scale.
+/// Maximum levels a Score may define: the HTTP API reference page's limit
+/// ("the API accepts up to 10"), checked by the builder. The minimum is 2,
+/// also the reference page's ("at least two levels"), since one level cannot
+/// be a scale; the OpenAPI document says only `minItems: 1` and no maximum
+/// (module docs, `# Limits are checked here`).
 pub const MAX_SCORE_LEVELS: usize = 10;
 
 /// One question, as sent on the wire.
@@ -72,7 +104,9 @@ pub const MAX_SCORE_LEVELS: usize = 10;
 pub enum Question {
     /// Yes/no; the answer is the probability of yes.
     Noul {
-        /// What to decide. String, object or array.
+        /// What to decide. String, object or array; `null` when the criteria
+        /// say it all (module docs, `# Ids are for code, not for the model`).
+        /// Sent as `null`, never omitted.
         instructions: Value,
         /// Optional meaning of yes and no.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,18 +114,33 @@ pub enum Question {
     },
     /// One option from a defined set.
     Choice {
-        /// What to decide.
+        /// What to decide; `null` when the option descriptions say it all.
+        /// Sent as `null`, never omitted.
         instructions: Value,
         /// Option key to rubric description (`null` allowed).
         criteria: BTreeMap<String, Value>,
     },
     /// A position along ordered levels.
     Score {
-        /// What to rate.
+        /// What to rate; `null` when the levels say it all. Sent as `null`,
+        /// never omitted.
         instructions: Value,
         /// Ordered level descriptions, lowest first.
         criteria: Vec<Value>,
     },
+}
+
+impl Question {
+    /// The primitive's wire `type`: `noul`, `choice` or `score`. It is what
+    /// the answer to this question must be, and what
+    /// [`crate::Response::verify`] names as `expected` when it is not.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Noul { .. } => "noul",
+            Self::Choice { .. } => "choice",
+            Self::Score { .. } => "score",
+        }
+    }
 }
 
 /// What yes and no mean for a Noul question.
@@ -262,16 +311,38 @@ impl Questions {
     }
 
     /// Add a yes/no question.
+    ///
+    /// `instructions` may be null when `criteria` say what yes and no mean;
+    /// with neither, the question is refused with [`Error::InvalidQuestion`].
+    /// Criteria that describe neither outcome (both sides `None` or null)
+    /// count as none. The id is never shown to the model, so such a Noul
+    /// asks it nothing, yet the answer would come back as a probability that
+    /// reads like a judgment. A Choice and a Score always carry criteria, so
+    /// they have no such check.
     pub fn noul(
         &mut self,
         id: impl Into<String>,
         instructions: impl Into<Value>,
         criteria: Option<NoulCriteria>,
     ) -> Result<Handle<Noul>> {
+        let id = id.into();
+        let instructions = instructions.into();
+        // Criteria that describe neither outcome (`{}`, or both sides null)
+        // tell the model no more than no criteria at all.
+        let criteria_say_nothing = criteria.as_ref().is_none_or(|c| {
+            c.yes.as_ref().is_none_or(Value::is_null) && c.no.as_ref().is_none_or(Value::is_null)
+        });
+        if instructions.is_null() && criteria_say_nothing {
+            return Err(Error::InvalidQuestion {
+                id,
+                reason: "a Noul needs instructions or criteria: the id is never shown to the model"
+                    .to_owned(),
+            });
+        }
         self.insert(
-            id.into(),
+            id,
             Question::Noul {
-                instructions: instructions.into(),
+                instructions,
                 criteria,
             },
         )
@@ -460,6 +531,135 @@ mod tests {
             matches!(&err, Error::InvalidQuestion { id, reason } if id == "s" && reason.contains("level 1 is null")),
             "{err}"
         );
+    }
+
+    #[test]
+    fn null_instructions_are_sent_as_null() {
+        let mut q = Questions::new();
+        q.choice::<Colour>("unit", ()).unwrap();
+        q.score("none", None::<&str>, ["low", "high"]).unwrap();
+        q.dynamic_choice(
+            "value",
+            Value::Null,
+            [
+                ("a".to_owned(), Some("A".to_owned())),
+                ("b".to_owned(), None),
+            ],
+        )
+        .unwrap();
+        q.noul(
+            "option",
+            None::<String>,
+            Some(NoulCriteria::new("spam", "not spam")),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&q).unwrap();
+        for id in ["unit", "none", "value", "option"] {
+            let question = json[id].as_object().unwrap();
+            assert_eq!(
+                question.get("instructions"),
+                Some(&Value::Null),
+                "{id}: the key is present and null"
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&json["none"]).unwrap(),
+            r#"{"criteria":["low","high"],"instructions":null,"type":"score"}"#
+        );
+    }
+
+    #[test]
+    fn a_noul_with_neither_instructions_nor_criteria_is_refused() {
+        let mut q = Questions::new();
+        // Criteria that describe neither outcome say no more than none: `{}`
+        // on the wire, or both sides null.
+        let says_nothing = [
+            ("none", None),
+            ("empty", Some(NoulCriteria::default())),
+            (
+                "all_null",
+                Some(NoulCriteria {
+                    yes: Some(Value::Null),
+                    no: Some(Value::Null),
+                }),
+            ),
+            (
+                "one_null",
+                Some(NoulCriteria {
+                    yes: Some(Value::Null),
+                    no: None,
+                }),
+            ),
+        ];
+        for (form, instructions) in [("unit", Value::from(())), ("null", Value::Null)] {
+            for (shape, criteria) in &says_nothing {
+                let id = format!("{form}_{shape}");
+                let err = q
+                    .noul(id.clone(), instructions.clone(), criteria.clone())
+                    .unwrap_err();
+                assert!(
+                    matches!(&err, Error::InvalidQuestion { id: got, reason }
+                        if *got == id && reason == "a Noul needs instructions or criteria: the id is never shown to the model"),
+                    "{id}: {err}"
+                );
+            }
+        }
+        assert!(q.is_empty(), "a refused question is not added");
+
+        // Criteria alone carry the question: accepted.
+        q.noul(
+            "spam",
+            (),
+            Some(NoulCriteria::new(
+                "unsolicited advertising",
+                "a real message",
+            )),
+        )
+        .unwrap();
+        // One side described is enough, whether the other is absent or null.
+        q.noul(
+            "spam_yes_only",
+            (),
+            Some(NoulCriteria {
+                yes: Some("unsolicited advertising".into()),
+                no: None,
+            }),
+        )
+        .unwrap();
+        q.noul(
+            "spam_no_only",
+            (),
+            Some(NoulCriteria {
+                yes: Some(Value::Null),
+                no: Some("a real message".into()),
+            }),
+        )
+        .unwrap();
+        // Instructions alone: accepted, as always, and so are instructions
+        // with criteria that describe nothing.
+        q.noul("urgent", "Is `message` urgent?", None).unwrap();
+        q.noul(
+            "urgent_empty_criteria",
+            "Is `message` urgent?",
+            Some(NoulCriteria::default()),
+        )
+        .unwrap();
+        assert_eq!(q.len(), 5);
+    }
+
+    #[test]
+    fn question_kind_names_the_primitive() {
+        let mut q = Questions::new();
+        q.noul("n", "?", None).unwrap();
+        q.choice::<Colour>("c", "?").unwrap();
+        q.score("s", "?", ["low", "high"]).unwrap();
+        let json = serde_json::to_value(&q).unwrap();
+        for (id, question) in q.iter() {
+            // The kind is the `type` the question is sent with.
+            assert_eq!(json[id]["type"], question.kind(), "{id}");
+        }
+        let kinds: Vec<&str> = q.iter().map(|(_, question)| question.kind()).collect();
+        assert_eq!(kinds, ["choice", "noul", "score"]);
     }
 
     #[test]

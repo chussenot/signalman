@@ -45,7 +45,8 @@
 //! ```
 //!
 //! * [`question`], [`answer`] and [`client`] are [`judgment`]'s, re-exported:
-//!   requests with typed handles, validated answers, SDK-equivalent retries.
+//!   requests with typed handles, validated answers, retries on the official
+//!   SDKs' defaults with the differences stated on [`RetryPolicy`].
 //! * [`triage`] is the application: speculative fan-out over an alert, then a
 //!   routing policy with risk-scaled confidence thresholds.
 //! * [`backstage`] resolves the alerting component in the software catalog,

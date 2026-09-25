@@ -1290,15 +1290,18 @@ dependencies = [
 
 [[package]]
 name = "judgment"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fastrand",
+ "httpdate",
+ "jsonschema",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "wiremock",
 ]
 
@@ -2287,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "signalman"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",

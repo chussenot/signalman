@@ -188,6 +188,57 @@ async fn qualify_alert_rejects_both_or_neither_input() {
 }
 
 #[tokio::test]
+async fn qualify_alert_reports_an_unfit_answer_as_a_tool_error_on_both_inputs() {
+    // The wording docs/mcp.md gives an agent: the client's message, after
+    // `qualify_alert: ` for an id and `qualify_alert: TypeSafe call failed: `
+    // for an inline alert, naming the question and the option, ending with
+    // the request id the API sent. Nothing is written either way.
+    let _serialize = serialized().await;
+    let incidentio_srv = MockServer::start().await;
+    let typesafe_srv = MockServer::start().await;
+    common::mount_scene(&incidentio_srv).await;
+    common::mount_no_writes(&incidentio_srv).await;
+    let mut body = common::SystemOne::default().body();
+    body["answers"]["owner"] = json!({ "type": "choice", "choice": "made-up-team",
+                                       "probabilities": { "made-up-team": 0.9, "application": 0.1 },
+                                       "confidence": 0.9 });
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-typesafe-request-id", "req-unfit")
+                .set_body_json(body),
+        )
+        .expect(2)
+        .mount(&typesafe_srv)
+        .await;
+    let t = common::triager(&typesafe_srv, &incidentio_srv);
+    let client = connected(mcp::Server::new(t, false)).await;
+
+    let inline = json!({ "source": "prometheus", "title": "KubePodCrashLooping",
+                         "description": "checkout-api restarting" });
+    for (args, prefix) in [
+        (
+            json!({ "alert_id": "al-1" }),
+            "qualify_alert: answer \"owner\"",
+        ),
+        (
+            json!({ "alert": inline }),
+            "qualify_alert: TypeSafe call failed: answer \"owner\"",
+        ),
+    ] {
+        let result = client.call_tool(call("qualify_alert", args)).await.unwrap();
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        let text = &result.content[0].as_text().expect("a text error").text;
+        assert!(text.starts_with(prefix), "{text}");
+        assert!(text.contains("made-up-team"), "{text}");
+        assert!(text.ends_with(" [request_id req-unfit]"), "{text}");
+    }
+    typesafe_srv.verify().await;
+    incidentio_srv.verify().await;
+}
+
+#[tokio::test]
 async fn related_alerts_lists_everything_else_firing_when_given_an_id() {
     let _serialize = serialized().await;
     let (t, ..) = triager(WriteBack::DryRun, None).await;

@@ -186,8 +186,11 @@ pub fn decide(answers: &TriageAnswers, policy: &Policy) -> Decision {
 
     let chosen = answers.candidates.get(&answers.owner.chosen);
 
-    // "None of these", an option outside the candidate set, or low confidence
-    // all mean a person decides.
+    // "None of these" or low confidence means a person decides. An owner
+    // outside the candidate set cannot get here from a read response:
+    // `TriageQuestions::read` verifies the answer against the question
+    // (`Response::verify`), and the client refused it before that. The arm
+    // stays for answers built by hand, and sends them to a person too.
     let owner = match chosen {
         Some(c) if c.key != NONE_OF_THESE && owner_conf >= policy.human_below_confidence => {
             Owner::from(c)
@@ -285,8 +288,14 @@ mod tests {
     }
 
     fn impact(level: f64) -> serde_json::Value {
+        // The legend is the levels as sent, as TypeSafe echoes them.
+        let legend: serde_json::Map<String, serde_json::Value> = crate::triage::Impact::LEVELS
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i.to_string(), json!(l)))
+            .collect();
         json!({ "type": "score", "score": level,
-                "legend": {"0":"a","1":"b","2":"c","3":"d"},
+                "legend": legend,
                 "probabilities": {"0":0.0,"1":0.0,"2":0.0,"3":0.0}, "confidence": 0.9 })
     }
 

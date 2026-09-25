@@ -2,7 +2,7 @@
 title: Roadmap
 description: What has not been verified against live systems, what is missing, and how the gaps map to the beads backlog.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [roadmap]
 ---
 
@@ -49,6 +49,5 @@ GitHub Actions has never run in this repository: every job is refused at schedul
 
 ## Smaller known gaps
 
-- `Retry-After` in HTTP-date form falls back to backoff.
 - The in-memory `webhook-id` set does not survive restarts; tag adds are idempotent, so the consequence is a repeated model call.
 - Without Backstage, the built-in fallback team list encodes one organisation's ownership model; `[[triage.teams]]` in the configuration file replaces it, and `[triage.text]` the impact rubric, but both remain guesses until tuned on real alerts.

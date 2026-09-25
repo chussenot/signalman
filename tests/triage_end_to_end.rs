@@ -3,6 +3,8 @@
 //! alert to the incident the model chose.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::time::Duration;
 
 use serde_json::json;
@@ -37,7 +39,7 @@ async fn triage_end_to_end_attaches_to_duplicate_incident() {
                 "owner": { "type": "choice", "choice": "application",
                            "probabilities": { "application": 0.7, "platform": 0.3 }, "confidence": 0.6 },
                 "impact": { "type": "score", "score": 2.1,
-                            "legend": { "0": "a", "1": "b", "2": "c", "3": "d" },
+                            "legend": common::impact_legend(),
                             "probabilities": { "0": 0.0, "1": 0.1, "2": 0.7, "3": 0.2 }, "confidence": 0.6 },
                 "actionable": { "type": "noul", "noul": 0.93 },
                 "duplicate_of": { "type": "choice", "choice": "INC-4821",
