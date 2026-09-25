@@ -50,7 +50,7 @@ The best labels are observed outcomes: the team that actually took the alert, th
 
 ```sh
 signalman eval examples/eval/cases.jsonl                       # call the model, print the report
-signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every raw response
+signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every graded response
 signalman eval cases.jsonl --replay runs/jev-1.13.0            # re-grade under the current configuration, no model call
 signalman eval cases.jsonl --json > report.json                # the full report, every case included
 ```
@@ -104,7 +104,7 @@ Confidence is the Choice or Score confidence for those primitives and `max(p, 1 
 
 ### An answer that does not fit
 
-The TypeSafe client checks every response against the questions it was sent (`Response::verify` in the `judgment` crate): an answer for every question, of the right primitive, a Choice naming only options it was offered, a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error, not an answer to grade. A live run does not stop there: one such case would otherwise throw away the rest of a run that has already been paid for. The case is listed under `failed` in the JSON report, and after the mismatches in the text report, with the error naming the question and the option or level, and TypeSafe's request id to report it with. It is not graded and not written with `--record`, so every figure above is over the graded cases, and `cases` counts only those. Any other error (the network, the key, a case that does not parse) still stops the run. A report in which every case was graded has no `failed` key, so it reads as before.
+The TypeSafe client checks every response against the questions it was sent (`Response::verify` in the `judgment` crate): an answer for every question, of the right primitive, a Choice naming only options it was offered, a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error, not an answer to grade. A live run does not stop there: one such case would otherwise throw away the rest of a run that has already been paid for. The case is listed under `failed` in the JSON report, and after the mismatches in the text report, with the error naming the question and the option or level, and TypeSafe's request id, when the API sent one, to report it with. It is not graded, so every figure above is over the graded cases, and `cases` counts only those. Under `--record` it gets no `<id>.json` (one an earlier run left there is removed, so it cannot be graded as this run's answer) and is listed instead in `failed.jsonl` beside the recordings, one case per line; the file is removed by a run in which nothing failed. A `--replay` of the directory over the same cases file reports those cases as failed again, rather than stopping at the missing recording. A case with neither a recording nor a line in `failed.jsonl` still stops a replay. Any other error (the network, the key, a case that does not parse) still stops the run. A report in which every case was graded has no `failed` key, so it reads as before.
 
 ```
 failed (1), not graded: the answer did not fit the questions, so the figures above are over the 2 graded cases:

@@ -1012,6 +1012,39 @@ fn an_impact_score_off_the_scale_is_refused() {
     assert!(validator.validate(&doc).is_err());
 }
 
+/// A Score the client admits as float error just past the top of the scale
+/// (`Response::verify` allows 1e-9) reads onto the scale, so the document
+/// the flow builds from it still satisfies its own contract.
+fn outage_within_float_error(owner: &OwnerPick<'_>) -> Value {
+    json!({
+        "owner": owner_answer(owner, 0.91),
+        "impact": {
+            "type": "score",
+            "score": 3.0 + 5e-10,
+            "legend": common::impact_legend(),
+            "probabilities": { "0": 0.0, "1": 0.0, "2": 0.0, "3": 1.0 },
+            "confidence": 0.99,
+        },
+        "actionable": { "type": "noul", "noul": 0.95 },
+        "duplicate_of": duplicate_answer("none", 0.5),
+        "caused_by_change": { "type": "noul", "noul": 0.2 },
+    })
+}
+
+#[test]
+fn an_impact_score_within_float_error_of_the_scale_builds_a_valid_document() {
+    let (alert, answers, decision) = flow_case(outage_within_float_error);
+    let outcome = flow_outcome(&alert, &answers, &decision, applied_writes(&decision));
+    outcome.validate().unwrap();
+    let validator = jsonschema::validator_for(&committed_schema()).unwrap();
+    let doc = serde_json::to_value(&outcome).unwrap();
+    if let Err(e) = validator.validate(&doc) {
+        panic!("the document does not satisfy the committed schema: {e}");
+    }
+    assert_eq!(doc["judgments"]["impact"]["score"], json!(3.0));
+    assert_eq!(doc["impact"], json!("outage"));
+}
+
 // ---------------------------------------------------------------------------
 // 5. The real binary
 // ---------------------------------------------------------------------------

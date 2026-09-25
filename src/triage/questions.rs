@@ -260,9 +260,12 @@ impl TriageQuestions {
     ///
     /// Answers are confined to what was asked: a Choice may only name an
     /// option the question offered, and a Score must be a position on the
-    /// scale the question defined, with its legend the levels sent.
-    /// Everything downstream — the policy, the tags, the outcome document —
-    /// may therefore assume that an answer refers to the request it answers.
+    /// scale the question defined, with its legend the levels sent. The
+    /// client admits a Score up to 1e-9 past either end as float error;
+    /// the read pins it onto `0..=top` exactly, as the outcome contract
+    /// requires. Everything downstream — the policy, the tags, the outcome
+    /// document — may therefore assume that an answer refers to the request
+    /// it answers.
     ///
     /// An answer outside the questions is an error, never a guess: an owner
     /// or an incident the question never offered is `UnknownOption` naming
@@ -277,10 +280,19 @@ impl TriageQuestions {
         // it: a recording read by case id (`signalman eval --replay`) and a
         // hand-built response. After it, no `get` below can fail.
         response.verify(&self.questions)?;
+        let mut impact: Score = response.get(&self.impact)?;
+        // `verify` admits 1e-9 of server float error at either end of the
+        // scale; the outcome contract bounds the score exactly
+        // (`ImpactJudgment.score`, `Outcome::validate`), so pin it onto the
+        // scale. It moves by at most that much, so no answer changes level.
+        // A question has 2 to 10 levels, so the top index is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let top = impact.levels.len().saturating_sub(1) as f64;
+        impact.value = impact.value.clamp(0.0, top);
         Ok(TriageAnswers {
             owner: response.get(&self.owner)?,
             candidates: self.candidates.clone(),
-            impact: response.get(&self.impact)?,
+            impact,
             actionable: response.get(&self.actionable)?,
             duplicate_of: self
                 .duplicate_of
@@ -583,6 +595,31 @@ mod tests {
             .to_string();
         assert!(err.contains("impact"), "{err}");
         assert!(err.contains("0..=3"), "{err}");
+    }
+
+    #[test]
+    fn a_score_within_float_error_of_either_end_reads_onto_the_scale() {
+        // `verify` admits 1e-9 of float error past either end; the outcome
+        // contract bounds the score exactly, so the read pins it.
+        let q = TriageQuestions::for_alert(&full_alert()).unwrap();
+        for (raw, pinned, level) in [(3.0 + 5e-10, 3.0, "3"), (-5e-10, 0.0, "0")] {
+            let mut probabilities = json!({ "0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0 });
+            probabilities[level] = json!(1.0);
+            let answers = q
+                .read(&response(&answers_with(
+                    "impact",
+                    json!({ "type": "score", "score": raw,
+                            "legend": impact_legend(),
+                            "probabilities": probabilities,
+                            "confidence": 0.9 }),
+                )))
+                .unwrap();
+            assert!(
+                answers.impact.value.to_bits() == f64::to_bits(pinned),
+                "{raw} read as {}",
+                answers.impact.value
+            );
+        }
     }
 
     #[test]

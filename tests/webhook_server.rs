@@ -283,7 +283,9 @@ async fn signed_alert_created_webhook_triages_tags_and_attaches() {
 async fn an_answer_the_question_never_offered_leaves_the_alert_untouched() {
     // TypeSafe names an owner the question never offered. The client refuses
     // the response, the triage fails, and nothing is written to incident.io:
-    // no tags, no note, no attach (each mock expects zero calls).
+    // no tags, no note, no attach. What shows it is that incident.io saw no
+    // request but reads, whatever its body; the write mocks only match the
+    // bodies of a successful triage.
     let mut answers = attaching_answers();
     answers["owner"] = json!({ "type": "choice", "choice": "made-up-team",
                                "probabilities": { "made-up-team": 0.9, "application": 0.1 },
@@ -311,12 +313,27 @@ async fn an_answer_the_question_never_offered_leaves_the_alert_untouched() {
         msg.contains("req-webhook"),
         "the request id is reported: {msg}"
     );
+    // The flow does not ask again. That the client does not retry an unfit
+    // answer is crates/judgment/tests/client.rs's to show, with retries on.
     assert_eq!(
         h.typesafe.received_requests().await.unwrap().len(),
         1,
-        "asked once, not retried"
+        "asked once"
     );
     h.incidentio.verify().await;
+    let writes: Vec<String> = h
+        .incidentio
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() != "GET")
+        .map(|r| format!("{} {}", r.method, r.url.path()))
+        .collect();
+    assert!(
+        writes.is_empty(),
+        "no incident.io write on a refused answer: {writes:?}"
+    );
 }
 
 #[tokio::test]
