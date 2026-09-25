@@ -245,7 +245,7 @@ Where to read about the crate itself:
 
 - `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
 - `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
-- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate mirrors the Python SDK's defaults so a failure looks the same from either language.
+- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate's retries take the official SDKs' defaults, so a failure looks the same from Rust as from Python or JavaScript, and the rustdoc of `RetryPolicy` states where they deliberately differ.
 
 This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
 
@@ -273,20 +273,24 @@ sequenceDiagram
 
 ## Retries
 
-A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs; the defaults (two retries, 0.5 s doubling to 5 s with jitter, `Retry-After` honoured up to 30 s, 408, 429 and 5xx retried) and the reasons for each are in the rustdoc of `RetryPolicy`.
+A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs. The defaults are the official SDKs': two retries; 0.5 s doubling to 5 s, with a jitter that only ever shortens a wait; 408, 429, every 5xx and every transport failure retried; the server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date, measured against the response's `Date` header) honoured on any retried status up to 30 s; and no overall budget, which a caller may set. The reasons for each, and a table of where the crate matches the SDKs and where it deliberately differs, are in the rustdoc of `RetryPolicy`. `RetryPolicy::conservative()` retries only 408, 429 and a connection that was never made, for a caller who would rather fail a billed call than pay for it twice. signalman uses the defaults for all three upstreams and sets no budget; in `serve`, each triage's own deadline bounds it instead ([Operations](operations.md#backpressure)).
 
 ```mermaid
 flowchart TD
     S[send request] --> R{response?}
-    R -->|transport error| T{attempt ≤ max_retries?}
-    R -->|status| C{408, 429 or 5xx?}
+    R -->|status| C{"in http_statuses?<br/>default 408, 429, 5xx"}
+    R -->|"transport error, or body cut short"| X{"transport level retries it?<br/>Any: yes; BeforeSend: only when<br/>the connection was never made; Never: no"}
     C -->|no| DONE[return status and body to the client for classification]
-    C -->|yes| T
-    T -->|no| FAIL[return last error or status]
-    T -->|yes| W{Retry-After present<br/>and ≤ retry_after_max?}
-    W -->|yes| SLEEP1[sleep Retry-After]
-    W -->|no| SLEEP2[sleep backoff_initial × 2^retry, capped at backoff_max, ± jitter]
-    SLEEP1 & SLEEP2 --> S
+    C -->|yes| T{"attempt ≤ max_retries?"}
+    X -->|yes| T
+    X -->|no| FAIL[return last error or status]
+    T -->|no| FAIL
+    T -->|yes| W{"server's wait present<br/>and ≤ retry_after_max?"}
+    W -->|yes| D1["wait = the server's wait<br/>(retry-after-ms, seconds or a date)"]
+    W -->|no| D2["wait = backoff_initial × 2^(retry − 1), capped at backoff_max,<br/>minus a random share of at most backoff_jitter"]
+    D1 & D2 --> B{"budget set, and<br/>elapsed + wait ≥ budget?"}
+    B -->|yes| FAIL
+    B -->|no| SLEEP[sleep the wait] --> S
 ```
 
 Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
@@ -1164,7 +1168,7 @@ The multi-value filter form is inferred from single-value examples and is unveri
 
 ## Errors
 
-`incidentio::Error` maps 401, 403, 404, 422 and 429 to variants carrying the `request_id` and, for 422, the field-level messages from the documented error body. `Retry-After` on 429 is honoured. Everything else is `Http` with the truncated body.
+`incidentio::Error` maps 401, 403, 404, 422 and 429 to variants carrying the `request_id` and, for 422, the field-level messages from the documented error body. The server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date) is honoured on any retried status, up to 30 s, and the backoff's jitter only ever shortens a wait. Everything else is `Http` with the truncated body.
 
 
 <!-- source: docs/changes.md -->
@@ -1791,7 +1795,7 @@ The same line carries `outcome`: [the outcome contract](triage.md#the-outcome-co
 
 signalman installs one subscriber with the human-readable `tracing` text formatter (and, when an OTLP endpoint is set, the OpenTelemetry layer beside it, which changes nothing in the log); there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
 
-Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
+Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. A spent retry budget logs `retry budget spent; returning the last failure` at `warn`, with the attempt, the wait it refused, the time elapsed and the budget; only a client given a budget logs it, and signalman sets none. Catalog enrichment details are at `debug`.
 
 ## Failure modes
 
@@ -1973,7 +1977,7 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the two examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key, and the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the libraries carry: the crate-level walkthroughs in `src/lib.rs` and `crates/judgment/src/lib.rs` are `no_run`, so they compile against the public API on every test run without an API key; the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys; and the `RetryPolicy` example in `crates/judgment/src/http.rs` builds a policy with a budget by struct update, which pins that the struct stays constructible that way. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
 
 The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and nothing in the default gate exercises that configuration. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
 
@@ -2007,7 +2011,7 @@ flowchart TD
 ```
 crates/judgment/   the judgment crate (decision 0010): the typed client, reusable on its own
   src/client.rs    TypeSafe HTTP client
-  src/http.rs      shared retry loop, backoff, Retry-After (the other clients use it too)
+  src/http.rs      shared retry loop, backoff, the server's wait (the other clients use it too)
   src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
   src/answer.rs    Answer wire shape, Probability/Confidence, typed views
   src/error.rs     TypeSafe-side error enum
@@ -2126,7 +2130,6 @@ GitHub Actions has never run in this repository: every job is refused at schedul
 
 ## Smaller known gaps
 
-- `Retry-After` in HTTP-date form falls back to backoff.
 - The in-memory `webhook-id` set does not survive restarts; tag adds are idempotent, so the consequence is a repeated model call.
 - Without Backstage, the built-in fallback team list encodes one organisation's ownership model; `[[triage.teams]]` in the configuration file replaces it, and `[triage.text]` the impact rubric, but both remain guesses until tuned on real alerts.
 
@@ -2285,7 +2288,7 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |
-| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
+| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with backoff jittered downward; the server's wait honoured up to 30 s |
 | OTLP collector down or slow | OpenTelemetry SDK, on its own thread | The SDK logs a warning; no triage waits on export or fails because of it |
 
 The receiver acknowledges before the flow runs, so an upstream failure never causes incident.io to redeliver. That is deliberate: a redelivery would re-run the model on the same alert. The cost is that a failed triage needs the `incidentio triage-alert` command to retry by hand.

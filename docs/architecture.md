@@ -2,7 +2,7 @@
 title: Architecture
 description: The components of signalman, how an alert moves through them, what state each replica holds and why it is in memory, where the boundaries between catalog, model and code lie, and how failures are contained.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [architecture]
 ---
 
@@ -157,7 +157,7 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |
-| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with jittered backoff, `Retry-After` honoured |
+| Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with backoff jittered downward; the server's wait honoured up to 30 s |
 | OTLP collector down or slow | OpenTelemetry SDK, on its own thread | The SDK logs a warning; no triage waits on export or fails because of it |
 
 The receiver acknowledges before the flow runs, so an upstream failure never causes incident.io to redeliver. That is deliberate: a redelivery would re-run the model on the same alert. The cost is that a failed triage needs the `incidentio triage-alert` command to retry by hand.

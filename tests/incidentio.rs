@@ -22,6 +22,7 @@ fn client(server: &MockServer) -> Client {
             backoff_max: Duration::from_millis(20),
             backoff_jitter: 0.0,
             retry_after_max: Duration::from_secs(1),
+            ..RetryPolicy::default()
         })
         .build()
         .unwrap()

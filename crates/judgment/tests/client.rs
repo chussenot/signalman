@@ -1,15 +1,24 @@
 //! Client behaviour against a mock TypeSafe API: the documented request shape
 //! and typed answers, error mapping by remedy (400 and 422 parsed into
 //! issues, 403 apart from 401, 404 left as an HTTP error), the trimmed key,
-//! retry with `Retry-After`, exhausted retries, the models list, and the
-//! request id carried from the `x-typesafe-request-id` header onto responses
-//! and errors.
+//! retries (the server's wait from `retry-after-ms` or `Retry-After`, the
+//! budget, `RetryPolicy::conservative`, the transport levels against a
+//! refused connection, a timeout and a truncated body), exhausted retries,
+//! the models list, and the request id carried from the
+//! `x-typesafe-request-id` header onto responses and errors.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::time::Duration;
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use judgment::client::REQUEST_ID_HEADER;
-use judgment::{Client, Error, Questions, Recorder, Replay, RetryPolicy, SystemOne, options};
+use judgment::{
+    Client, Error, Questions, Recorder, Replay, RetryPolicy, SystemOne, TransportRetry, options,
+};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -38,6 +47,7 @@ fn fast_retries(max: u32) -> RetryPolicy {
         backoff_max: Duration::from_millis(20),
         backoff_jitter: 0.0,
         retry_after_max: Duration::from_secs(1),
+        ..RetryPolicy::default()
     }
 }
 
@@ -333,6 +343,312 @@ async fn exhausted_retries_report_attempt_count() {
         c.system_one(&"s", &q).await,
         Err(Error::Overloaded { attempts: 3, .. })
     ));
+}
+
+#[tokio::test]
+async fn retry_after_ms_is_honoured_before_retry_after() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after-ms", "250")
+                .insert_header("retry-after", "0"),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server, fast_retries(1));
+    let started = Instant::now();
+    c.system_one(&"s", &one_noul()).await.unwrap();
+    // Only a lower bound: `Retry-After: 0` alone would have retried at once.
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
+}
+
+#[tokio::test]
+async fn budget_stops_before_a_wait_that_would_reach_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(529))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let c = client(
+        &server,
+        RetryPolicy {
+            max_retries: 5,
+            backoff_initial: Duration::from_millis(100),
+            backoff_max: Duration::from_secs(1),
+            backoff_jitter: 0.0,
+            budget: Some(Duration::from_millis(250)),
+            ..RetryPolicy::default()
+        },
+    );
+    // First wait: about 0 + 100 ms, under the budget, taken. Second wait:
+    // at least 100 + 200 ms, which reaches 250 ms, so the loop stops there.
+    let err = c.system_one(&"s", &one_noul()).await.unwrap_err();
+    assert!(
+        matches!(err, Error::Overloaded { attempts: 2, .. }),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_after_beyond_the_budget_is_not_waited() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(
+        &server,
+        RetryPolicy {
+            backoff_initial: Duration::from_millis(100),
+            backoff_jitter: 0.0,
+            budget: Some(Duration::from_millis(500)),
+            ..RetryPolicy::default()
+        },
+    );
+    // The server asks for 1 s and only 500 ms are left: the failure comes
+    // back now, with the server's wait for the caller to honour.
+    let err = c.system_one(&"s", &one_noul()).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::RateLimited {
+                attempts: 1,
+                retry_after: Some(d),
+                ..
+            } if d == Duration::from_secs(1)
+        ),
+        "{err:?}"
+    );
+}
+
+/// [`RetryPolicy::conservative`] with waits short enough for a test.
+fn fast_conservative() -> RetryPolicy {
+    RetryPolicy {
+        backoff_initial: Duration::from_millis(5),
+        backoff_max: Duration::from_millis(20),
+        backoff_jitter: 0.0,
+        ..RetryPolicy::conservative()
+    }
+}
+
+fn client_at(base_url: &str, retry: RetryPolicy, timeout: Duration) -> Client {
+    Client::builder()
+        .api_key("test-key")
+        .base_url(base_url)
+        .retry(retry)
+        .timeout(timeout)
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn conservative_does_not_retry_5xx() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, fast_conservative())
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Http { status: 503, .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn conservative_retries_429() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    client(&server, fast_conservative())
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn conservative_does_not_retry_a_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(noul_body())
+                .set_delay(Duration::from_millis(500)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The request was sent before the timeout fired, so it may have been
+    // processed and billed: not retried.
+    let err = client_at(
+        &server.uri(),
+        fast_conservative(),
+        Duration::from_millis(50),
+    )
+    .system_one(&"s", &one_noul())
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, Error::Transport { attempts: 1, source } if source.is_timeout()),
+        "{err:?}"
+    );
+}
+
+/// A base URL nothing listens on: an ephemeral port bound and released, so
+/// a connect is refused before anything is sent. Another process could take
+/// the port between the release and the connect; that race is rare and
+/// accepted.
+fn refused_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn conservative_retries_a_refused_connection() {
+    let err = client_at(&refused_url(), fast_conservative(), Duration::from_secs(2))
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Transport { attempts: 3, source } if source.is_connect()),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn transport_never_does_not_retry() {
+    let never = RetryPolicy {
+        transport: TransportRetry::Never,
+        ..fast_retries(2)
+    };
+    let err = client_at(&refused_url(), never, Duration::from_secs(2))
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Transport { attempts: 1, .. }),
+        "{err:?}"
+    );
+}
+
+/// A raw HTTP/1.1 server whose every response promises a 100-byte body and
+/// closes after 9 bytes of it, counting the connections it accepts.
+/// wiremock cannot truncate a body, hence a thread over a std listener. Its
+/// accept loop polls, so it stops when `stop` is set or after 5 s, and a
+/// regression fails the test instead of hanging it.
+fn truncating_server() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let connections = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (count, done) = (Arc::clone(&connections), Arc::clone(&stop));
+    let thread = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    read_request(&mut stream);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                          content-length: 100\r\n\r\n{\"model\":",
+                    );
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
+    });
+    (url, connections, stop, thread)
+}
+
+/// Read one request, head and body, so that closing the connection sends a
+/// clean end of stream rather than a reset over unread bytes.
+fn read_request(stream: &mut TcpStream) {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut wanted = None;
+    loop {
+        if let Some(total) = wanted
+            && buf.len() >= total
+        {
+            return;
+        }
+        let n = match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        if wanted.is_none()
+            && let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+        {
+            let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let body = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            wanted = Some(end + 4 + body);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_truncated_body_is_retried_by_default_only() {
+    for (transport, attempts) in [(TransportRetry::BeforeSend, 1), (TransportRetry::Any, 3)] {
+        let (url, connections, stop, thread) = truncating_server();
+        let policy = RetryPolicy {
+            transport,
+            ..fast_retries(2)
+        };
+        let err = client_at(&url, policy, Duration::from_secs(2))
+            .system_one(&"s", &one_noul())
+            .await
+            .unwrap_err();
+        stop.store(true, Ordering::SeqCst);
+        thread.join().unwrap();
+        assert!(
+            matches!(&err, Error::Transport { attempts: a, .. } if *a == attempts),
+            "{transport:?}: {err:?}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            attempts as usize,
+            "{transport:?}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -198,7 +198,7 @@ The same line carries `outcome`: [the outcome contract](triage.md#the-outcome-co
 
 signalman installs one subscriber with the human-readable `tracing` text formatter (and, when an OTLP endpoint is set, the OpenTelemetry layer beside it, which changes nothing in the log); there is no JSON log format setting yet. Under that formatter `outcome=` is appended to the line verbatim, so every `alert triaged` line grows by the whole document — about 2.5 kB for the smallest shape and more with catalog context, related alerts and typed changes — and there is no way to turn it off. Pipe stderr through a JSON parser on the `outcome=` value, and size the log budget for it.
 
-Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. Catalog enrichment details are at `debug`.
+Rejected webhooks log the reason and `webhook-id`. Retries log attempt, status and delay at `warn`. A spent retry budget logs `retry budget spent; returning the last failure` at `warn`, with the attempt, the wait it refused, the time elapsed and the budget; only a client given a budget logs it, and signalman sets none. Catalog enrichment details are at `debug`.
 
 ## Failure modes
 

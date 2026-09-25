@@ -47,9 +47,9 @@
 //! * Limits are checked before sending. 255 options per Choice, 2 to 10 levels
 //!   per Score and unique ids are enforced by the builder, so a bad question is
 //!   an error naming the question, not a 422 after a round trip.
-//! * Retries mirror the official SDK. The defaults are the Python SDK's, so
-//!   behaviour matches across languages and the worst case is bounded; the
-//!   reasoning is on [`RetryPolicy`].
+//! * Retries follow the official SDKs' defaults and say, on [`RetryPolicy`],
+//!   where they differ. Behaviour matches across languages, the worst case
+//!   is bounded, and the reasoning behind each field is on that type.
 //!
 //! ## What it deliberately is not
 //!
@@ -102,8 +102,9 @@
 //! * [`question`] builds requests; each question returns a typed [`Handle`].
 //! * [`answer`] validates probabilities and converts wire answers into typed
 //!   views through those handles.
-//! * [`client`] (feature `http`, on by default) talks HTTP with
-//!   SDK-equivalent defaults, retries and errors.
+//! * [`client`] (feature `http`, on by default) talks HTTP with the SDKs'
+//!   defaults, retries and errors; the differences are stated on
+//!   [`RetryPolicy`].
 //! * [`http`] (feature `http`) is the retry loop and
 //!   [`RetryPolicy`], public so another client over
 //!   `reqwest` can share them.
@@ -136,7 +137,7 @@ pub use answer::{
 };
 pub use backend::{Fake, Recorder, Replay, SystemOne};
 #[cfg(feature = "http")]
-pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy};
+pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy, TransportRetry};
 pub use error::{Error, Result, ValidationIssue};
 pub use observer::Observer;
 pub use question::{Handle, NoulCriteria, Options, Question, Questions};

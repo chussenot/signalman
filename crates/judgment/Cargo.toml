@@ -1,7 +1,7 @@
 [package]
 name = "judgment"
 version = "0.1.0"
-description = "Typed, calibrated judgments from TypeSafe System One models (Jev) and compatible backends: questions with typed handles, validated probabilities, SDK-equivalent retries"
+description = "Typed, calibrated judgments from TypeSafe System One models (Jev) and compatible backends: questions with typed handles, validated probabilities, SDK-default retries, differences stated"
 readme = "README.md"
 keywords = ["typesafe", "system-one", "jev", "classification", "calibration"]
 categories = ["api-bindings", "web-programming::http-client"]
@@ -17,7 +17,7 @@ default = ["http"]
 # The HTTP client and the retry loop. Without it the crate is the question
 # builder, the typed answers and the recordings, for a project that brings its
 # own transport.
-http = ["dep:reqwest", "dep:tokio", "dep:fastrand"]
+http = ["dep:reqwest", "dep:tokio", "dep:fastrand", "dep:httpdate"]
 
 [dependencies]
 serde = { workspace = true }
@@ -27,6 +27,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 fastrand = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

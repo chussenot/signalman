@@ -62,14 +62,19 @@ crates for the same API were not adopted.
 - `answer`: `Probability` and `Confidence` newtypes that refuse values outside
   `[0, 1]`, the wire `Answer`, and `Response::get(&handle)` returning `Noul`,
   `Choice<T>` or `Score`.
-- `client` (feature `http`, default): `Client` with SDK-equivalent defaults and
-  `RetryPolicy` (two retries, exponential backoff with jitter, `Retry-After`
-  honoured up to a cap).
+- `client` (feature `http`, default): `Client` with the official SDKs'
+  defaults and `RetryPolicy`: two retries of 408, 429, 5xx and transport
+  failures, exponential backoff whose jitter only shortens a wait, and the
+  server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP
+  date) honoured up to a cap. An overall retry budget is available and off by
+  default, and `RetryPolicy::conservative()` retries only what cannot have
+  been billed twice. The rustdoc of `RetryPolicy` lists where it matches the
+  SDKs and where it deliberately differs.
 - `http` (feature `http`): the retry loop behind `Client`, shareable by other
   `reqwest` clients.
 - `error`: one enum grouped by remedy: configuration, request, transient
-  (retries exhausted), transport, decode, and reading an answer. A 400 or a
-  422 is `InvalidRequest` with the server's message and the fields it names
+  (after the retries stopped), transport, decode, and reading an answer. A 400
+  or a 422 is `InvalidRequest` with the server's message and the fields it names
   as `ValidationIssue`s with dotted paths (`questions.urgency.score.criteria`);
   a 403 is `PermissionDenied`, apart from a 401, because a new key does not
   fix it; a malformed API key (whitespace inside, a control or non-ASCII

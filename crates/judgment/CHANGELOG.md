@@ -25,6 +25,13 @@ document (0.2.0) and the SDK references.
 - `Error::PermissionDenied` for HTTP 403, and `Error::InvalidApiKey` for a key
   the Python SDK (0.7.1) would refuse.
 - `ValidationIssue`: the fields a 400 or 422 body names, with a dotted `path()`.
+- `RetryPolicy::conservative()`: retries only 408, 429 and failures before the
+  request left the process, for callers who would rather fail a billed call
+  than pay for it twice.
+- `RetryPolicy::{http_statuses, transport, budget}` and `TransportRetry`. The
+  total retry budget is off by default.
+- `retry-after-ms` and the HTTP-date form of `Retry-After` are honoured, up to
+  `retry_after_max`. A date is measured against the response's `Date` header.
 
 ### Changed
 
@@ -37,10 +44,15 @@ document (0.2.0) and the SDK references.
 - A Noul with neither instructions nor criteria is refused by the builder.
   Null instructions are still sent as `null` (the schema accepts it, and Laya
   requires the key).
-- The `/v1/models` notes are corrected against the OpenAPI document.
+- Backoff jitter only shortens a wait, as in both SDKs.
+- The rustdoc states where retries match the SDKs and where they deliberately
+  differ, instead of claiming to mirror them. The `/v1/models` notes are
+  corrected against the OpenAPI document.
 
 ### Fixed
 
+- A `Retry-After` of `inf`, or a value of `1e20` or more, panicked in the retry
+  loop. Such values are now ignored.
 - A malformed API key is no longer reported as a URL error.
 
 ### Breaking changes
@@ -62,3 +74,10 @@ document (0.2.0) and the SDK references.
 - The key is trimmed; a blank explicit key is `MissingApiKey` and never falls
   back to the environment; the `MissingApiKey` message is reworded (S2).
 - `Questions::noul` refuses a Noul with neither instructions nor criteria (S2).
+- `RetryPolicy` gains public fields, so struct literals need
+  `..RetryPolicy::default()` (S3).
+- `RetryPolicy::is_retryable` takes `&self` (S3).
+- Backoff jitter only shortens a wait, for every client of the shared loop (S3).
+- `retry-after-ms` and HTTP-date `Retry-After` are honoured up to
+  `retry_after_max` on any retried status, for every client of the shared
+  loop (S3).

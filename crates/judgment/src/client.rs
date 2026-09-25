@@ -2,13 +2,14 @@
 //!
 //! # Defaults
 //!
-//! The defaults mirror the official SDKs, so a call behaves the same from
-//! Rust as from Python and an incident seen in one is reproducible in the
-//! other: the key from `TYPESAFE_API_KEY`, base URL `https://api.typesafe.ai`,
-//! model `jev-latest`, a 10 s timeout per attempt, and two retries with
-//! exponential backoff and jitter. The user agent is `judgment/<crate
-//! version>`, so the API's logs can tell this client from the SDKs and from
-//! the application embedding it.
+//! The defaults are the official SDKs' defaults, so a call behaves the same
+//! from Rust as from Python or JavaScript and an incident seen in one is
+//! reproducible in the others: the key from `TYPESAFE_API_KEY`, base URL
+//! `https://api.typesafe.ai`, model `jev-latest`, a 10 s timeout per
+//! attempt, and two retries with exponential backoff and jitter. Where the
+//! retries deliberately differ from the SDKs is stated on [`RetryPolicy`].
+//! The user agent is `judgment/<crate version>`, so the API's logs can tell
+//! this client from the SDKs and from the application embedding it.
 //!
 //! The key is checked when the client is built, with the Python SDK's
 //! (0.7.1) rules: surrounding whitespace is trimmed (the characters Python's
@@ -23,14 +24,27 @@
 //! A transient failure must not fail a call that a second attempt would have
 //! completed, and a persistent one must surface quickly enough for the caller
 //! to fall back. [`RetryPolicy`] sits between those two costs; its defaults
-//! are the Python SDK's, and the reasoning behind each field is on that type.
-//! In short: 408, 429 and every 5xx (TypeSafe's 529 included) are retried
-//! because they are transient by definition; 400, 401, 403 and 422 are not,
-//! because a retry cannot fix a request body, a key or an account's access;
-//! `Retry-After` wins over the backoff when present, only up to
-//! `retry_after_max` and only in its delay-seconds form; and with the
-//! defaults a call makes at most three attempts of 10 s each plus two waits,
-//! so a caller knows the bound before it adds a deadline of its own.
+//! are the official SDKs', the reasoning behind each field is on that type,
+//! and so is the table of where it matches the SDKs and where it
+//! deliberately differs. In short:
+//!
+//! * The retried statuses are a set on the policy, by default 408, 429 and
+//!   every 5xx (TypeSafe's 529 included), because they are transient by
+//!   definition; 400, 401, 403 and 422 are not, because a retry cannot fix a
+//!   request body, a key or an account's access. Every transport failure is
+//!   retried by default.
+//! * The backoff doubles from 0.5 s to 5 s, and its jitter only shortens a
+//!   wait, so the nominal backoff is also the longest.
+//! * The server's wait, from `retry-after-ms` or from `Retry-After` in
+//!   seconds or as an HTTP date, replaces the backoff when present, on any
+//!   retried status, up to `retry_after_max`.
+//! * An overall budget is available and off by default: with the defaults a
+//!   call makes at most three attempts of 10 s each plus two waits, so a
+//!   caller knows the bound before it adds a deadline of its own.
+//!
+//! [`RetryPolicy::conservative`] retries only what cannot have been billed
+//! twice (408, 429 and a connection that was never made), for a caller who
+//! would rather fail a call than pay for it again.
 //!
 //! Every failed attempt, retried or not, is reported to the process-wide
 //! [`Observer`] under the service label `typesafe`, because a retried failure
@@ -51,14 +65,17 @@
 //!   as [`ValidationIssue`]s.
 //! * 401 is [`Error::Unauthorized`]; 403 is [`Error::PermissionDenied`],
 //!   with the server's message, because a new key does not fix a 403.
-//! * 429 after the retries is [`Error::RateLimited`] with the last
-//!   `Retry-After`; 529 after the retries is [`Error::Overloaded`].
+//! * 429 is [`Error::RateLimited`], with the last response's wait; 529 is
+//!   [`Error::Overloaded`]. Like [`Error::Transport`], both come back once
+//!   the retry policy stopped: retries used up, the budget reached, or a
+//!   status or transport failure the policy does not retry.
 //! * Any other non-success status is [`Error::Http`] with the body. A 404
 //!   stays there: both paths are fixed and carry no resource id, so a 404
 //!   always means a base URL that is not the API or a server without the
 //!   path, and the body is what says which.
 //! * A 2xx whose body is not the documented shape is [`Error::Decode`], not
-//!   retried; a transport failure after the retries is [`Error::Transport`].
+//!   retried; a transport failure is [`Error::Transport`] once the policy
+//!   stopped.
 //!
 //! Each carries the attempt count where one applies, and every error that
 //! came from an HTTP response carries its request id (below). The key is
@@ -139,7 +156,7 @@ pub const REQUEST_ID_HEADER: &str = "x-typesafe-request-id";
 /// value into every span and error message.
 const REQUEST_ID_MAX_LEN: usize = 256;
 
-pub use crate::http::RetryPolicy;
+pub use crate::http::{RetryPolicy, TransportRetry};
 
 /// The body of `POST /v1/systemone`.
 #[derive(Debug, Clone, Serialize)]

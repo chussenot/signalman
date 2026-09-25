@@ -2,7 +2,7 @@
 title: incident.io integration
 description: How signalman verifies and processes incident.io webhooks, what it reads and writes through the API including the qualification note, how to configure alert routes on the result, and how the CLI forwards enriched alerts.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [incidentio, webhooks]
 ---
 
@@ -143,4 +143,4 @@ The multi-value filter form is inferred from single-value examples and is unveri
 
 ## Errors
 
-`incidentio::Error` maps 401, 403, 404, 422 and 429 to variants carrying the `request_id` and, for 422, the field-level messages from the documented error body. `Retry-After` on 429 is honoured. Everything else is `Http` with the truncated body.
+`incidentio::Error` maps 401, 403, 404, 422 and 429 to variants carrying the `request_id` and, for 422, the field-level messages from the documented error body. The server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date) is honoured on any retried status, up to 30 s, and the backoff's jitter only ever shortens a wait. Everything else is `Http` with the truncated body.

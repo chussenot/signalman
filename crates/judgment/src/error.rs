@@ -139,9 +139,11 @@ pub enum Error {
         /// TypeSafe's `x-typesafe-request-id`, when the response had one.
         request_id: Option<String>,
     },
-    /// Rate limited (HTTP 429) and retries were exhausted. The remedy is to
-    /// slow down: wait `retry_after` when the server gave one, and lower the
-    /// request rate or raise the account's limit if it keeps happening.
+    /// Rate limited (HTTP 429), returned after the retry policy stopped
+    /// (retries used up, the budget reached, or a status or transport
+    /// failure the policy does not retry). The remedy is to slow down: wait
+    /// `retry_after` when the server gave one, and lower the request rate or
+    /// raise the account's limit if it keeps happening.
     #[error(
         "rate limited (429) after {attempts} attempts{}{}",
         crate::error::retry_after_suffix(*.retry_after),
@@ -150,13 +152,18 @@ pub enum Error {
     RateLimited {
         /// Total attempts made, including the first.
         attempts: u32,
-        /// Server-provided `Retry-After`, when present on the last response.
+        /// The last response's wait, when it named one: from
+        /// `retry-after-ms`, or `Retry-After` in seconds or as a date
+        /// (`http::parse_retry_after`). It can be longer than any wait the
+        /// policy took, when the policy's cap or budget refused it.
         retry_after: Option<Duration>,
         /// The last response's `x-typesafe-request-id`, when it had one.
         request_id: Option<String>,
     },
-    /// TypeSafe overloaded (HTTP 529) and retries were exhausted. Nothing on
-    /// the caller's side is wrong; wait and try again later.
+    /// TypeSafe overloaded (HTTP 529), returned after the retry policy
+    /// stopped (retries used up, the budget reached, or a status or
+    /// transport failure the policy does not retry). Nothing on the caller's
+    /// side is wrong; wait and try again later.
     #[error("service overloaded (529) after {attempts} attempts{}", request_id_suffix(.request_id.as_deref()))]
     Overloaded {
         /// Total attempts made, including the first.
@@ -177,9 +184,11 @@ pub enum Error {
         /// proxy or a server that is not the API usually sends none.
         request_id: Option<String>,
     },
-    /// Network failure, TLS failure or timeout, after retries. Check
-    /// connectivity, the base URL and the per-attempt timeout; `attempts`
-    /// says how many times it was tried.
+    /// Network failure, TLS failure, timeout or a body that could not be
+    /// read, returned after the retry policy stopped (retries used up, the
+    /// budget reached, or a status or transport failure the policy does not
+    /// retry). Check connectivity, the base URL and the per-attempt timeout;
+    /// `attempts` says how many times it was tried.
     ///
     /// It never carries a request id: either no response came back, or its
     /// body could not be read and the shared loop drops that response's
@@ -402,8 +411,9 @@ fn request_id_suffix(id: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
-/// The `Retry-After` clause of a rate-limit error message, empty when the
-/// server sent none. Shared with the error types of other clients built on
+/// The server's-wait clause of a rate-limit error message (from
+/// `retry-after-ms` or `Retry-After`), empty when the server named none.
+/// Shared with the error types of other clients built on
 /// [`crate::http`].
 pub fn retry_after_suffix(retry_after: Option<Duration>) -> String {
     retry_after

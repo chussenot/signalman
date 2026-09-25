@@ -14,7 +14,7 @@ Where to read about the crate itself:
 
 - `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
 - `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
-- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate mirrors the Python SDK's defaults so a failure looks the same from either language.
+- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements. There is no official Rust SDK; the crate's retries take the official SDKs' defaults, so a failure looks the same from Rust as from Python or JavaScript, and the rustdoc of `RetryPolicy` states where they deliberately differ.
 
 This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
 
@@ -42,20 +42,24 @@ sequenceDiagram
 
 ## Retries
 
-A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs; the defaults (two retries, 0.5 s doubling to 5 s with jitter, `Retry-After` honoured up to 30 s, 408, 429 and 5xx retried) and the reasons for each are in the rustdoc of `RetryPolicy`.
+A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs. The defaults are the official SDKs': two retries; 0.5 s doubling to 5 s, with a jitter that only ever shortens a wait; 408, 429, every 5xx and every transport failure retried; the server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date, measured against the response's `Date` header) honoured on any retried status up to 30 s; and no overall budget, which a caller may set. The reasons for each, and a table of where the crate matches the SDKs and where it deliberately differs, are in the rustdoc of `RetryPolicy`. `RetryPolicy::conservative()` retries only 408, 429 and a connection that was never made, for a caller who would rather fail a billed call than pay for it twice. signalman uses the defaults for all three upstreams and sets no budget; in `serve`, each triage's own deadline bounds it instead ([Operations](operations.md#backpressure)).
 
 ```mermaid
 flowchart TD
     S[send request] --> R{response?}
-    R -->|transport error| T{attempt ≤ max_retries?}
-    R -->|status| C{408, 429 or 5xx?}
+    R -->|status| C{"in http_statuses?<br/>default 408, 429, 5xx"}
+    R -->|"transport error, or body cut short"| X{"transport level retries it?<br/>Any: yes; BeforeSend: only when<br/>the connection was never made; Never: no"}
     C -->|no| DONE[return status and body to the client for classification]
-    C -->|yes| T
-    T -->|no| FAIL[return last error or status]
-    T -->|yes| W{Retry-After present<br/>and ≤ retry_after_max?}
-    W -->|yes| SLEEP1[sleep Retry-After]
-    W -->|no| SLEEP2[sleep backoff_initial × 2^retry, capped at backoff_max, ± jitter]
-    SLEEP1 & SLEEP2 --> S
+    C -->|yes| T{"attempt ≤ max_retries?"}
+    X -->|yes| T
+    X -->|no| FAIL[return last error or status]
+    T -->|no| FAIL
+    T -->|yes| W{"server's wait present<br/>and ≤ retry_after_max?"}
+    W -->|yes| D1["wait = the server's wait<br/>(retry-after-ms, seconds or a date)"]
+    W -->|no| D2["wait = backoff_initial × 2^(retry − 1), capped at backoff_max,<br/>minus a random share of at most backoff_jitter"]
+    D1 & D2 --> B{"budget set, and<br/>elapsed + wait ≥ budget?"}
+    B -->|yes| FAIL
+    B -->|no| SLEEP[sleep the wait] --> S
 ```
 
 Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type.
