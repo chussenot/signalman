@@ -13,8 +13,9 @@
 //! SDKs share, not a TypeSafe identifier, and the loop needs the wait before
 //! it sleeps.
 //!
-//! The defaults are the official TypeSafe SDKs' defaults; where this module
-//! differs from them is stated on [`RetryPolicy`].
+//! The defaults follow the official TypeSafe SDKs'; where this module
+//! differs from them, the total budget and the server-wait cap among them,
+//! is stated on [`RetryPolicy`].
 
 use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
@@ -65,15 +66,15 @@ pub enum TransportRetry {
 /// between attempts, how far to trust the server's own wait, and, when set,
 /// how long retrying may go on in total.
 ///
-/// The defaults are the official SDKs' defaults, so a call fails the same
-/// way from Rust as from Python or JavaScript: two retries, 0.5 s doubling
-/// to 5 s with up to a quarter of each wait taken off at random, and 408,
-/// 429, every 5xx and every transport failure retried. Where this type
-/// differs from the SDKs is stated below, under "Parity with the official
-/// SDKs". Two retries also bound the worst case: three attempts, each under
-/// the client's per-attempt timeout, plus two waits of at most
-/// `retry_after_max` each when the server names a wait, or at most 1.5 s of
-/// backoff in total when it does not.
+/// The defaults follow the official SDKs': two retries, 0.5 s doubling to
+/// 5 s with up to a quarter of each wait taken off at random, and 408, 429,
+/// every 5xx and every transport failure retried. The total budget and the
+/// server-wait cap differ, and so do a few edge rules; all of them are
+/// listed below, under "Parity with the official SDKs". Two retries also
+/// bound the worst case: three attempts, each under the client's
+/// per-attempt timeout, plus two waits of at most `retry_after_max` each
+/// when the server names a wait, or at most 1.5 s of backoff in total when
+/// it does not.
 ///
 /// What each field protects against, at its extremes:
 ///
@@ -91,7 +92,8 @@ pub enum TransportRetry {
 ///   403 or 422 is a request body, a key or an account's access) and adds
 ///   load for nothing; too narrow fails a call a second attempt would have
 ///   completed. The default is 408, 429 and 500 to 599, TypeSafe's 529
-///   included.
+///   included. A 2xx is never retried, even when listed: re-sending a call
+///   that succeeded would pay for it again.
 /// * `retry_after_max` is the ceiling on how long the server may ask the
 ///   client to wait. The server knows better than the client how long to
 ///   back off, so its wait wins when present, but a hostile or
@@ -162,7 +164,13 @@ pub enum TransportRetry {
 /// * Backoff from 0.5 s doubling to 5 s, with jitter 0.25 that is only
 ///   subtracted: a wait is `backoff × (1 − U·j)` for a uniform `U` in
 ///   `[0, 1)`.
-/// * A settable status set, by default 408, 429 and 500 to 599.
+/// * A settable status set, by default 408, 429 and 500 to 599. A 2xx is
+///   never retried, even when listed (the JS SDK returns on `res.ok` before
+///   it reads the set; the Python SDK retries only a raised error).
+/// * A per-call policy: [`crate::client::CallOptions::retry`] on
+///   [`crate::Client::evaluate_with`] replaces the client's whole policy for
+///   that call, as the Python SDK does (the JS SDK merges field by field;
+///   `CallOptions::retry` shows the struct-update spelling of that).
 /// * The server's wait read as `retry-after-ms`, then `Retry-After` in
 ///   seconds, then as a date; a past date means 0; non-finite values are
 ///   ignored.
@@ -206,9 +214,9 @@ pub enum TransportRetry {
 /// * Exception and predicate hooks: a closure field would cost the type its
 ///   `PartialEq` and `Debug`.
 /// * `X-TypeSafe-Retry-Count`, which both SDKs send on a retry: not sent in
-///   this release.
-/// * A per-call policy: a client applies its one policy to every call it
-///   makes.
+///   this release, but reserved (a caller header of that name is
+///   [`crate::Error::ReservedHeader`]), so sending it later breaks no
+///   caller.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryPolicy {
     /// Retries after the first attempt; 0 disables retries.
@@ -222,7 +230,8 @@ pub struct RetryPolicy {
     /// `[0, 1]`; `NaN` reads as 0.
     pub backoff_jitter: f64,
     /// HTTP statuses that are retried; any other status is returned at once.
-    /// Default: 408, 429 and 500 to 599.
+    /// A 2xx is never retried, even when listed. Default: 408, 429 and 500
+    /// to 599.
     pub http_statuses: BTreeSet<u16>,
     /// Longest server wait the client will honour; above it the client's
     /// own backoff applies. Prevents a hostile or misconfigured header from
@@ -274,10 +283,11 @@ impl RetryPolicy {
     /// refused the request before processing it.
     ///
     /// The cost: a call fails on the first 5xx or timeout that a retry would
-    /// have saved. The policy applies to every call the client makes,
-    /// [`crate::Client::list_models`] included. reqwest's own retry of an
-    /// HTTP/2 request the server refused before processing still happens,
-    /// below this policy.
+    /// have saved. Set on the client, the policy applies to every call it
+    /// makes, [`crate::Client::list_models`] included, unless a call's
+    /// [`crate::client::CallOptions::retry`] replaces it. reqwest's own
+    /// retry of an HTTP/2 request the server refused before processing
+    /// still happens, below this policy.
     pub fn conservative() -> Self {
         Self {
             http_statuses: BTreeSet::from([408, 429]),
@@ -286,13 +296,15 @@ impl RetryPolicy {
         }
     }
 
-    /// Whether this policy retries `status`: it is in
-    /// [`http_statuses`](Self::http_statuses). By default that is 408, 429
-    /// and every 5xx, transient by definition; 400, 401, 403 and 422 are
-    /// not retried, since a retry cannot fix a request body, a key or an
-    /// account's access and would only add load.
+    /// Whether this policy retries `status`: it is not a success and it is
+    /// in [`http_statuses`](Self::http_statuses). By default that is 408,
+    /// 429 and every 5xx, transient by definition; 400, 401, 403 and 422
+    /// are not retried, since a retry cannot fix a request body, a key or
+    /// an account's access and would only add load. A 2xx is never retried,
+    /// even when listed, as in both SDKs: the call succeeded, and a System
+    /// One call is billed, so sending it again would pay for it twice.
     pub fn is_retryable(&self, status: StatusCode) -> bool {
-        self.http_statuses.contains(&status.as_u16())
+        !status.is_success() && self.http_statuses.contains(&status.as_u16())
     }
 
     /// Whether this policy retries the transport failure `e`, by
@@ -405,10 +417,11 @@ pub struct Exhausted {
 /// the policy stops.
 ///
 /// `make` is called once per attempt, in order, so it builds a fresh request
-/// each time. A status in the policy's
-/// [`http_statuses`](RetryPolicy::http_statuses) is retried; a transport
-/// failure, or a body that could not be read, is retried as the policy's
-/// [`transport`](RetryPolicy::transport) says. The policy stops when the
+/// each time. A status the policy retries
+/// ([`is_retryable`](RetryPolicy::is_retryable): in its
+/// [`http_statuses`](RetryPolicy::http_statuses), never a 2xx) is retried;
+/// a transport failure, or a body that could not be read, is retried as the
+/// policy's [`transport`](RetryPolicy::transport) says. The policy stops when the
 /// retries are used up or when the next wait would reach its
 /// [`budget`](RetryPolicy::budget), measured from the first send.
 ///
@@ -674,6 +687,21 @@ mod tests {
             default,
             "conservative() changes only the statuses and the transport level"
         );
+    }
+
+    #[test]
+    fn a_listed_success_is_never_retried() {
+        let status = |code| StatusCode::from_u16(code).unwrap();
+        let everything = RetryPolicy {
+            http_statuses: (100..=599).collect(),
+            ..RetryPolicy::default()
+        };
+        for code in [200, 201, 204, 299] {
+            assert!(!everything.is_retryable(status(code)), "{code}");
+        }
+        for code in [304, 404, 503] {
+            assert!(everything.is_retryable(status(code)), "{code}");
+        }
     }
 
     #[test]

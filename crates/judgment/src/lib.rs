@@ -64,9 +64,10 @@
 //!   OpenAPI document, which bounds neither above) and unique ids are
 //!   enforced by the builder, so a bad question is an error naming the
 //!   question, not a round trip whose outcome nobody has observed.
-//! * Retries follow the official SDKs' defaults and say, on [`RetryPolicy`],
-//!   where they differ. Behaviour matches across languages, the worst case
-//!   is bounded, and the reasoning behind each field is on that type.
+//! * Retries take the official SDKs' retry count, backoff and retried
+//!   statuses; [`RetryPolicy`] states where they differ (the total budget
+//!   and the server-wait cap among them), bounds the worst case, and gives
+//!   the reasoning behind each field.
 //!
 //! ## What it deliberately is not
 //!

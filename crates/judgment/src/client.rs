@@ -2,12 +2,11 @@
 //!
 //! # Defaults
 //!
-//! The defaults are the official SDKs' defaults, so a call behaves the same
-//! from Rust as from Python or JavaScript and an incident seen in one is
-//! reproducible in the others: the key from `TYPESAFE_API_KEY`, base URL
-//! `https://api.typesafe.ai`, model `jev-latest`, a 10 s timeout per
-//! attempt, and two retries with exponential backoff and jitter. Where the
-//! retries deliberately differ from the SDKs is stated on [`RetryPolicy`].
+//! The defaults follow the official SDKs': the key from `TYPESAFE_API_KEY`,
+//! base URL `https://api.typesafe.ai`, model `jev-latest`, a 10 s timeout
+//! per attempt, and two retries with exponential backoff and jitter. Where
+//! the retries deliberately differ from the SDKs (the total budget and the
+//! server-wait cap among them) is stated on [`RetryPolicy`].
 //! The user agent is `judgment/<crate version>`, so the API's logs can tell
 //! this client from the SDKs and from the application embedding it. The
 //! client sends no header of its own beyond `authorization`, `content-type`

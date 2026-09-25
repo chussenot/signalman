@@ -2,9 +2,9 @@
 //! and typed answers, error mapping by remedy (400 and 422 parsed into
 //! issues, 403 apart from 401, 404 left as an HTTP error), the trimmed key,
 //! retries (the server's wait from `retry-after-ms` or `Retry-After`, the
-//! budget, `RetryPolicy::conservative`, the transport levels against a
-//! refused connection, a timeout and a truncated body), exhausted retries,
-//! the models list, the request id carried from the
+//! budget, `RetryPolicy::conservative`, a listed 2xx sent once, the transport
+//! levels against a refused connection, a timeout and a truncated body),
+//! exhausted retries, the models list, the request id carried from the
 //! `x-typesafe-request-id` header onto responses and errors, and per-call
 //! options (timeout, retry policy, headers, extra body fields) beside the
 //! builder's default headers, the tolerant decoding of an answer kind this
@@ -436,6 +436,32 @@ async fn retry_after_beyond_the_budget_is_not_waited() {
         ),
         "{err:?}"
     );
+}
+
+#[tokio::test]
+async fn a_success_in_the_status_set_is_not_sent_again() {
+    // A "retry everything" set lists the 2xx too. A System One call is
+    // billed, so a success must come back after one send, never re-sent
+    // until the retries run out.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "jev-1.13.0",
+            "answers": { "x": { "type": "noul", "noul": 0.75 } },
+            "usage": { "input_tokens": 10, "output_tokens": 1 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let everything = RetryPolicy {
+        http_statuses: (200..=599).collect(),
+        ..fast_retries(2)
+    };
+    let response = client(&server, everything)
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap();
+    assert_eq!(response.model, "jev-1.13.0");
 }
 
 /// [`RetryPolicy::conservative`] with waits short enough for a test.

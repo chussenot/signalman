@@ -29,7 +29,8 @@ document (0.2.0) and the SDK references.
   request left the process, for callers who would rather fail a billed call
   than pay for it twice.
 - `RetryPolicy::{http_statuses, transport, budget}` and `TransportRetry`. The
-  total retry budget is off by default.
+  total retry budget is off by default. A 2xx is never retried, even when
+  listed in `http_statuses`, as in both SDKs: a success is not sent again.
 - `retry-after-ms` and the HTTP-date form of `Retry-After` are honoured, up to
   `retry_after_max`. A date is measured against the response's `Date` header.
 - `Client::evaluate_with(&Request, &CallOptions)`, for a per-call timeout,
