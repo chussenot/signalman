@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::answer::{Answer, Response};
+use crate::answer::{Answer, Response, sanitize_kind};
 use crate::question::Questions;
 
 /// Bins for expected calibration error.
@@ -248,8 +248,30 @@ impl Judgment {
     /// keys, a Score by its level indices as strings, a Noul as `yes` or
     /// `no`. An application that names its levels grades through
     /// [`Self::new`] instead.
+    ///
+    /// An [`Answer::Unknown`] is graded, not dropped, because dropping it
+    /// would raise the accuracy of a model whose answers could not be read.
+    /// It is a miss whenever there is a label, even an empty one: predicted
+    /// `<kind>` (the escaped kind in angle brackets, which no option key
+    /// equals), probability zero on the label, confidence 0.0 and no
+    /// distribution. In [`QuestionMetrics::summarise`] it lowers accuracy
+    /// and costs a Brier score of 1.0, but its (0.0, wrong) calibration pair
+    /// is perfectly calibrated, so it pulls the expected calibration error
+    /// and the confidence when wrong toward zero. That is accepted because
+    /// the case is rare and loud: an unknown kind means this crate is older
+    /// than the server, the client logs each one at `warn`, and the
+    /// `<kind>` it predicts stands out in the confusion matrix.
     pub fn of_answer(answer: &Answer, expected: Option<&str>) -> Self {
         match answer {
+            Answer::Unknown(_) => Self {
+                predicted: format!("<{}>", sanitize_kind(answer.kind())),
+                expected: expected.map(str::to_owned),
+                correct: expected.map(|_| false),
+                confidence: 0.0,
+                p_expected: expected.map(|_| 0.0),
+                probabilities: BTreeMap::new(),
+                asked: true,
+            },
             Answer::Noul { noul } => Self::noul(noul.value(), expected.map(|e| e == "yes"), true),
             Answer::Choice {
                 choice,
@@ -416,17 +438,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("judgment-rec-{}", std::process::id()));
         let response = Response {
             model: "m".into(),
-            answers: BTreeMap::from([(
-                "a".to_owned(),
-                Answer::Noul {
-                    noul: Probability::new(0.7).unwrap(),
-                },
-            )]),
+            answers: BTreeMap::from([
+                (
+                    "a".to_owned(),
+                    Answer::Noul {
+                        noul: Probability::new(0.7).unwrap(),
+                    },
+                ),
+                // An answer of a kind this release does not know is kept.
+                (
+                    "b".to_owned(),
+                    Answer::Unknown(json!({ "type": "rank", "ranking": ["x", "y"] })),
+                ),
+            ]),
             usage: Usage {
                 input_tokens: 1,
                 output_tokens: 2,
             },
             request_id: None,
+            // And so is a field the server added beyond the documented shape.
+            extra: BTreeMap::from([("routing".to_owned(), json!({ "model": "typed-decisions" }))]),
         };
         let keyed = Recording {
             case: "case-1".into(),
@@ -439,6 +470,8 @@ mod tests {
         let text = std::fs::read_to_string(recording_path(&dir, "case-1")).unwrap();
         assert!(!text.contains("request_hash"));
         assert!(text.ends_with('\n'));
+        assert!(text.contains(r#""routing": {"#), "{text}");
+        assert!(text.contains(r#""type": "rank""#), "{text}");
         assert_eq!(read_recording(&dir, "case-1").unwrap(), keyed);
         assert!(matches!(
             read_recording(&dir, "ghost"),
@@ -522,5 +555,41 @@ mod tests {
         let l = Latency::of(&[10.0, 30.0, 20.0]);
         assert_eq!(l.p50_ms, Some(20.0));
         assert_eq!(l.mean_ms, Some(20.0));
+    }
+
+    #[test]
+    fn an_unknown_answer_is_graded_as_a_miss_not_dropped() {
+        let rank = Answer::Unknown(json!({ "type": "rank", "ranking": ["billing"] }));
+        for label in ["", "billing"] {
+            let j = Judgment::of_answer(&rank, Some(label));
+            assert_eq!(j.predicted, "<rank>");
+            assert_eq!(j.expected.as_deref(), Some(label));
+            assert_eq!(j.correct, Some(false), "{label:?}");
+            assert_eq!(j.p_expected, Some(0.0), "{label:?}");
+            assert!(j.confidence.abs() < f64::EPSILON);
+            assert!(j.probabilities.is_empty());
+            assert!(j.asked);
+        }
+        let unlabelled = Judgment::of_answer(&rank, None);
+        assert_eq!(unlabelled.correct, None);
+        assert_eq!(unlabelled.p_expected, None);
+        // A hostile kind is escaped in the prediction, as in an error.
+        let hostile = Answer::Unknown(json!({ "type": format!("a\nb{}", "x".repeat(100)) }));
+        let predicted = Judgment::of_answer(&hostile, None).predicted;
+        assert!(!predicted.contains('\n'), "{predicted:?}");
+        assert!(predicted.chars().count() <= 66, "{predicted:?}");
+
+        let m =
+            QuestionMetrics::summarise([&Judgment::of_answer(&rank, Some("billing"))], ECE_BINS);
+        assert_eq!((m.labelled, m.correct), (1, 0));
+        assert_eq!(m.accuracy, Some(0.0));
+        // No distribution, and the label is not in it: a Brier of 1.0.
+        assert_eq!(m.brier, Some(1.0));
+        // A (0.0, wrong) pair is perfectly calibrated: it pulls the ECE and
+        // the confidence when wrong toward zero.
+        assert_eq!(m.ece, Some(0.0));
+        assert_eq!(m.confidence_when_wrong, Some(0.0));
+        assert_eq!(m.confidence_when_right, None);
+        assert_eq!(m.confusion["billing"]["<rank>"], 1);
     }
 }

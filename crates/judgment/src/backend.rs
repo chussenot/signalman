@@ -291,6 +291,7 @@ impl SystemOne for Fake {
                 answers,
                 usage: self.usage,
                 request_id: None,
+                extra: BTreeMap::new(),
             })
         })
     }

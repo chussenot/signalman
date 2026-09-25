@@ -14,7 +14,9 @@ fastrand = "2"
 # through hyper.
 httpdate = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset"] }
-serde = { version = "1", features = ["derive"] }
+# 1.0.181 is the first with `#[serde(untagged)]` on one variant, which
+# `judgment::Answer::Unknown` uses; the lock has a later one.
+serde = { version = "1.0.181", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = "1"

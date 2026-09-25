@@ -22,12 +22,16 @@
 //! * Transport and decode: [`Error::Transport`] (network, TLS or timeout,
 //!   after retries), [`Error::Http`] (any other non-success status, body
 //!   truncated) and [`Error::Decode`] (a body that is not the documented
-//!   shape). Look at the network, the base URL and the API changelog.
+//!   shape). Look at the network, the base URL and the API changelog. An
+//!   answer of a kind this release does not know is not a decode error: it
+//!   is kept as [`crate::Answer::Unknown`], and reading it is the
+//!   [`Error::AnswerTypeMismatch`] below.
 //! * Reading an answer: [`Error::MissingAnswer`],
 //!   [`Error::AnswerTypeMismatch`], [`Error::UnknownOption`],
 //!   [`Error::NotAProbability`] and [`Error::InvalidAnswer`]. The handle, the
 //!   option set or a recording does not match the answer; fix the code or
-//!   record again.
+//!   record again. When the answer is of a kind this release does not know,
+//!   upgrade the crate instead.
 //! * Recordings: [`Error::Io`] and [`Error::NoRecording`]. Fix the path, or
 //!   record the request before replaying it.
 //!
@@ -208,6 +212,17 @@ pub enum Error {
     /// recording was not one. The API changed, the base URL points at
     /// something else, or the file is corrupt; the message says where.
     ///
+    /// Decoding is tolerant of what the API may add (`answer` module docs,
+    /// `# Decoding is tolerant, reading is strict`), so some bodies that
+    /// used to land here no longer do: an answer of a kind this release does
+    /// not know is [`crate::Answer::Unknown`], a missing `usage` or count is
+    /// zero, and an undocumented top-level field is kept in
+    /// [`crate::Response::extra`]. What still lands here: a known answer
+    /// that breaks its own shape (a Noul of 1.2, a Choice without
+    /// `probabilities`), an answer with no `type` or a `type` that is not a
+    /// string, a missing `model` or `answers`, and a count that is negative,
+    /// fractional or a string.
+    ///
     /// A 2xx whose body does not decode is still an HTTP response, so it
     /// keeps that response's `x-typesafe-request-id`, as the Python SDK's
     /// `TypeSafeAPIResponseValidationError` does; a recording, a state that
@@ -260,14 +275,22 @@ pub enum Error {
     /// expects: the handle was made for another question with the same id, or
     /// a recording was made with a different question set. Fix the code or
     /// record again.
+    ///
+    /// It is also how an answer of a kind this release does not know
+    /// ([`crate::Answer::Unknown`]) reads through a handle: `actual` is then
+    /// the server's own `type`, escaped and cut to 64 characters so it cannot
+    /// break a log line. The remedy is to upgrade this crate, if the API has
+    /// a primitive it does not know yet, or to check what the server answers,
+    /// if it is not the API.
     #[error("answer {id:?} is a {actual} but a {expected} was requested")]
     AnswerTypeMismatch {
         /// Question id.
         id: String,
         /// Primitive the handle expected.
         expected: &'static str,
-        /// Primitive the API returned.
-        actual: &'static str,
+        /// The kind the server returned: `noul`, `choice`, `score`, or an
+        /// unknown kind's escaped `type`.
+        actual: String,
     },
     /// A Choice answer named an option that is not in the Rust option set:
     /// the enum changed since the answer was recorded, or the backend answered

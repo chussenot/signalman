@@ -7,7 +7,8 @@
 //! the models list, the request id carried from the
 //! `x-typesafe-request-id` header onto responses and errors, and per-call
 //! options (timeout, retry policy, headers, extra body fields) beside the
-//! builder's default headers.
+//! builder's default headers, and the tolerant decoding of an answer kind
+//! this release does not know, undocumented fields and a missing `usage`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::{Read, Write};
@@ -19,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use judgment::client::{HeaderName, HeaderValue, REQUEST_ID_HEADER};
 use judgment::{
-    CallOptions, Client, Error, Questions, Recorder, Replay, Request, RetryPolicy, SystemOne,
-    TransportRetry, options,
+    Answer, CallOptions, Client, Error, Questions, Recorder, Replay, Request, RetryPolicy,
+    SystemOne, TransportRetry, Usage, options,
 };
 use serde_json::json;
 use wiremock::matchers::{body_json, body_partial_json, header, method, path};
@@ -1303,4 +1304,48 @@ async fn a_call_retry_policy_replaces_the_client_policy() {
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
     // The client's policy is unchanged by the call's.
     assert_eq!(c.retry().max_retries, 1);
+}
+
+#[tokio::test]
+async fn an_unknown_kind_extra_fields_and_no_usage_are_tolerated() {
+    // A response from a server newer than this crate, or a compatible one
+    // that adds its own fields: an answer of a kind the crate does not know
+    // (under an id nobody asked, so it is only kept), a top-level field the
+    // API does not document, and no `usage` at all. Each used to fail the
+    // whole response with a decode error.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(REQUEST_ID_HEADER, "req_tolerant")
+                .set_body_json(json!({
+                    "model": "jev-2.0.0",
+                    "answers": {
+                        "x": { "type": "noul", "noul": 0.75 },
+                        "later": { "type": "rank", "ranking": ["b", "a"] }
+                    },
+                    "routing": { "model": "typed-decisions" }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = Questions::new();
+    let x = q.noul("x", "?", None).unwrap();
+
+    let response = client(&server, RetryPolicy::none())
+        .system_one(&"s", &q)
+        .await
+        .unwrap();
+    assert!(response.get(&x).unwrap().is_yes(0.7));
+    let later = &response.answers["later"];
+    assert!(matches!(later, Answer::Unknown(_)), "{later:?}");
+    assert_eq!(later.kind(), "rank");
+    assert_eq!(response.usage, Usage::default());
+    assert_eq!(
+        response.extra.get("routing"),
+        Some(&json!({ "model": "typed-decisions" }))
+    );
+    assert_eq!(response.extra.len(), 1, "{:?}", response.extra);
+    assert_eq!(response.request_id.as_deref(), Some("req_tolerant"));
 }

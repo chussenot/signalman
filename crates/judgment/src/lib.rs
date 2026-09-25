@@ -44,6 +44,14 @@
 //!   refuse values outside `[0, 1]` on construction and on deserialisation,
 //!   and they are distinct types, so a caller cannot threshold one as the
 //!   other.
+//! * Decoding is tolerant and reading is strict. What the API may add does
+//!   not fail a response: an answer of a kind this release does not know is
+//!   kept as [`Answer::Unknown`] (and logged at `warn` by the client), a
+//!   missing `usage` reads as zero, and undocumented top-level fields are
+//!   kept in [`Response::extra`]. A known answer that breaks its own shape
+//!   is still an error, and reading an unknown answer through a handle is an
+//!   [`Error`] that names its kind, so only the question that needed it
+//!   fails.
 //! * Limits are checked before sending. 255 options per Choice, 2 to 10 levels
 //!   per Score and unique ids are enforced by the builder, so a bad question is
 //!   an error naming the question, not a 422 after a round trip.
@@ -100,8 +108,8 @@
 //! ## Modules
 //!
 //! * [`question`] builds requests; each question returns a typed [`Handle`].
-//! * [`answer`] validates probabilities and converts wire answers into typed
-//!   views through those handles.
+//! * [`answer`] validates probabilities, decodes wire answers tolerantly and
+//!   converts them into typed views through those handles.
 //! * [`client`] (feature `http`, on by default) talks HTTP with the SDKs'
 //!   defaults, retries and errors; the differences are stated on
 //!   [`RetryPolicy`]. [`Client::evaluate_with`] takes a [`CallOptions`] for

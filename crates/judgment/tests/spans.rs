@@ -2,8 +2,9 @@
 //! `tracing_subscriber` layer: the `request_id` field of `typesafe.evaluate`
 //! and `typesafe.list_models` on success and on failure, its absence when
 //! no id came back, the `debug` event that drops an overlong id without
-//! logging it, and the one `typesafe.evaluate` span of `evaluate_with`,
-//! which carries no per-call option.
+//! logging it, the one `typesafe.evaluate` span of `evaluate_with`, which
+//! carries no per-call option, and the `warn` event for an answer of a kind
+//! the client does not know.
 //!
 //! Its own test target (see `Cargo.toml`): tracing caches each callsite's
 //! interest process-wide, and a binary of its own keeps the other client
@@ -363,4 +364,116 @@ async fn evaluate_with_records_the_request_id_on_its_one_span() {
         values(&seen, "typesafe.evaluate", "request_id"),
         ["req_plain"]
     );
+}
+
+/// The warn events in `captured`, each as its fields.
+fn warnings(captured: &[Captured]) -> Vec<&Vec<(String, String)>> {
+    captured
+        .iter()
+        .filter_map(|c| match c {
+            Captured::Event { level, fields } if *level == Level::WARN => Some(fields),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The value of `name` among an event's fields.
+fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+}
+
+fn with_answers(
+    answers: &serde_json::Value,
+    extra: &[(&str, serde_json::Value)],
+) -> ResponseTemplate {
+    let mut body = json!({
+        "model": "jev-1.13.0",
+        "answers": answers,
+        "usage": { "input_tokens": 3, "output_tokens": 1 }
+    });
+    for (key, value) in extra {
+        body[*key] = value.clone();
+    }
+    ResponseTemplate::new(200).set_body_json(body)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unknown_answer_is_warned_once_with_question_and_kind() {
+    let cap = Capture::default();
+    let _g = tracing::subscriber::set_default(Registry::default().with(cap.clone()));
+    let server = MockServer::start().await;
+    let c = client(&server.uri());
+    let q = one_noul();
+    let noul = json!({ "type": "noul", "noul": 0.5 });
+
+    // One unknown answer beside a known one: one warning, naming the
+    // question and the kind, with no other field of its own.
+    serve_once(
+        &server,
+        "POST",
+        with_answers(
+            &json!({ "x": noul, "later": { "type": "rank", "ranking": [] } }),
+            &[],
+        ),
+    )
+    .await;
+    c.system_one(&"s", &q).await.unwrap();
+    let seen = cap.take();
+    let warned = warnings(&seen);
+    assert_eq!(warned.len(), 1, "{seen:#?}");
+    let mut names: Vec<&str> = warned[0].iter().map(|(k, _)| k.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["kind", "message", "question"], "{warned:?}");
+    assert_eq!(field(warned[0], "question"), Some("\"later\""));
+    assert_eq!(field(warned[0], "kind"), Some("rank"));
+    assert!(
+        field(warned[0], "message").is_some_and(|m| m.contains("Answer::Unknown")),
+        "{warned:?}"
+    );
+
+    // A long kind is cut to 64 characters in the event, and a line break in
+    // it is escaped.
+    let long = format!("a\nb{}", "k".repeat(100));
+    serve_once(
+        &server,
+        "POST",
+        with_answers(&json!({ "x": noul, "later": { "type": long } }), &[]),
+    )
+    .await;
+    c.system_one(&"s", &q).await.unwrap();
+    let seen = cap.take();
+    let warned = warnings(&seen);
+    assert_eq!(warned.len(), 1, "{seen:#?}");
+    let kind = field(warned[0], "kind").unwrap();
+    assert_eq!(kind.chars().count(), 64, "{kind:?}");
+    assert!(kind.starts_with(r"a\nb"), "{kind:?}");
+    assert!(!kind.contains('\n'), "{kind:?}");
+    assert!(
+        seen.iter()
+            .all(|c| !format!("{c:?}").contains(&"k".repeat(100))),
+        "the whole kind reached a span or event"
+    );
+
+    // Undocumented top-level fields are expected from a compatible server:
+    // kept, never warned about.
+    serve_once(
+        &server,
+        "POST",
+        with_answers(
+            &json!({ "x": noul }),
+            &[
+                ("id", json!("gen-dec-0001")),
+                ("provider", json!("TypeSafe")),
+                ("routing", json!({ "model": "typed-decisions" })),
+            ],
+        ),
+    )
+    .await;
+    let response = c.system_one(&"s", &q).await.unwrap();
+    assert_eq!(response.extra.len(), 3);
+    let seen = cap.take();
+    assert!(warnings(&seen).is_empty(), "{seen:#?}");
 }

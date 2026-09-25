@@ -1,8 +1,9 @@
 //! The evaluation harness against a mock TypeSafe: run with recording, grade,
 //! then replay the recordings under a different policy without the model.
+//! The committed Jev run decodes and writes back byte for byte.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use signalman::eval::{self, Action, Setup};
@@ -205,4 +206,42 @@ async fn run_grades_judgments_and_decisions_and_records_for_replay() {
     // Impact labels parse from their lowercase names.
     assert_eq!(cases[0].expected.impact, Some(Impact::Major));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_committed_jev_run_decodes_and_rewrites_byte_for_byte() {
+    // The raw responses of the first live TypeSafe run (2026-09-23), which
+    // `signalman eval --replay` grades offline. judgment's tolerant decoder
+    // must read them as the strict one did (nothing unknown, nothing extra)
+    // and write them back unchanged.
+    let run = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval/runs/jev-1.13.0");
+    let out = tmp("jev-rewrite");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&run).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let case = path.file_stem().unwrap().to_str().unwrap().to_owned();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let recording = judgment::eval::read_recording(&run, &case).unwrap();
+        assert_eq!(recording.case, case);
+        assert_eq!(recording.response.model, "jev-1.13.0");
+        assert!(
+            recording.response.extra.is_empty(),
+            "{case}: {:?}",
+            recording.response.extra
+        );
+        for (id, answer) in &recording.response.answers {
+            assert!(
+                !matches!(answer, judgment::Answer::Unknown(_)),
+                "{case}: {id} is {answer:?}"
+            );
+        }
+        let written = judgment::eval::write_recording(&out, &recording).unwrap();
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), text, "{case}");
+        seen += 1;
+    }
+    assert_eq!(seen, 3);
+    let _ = std::fs::remove_dir_all(&out);
 }

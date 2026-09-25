@@ -31,22 +31,64 @@
 //! results rather than by intuition. This crate supplies
 //! [`Confidence::at_least`] and nothing else; the policy is the caller's.
 //!
+//! # Decoding is tolerant, reading is strict
+//!
+//! A response is decoded whole, so a strict decoder fails it whole: one
+//! answer of a primitive this release does not know, a server that reports
+//! no `usage`, and every answer in the response is lost, the ones the caller
+//! asked for and could have read included. TypeSafe adds primitives and
+//! fields over time and a compatible server adds fields of its own (Laya's
+//! `routing`, the `id` and `provider` of `OpenRouter`'s decisions endpoint),
+//! so a strict decoder turns each addition into an outage until this crate
+//! is upgraded.
+//!
+//! The decoder therefore keeps what it does not know, and reading refuses it
+//! where it matters:
+//!
+//! * An answer whose `type` is a string other than `noul`, `choice` or
+//!   `score` decodes as [`Answer::Unknown`], the answer as it came. The
+//!   client logs it at `warn`, naming the question and the kind. Reading it
+//!   through a handle is [`Error::AnswerTypeMismatch`], so the question that
+//!   needed it fails and the others are still read.
+//! * A known kind is decoded as strictly as before: `{"type": "noul",
+//!   "noul": 1.2}` claims a shape and breaks it, and is [`Error::Decode`],
+//!   not an unknown answer. So is an answer with no `type`, a `type` that is
+//!   not a string, or an answer that is not an object.
+//! * An absent or `null` `usage`, and an absent or `null` count inside it,
+//!   read as zero ([`Usage`]). A negative, fractional or string count is
+//!   still [`Error::Decode`].
+//! * Top-level fields other than `model`, `answers`, `usage` and
+//!   `request_id` are kept in [`Response::extra`] and written back where
+//!   they were, so a recording keeps them. Fields inside an answer that this
+//!   crate does not model are ignored, as in the Python SDK.
+//!
+//! The cost is that an answer this release cannot read, from a later API or
+//! from a server that answers something else, no longer fails the response
+//! at decode time: it fails where it is read, or not at all when nothing
+//! reads it. The `warn` line is what shows it, and upgrading this crate (or
+//! fixing the server) is the remedy. The Python SDK
+//! logs a warning and skips such an answer; this crate keeps it, so a caller
+//! or a recording can still look at what the server sent.
+//!
 //! # What `Response::get` checks
 //!
 //! [`Response::get`] takes the handle a question was added with and returns
 //! the answer as that handle's type. It fails with [`Error::MissingAnswer`]
 //! when the response has no answer under the handle's id; with
 //! [`Error::AnswerTypeMismatch`] when the answer is a different primitive
-//! than the handle was created for; with [`Error::UnknownOption`] when a
-//! typed Choice's chosen option, or any key in its distribution, is not in
-//! the Rust option set; and with [`Error::Decode`] when a Score's legend keys
-//! are not level indices. A [`Choice<String>`] from a dynamic choice passes
-//! its keys through unchecked, since there is no set to check them against.
+//! than the handle was created for, or one this release does not know
+//! ([`Answer::Unknown`], named by its escaped `type`); with
+//! [`Error::UnknownOption`] when a typed Choice's chosen option, or any key
+//! in its distribution, is not in the Rust option set; and with
+//! [`Error::Decode`] when a Score's legend keys are not level indices. A
+//! [`Choice<String>`] from a dynamic choice passes its keys through
+//! unchecked, since there is no set to check them against.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::Hash;
 
+use serde::de::{self, Deserializer, Unexpected};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -150,8 +192,15 @@ impl fmt::Display for Confidence {
 }
 
 /// One answer as returned on the wire, discriminated by `type`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Non-exhaustive: TypeSafe adds primitives, and each one this crate learns
+/// becomes a variant in a minor release, so a `match` outside this crate
+/// needs a wildcard arm (an `if let` needs nothing). Until a kind is learnt
+/// it decodes as [`Answer::Unknown`] (module docs, `# Decoding is tolerant,
+/// reading is strict`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Answer {
     /// Probability of yes.
     Noul {
@@ -182,37 +231,227 @@ pub enum Answer {
         /// Distribution concentration.
         confidence: Confidence,
     },
+    /// An answer whose `type` this release does not know: a primitive the
+    /// API added after it, or a server that answers something else. It holds
+    /// the JSON object as it came, `type` included; [`Answer::kind`] reads
+    /// that `type`, and reading it through a handle is
+    /// [`Error::AnswerTypeMismatch`]. The client logs one at `warn`.
+    ///
+    /// It serialises back as that object, so a [`crate::Recorder`] keeps it
+    /// and a [`crate::Replay`] returns it. A hand-built `Unknown` whose
+    /// `type` is `noul`, `choice` or `score` serialises as that kind, and
+    /// decodes back as the known variant (or fails to). When a later release
+    /// learns a kind, answers of it stop decoding as `Unknown`; that is a
+    /// change in behaviour for code that inspects `Unknown`, so such code
+    /// should look at [`Answer::kind`] rather than rely on a kind staying
+    /// unknown.
+    #[serde(untagged)]
+    Unknown(Value),
 }
 
 impl Answer {
-    /// Human-readable primitive name, for error messages.
-    pub const fn kind(&self) -> &'static str {
+    /// The answer's wire `type`: `noul`, `choice` or `score`, or an unknown
+    /// answer's own `type` string, as the server sent it (`unknown` when it
+    /// has none, which only a hand-built [`Answer::Unknown`] can lack).
+    ///
+    /// An unknown kind is whatever string the server chose, so this crate
+    /// escapes it and cuts it to 64 characters before it goes into an error
+    /// message, a log line or a graded judgment; a caller that logs it should
+    /// do the same.
+    pub fn kind(&self) -> &str {
         match self {
             Self::Noul { .. } => "noul",
             Self::Choice { .. } => "choice",
             Self::Score { .. } => "score",
+            Self::Unknown(raw) => raw.get("type").and_then(Value::as_str).unwrap_or("unknown"),
         }
     }
 }
 
+/// The kinds [`KnownAnswer`] decodes; any other string `type` is
+/// [`Answer::Unknown`].
+const KNOWN_KINDS: [&str; 3] = ["noul", "choice", "score"];
+
+/// Longest unknown kind, in characters, that reaches an error message, a log
+/// line or a graded judgment.
+const KIND_MAX_CHARS: usize = 64;
+
+/// An unknown answer's kind made safe to print: control characters, quotes
+/// and anything else `escape_debug` escapes are escaped, and the result is
+/// cut to 64 characters. The kind is chosen by the server, so without this a
+/// hostile or broken one could put a line break or an unbounded string into
+/// a log line or an exported span event.
+pub(crate) fn sanitize_kind(kind: &str) -> String {
+    kind.escape_debug().take(KIND_MAX_CHARS).collect()
+}
+
+/// The known answers, decoded strictly: the derive `Answer` had before
+/// `Unknown` existed. [`Answer`]'s `Deserialize` goes through it for a known
+/// `type`, and `From` below turns it into the public enum.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum KnownAnswer {
+    Noul {
+        noul: Probability,
+    },
+    Choice {
+        choice: String,
+        probabilities: BTreeMap<String, Probability>,
+        confidence: Confidence,
+    },
+    Score {
+        score: f64,
+        legend: BTreeMap<String, Value>,
+        probabilities: BTreeMap<String, Probability>,
+        confidence: Confidence,
+    },
+}
+
+impl From<KnownAnswer> for Answer {
+    /// One arm per variant, each naming every field, so a field added to
+    /// [`Answer`] and not to the mirror (or the reverse) does not compile.
+    fn from(known: KnownAnswer) -> Self {
+        match known {
+            KnownAnswer::Noul { noul } => Self::Noul { noul },
+            KnownAnswer::Choice {
+                choice,
+                probabilities,
+                confidence,
+            } => Self::Choice {
+                choice,
+                probabilities,
+                confidence,
+            },
+            KnownAnswer::Score {
+                score,
+                legend,
+                probabilities,
+                confidence,
+            } => Self::Score {
+                score,
+                legend,
+                probabilities,
+                confidence,
+            },
+        }
+    }
+}
+
+/// Decodes a known `type` strictly and keeps any other string `type` as
+/// [`Answer::Unknown`] (module docs, `# Decoding is tolerant, reading is
+/// strict`).
+///
+/// The answer is buffered as a [`Value`] and dispatched on its `type` by
+/// hand, rather than derived with an untagged fallback variant. A derived
+/// fallback catches every answer the tagged variants refuse, so `{"type":
+/// "noul", "noul": 1.2}` would become an unknown answer instead of an error
+/// (checked with serde 1.0.229): a broken Noul would be read as a kind this
+/// crate does not know, and the remedy the error suggests, upgrading, would
+/// be wrong. By hand, a string `type` of `noul`, `choice` or `score` decodes
+/// through the strict derive and its errors stand; any other string is
+/// `Unknown`; a `type` that is not a string, a missing `type`, and an answer
+/// that is not an object are errors.
+///
+/// Buffering through a [`Value`] means the last of two duplicate keys wins,
+/// as it does for every JSON object `serde_json` reads into a map. A
+/// duplicate `type` can therefore make a known answer `Unknown`, or the
+/// reverse. That is accepted, as `kunobi-jev` accepts it: JSON leaves
+/// duplicate keys undefined, and a server that sends them has no one
+/// answer to read. A unit test pins the behaviour.
+impl<'de> Deserialize<'de> for Answer {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        let Value::Object(object) = &raw else {
+            return Err(de::Error::invalid_type(
+                unexpected(&raw),
+                &"an answer object",
+            ));
+        };
+        match object.get("type") {
+            None => Err(de::Error::missing_field("type")),
+            Some(Value::String(kind)) if KNOWN_KINDS.contains(&kind.as_str()) => {
+                KnownAnswer::deserialize(raw)
+                    .map(Self::from)
+                    .map_err(de::Error::custom)
+            }
+            Some(Value::String(_)) => Ok(Self::Unknown(raw)),
+            Some(other) => Err(de::Error::invalid_type(
+                unexpected(other),
+                &"a string answer type",
+            )),
+        }
+    }
+}
+
+/// What serde calls `value` in an "invalid type" message.
+fn unexpected(value: &Value) -> Unexpected<'_> {
+    match value {
+        Value::Null => Unexpected::Unit,
+        Value::Bool(b) => Unexpected::Bool(*b),
+        Value::Number(n) => n
+            .as_u64()
+            .map(Unexpected::Unsigned)
+            .or_else(|| n.as_i64().map(Unexpected::Signed))
+            .unwrap_or_else(|| Unexpected::Float(n.as_f64().unwrap_or(f64::NAN))),
+        Value::String(s) => Unexpected::Str(s),
+        Value::Array(_) => Unexpected::Seq,
+        Value::Object(_) => Unexpected::Map,
+    }
+}
+
+/// Reads an absent or `null` field as the type's default: a missing
+/// `usage`, or a missing or `null` count inside it, is zero.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
 /// Token usage for one request. Output tokens are free; input tokens are billed.
+///
+/// A count the server did not report reads as zero: an absent or `null`
+/// `usage` object ([`Response::usage`]), and an absent or `null` count in
+/// it. TypeSafe always reports both counts (the OpenAPI document marks them
+/// required), so from a compatible server zero means "not reported", and
+/// every consumer of these numbers is a counter or a sum, which a zero
+/// leaves right. A missing `usage` object is tolerated beyond both the
+/// schema and the Python SDK, whose `SystemOneResponse.usage` has no default
+/// although its counts are optional. A negative, fractional or string count
+/// is still [`Error::Decode`]; the schema's integer counts have no minimum,
+/// so a negative count is valid against it and still refused here. Other
+/// keys inside `usage` (`cost`, from `OpenRouter`'s decisions endpoint) are
+/// ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Usage {
-    /// Tokens in `state` plus all questions.
+    /// Tokens in `state` plus all questions; zero when the server reports
+    /// none.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub input_tokens: u64,
-    /// Tokens in the answers.
+    /// Tokens in the answers; zero when the server reports none.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub output_tokens: u64,
 }
 
 /// The full response to one evaluation.
+///
+/// `model` and `answers` are required, although the Python SDK defaults
+/// `answers` to empty: the OpenAPI document requires both, and a response
+/// with nothing to read is a server error, not an empty result. Everything
+/// else is tolerated (module docs, `# Decoding is tolerant, reading is
+/// strict`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
     /// The versioned model that answered (e.g. `jev-1.13.0`), even when the
     /// request used an alias. Log it: thresholds are tuned per version.
     pub model: String,
-    /// One answer per question id.
+    /// One answer per question id. An answer of a kind this release does not
+    /// know is [`Answer::Unknown`], not a failed response.
     pub answers: BTreeMap<String, Answer>,
-    /// Token accounting.
+    /// Token accounting; zero for a count, or a whole `usage`, the server
+    /// did not report ([`Usage`]).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub usage: Usage,
     /// TypeSafe's request id for the call that produced this response: the
     /// value of the `x-typesafe-request-id` response header (the client's
@@ -230,6 +469,21 @@ pub struct Response {
     /// without one serialises as it did before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// Every top-level field of the body other than `model`, `answers`,
+    /// `usage` and `request_id`, as it came: what a server adds beyond the
+    /// documented shape, such as Laya's `routing` (which checkpoint
+    /// answered) or the `id` and `provider` of `OpenRouter`'s decisions
+    /// endpoint. Kept so an operator can log it without a second decoder.
+    ///
+    /// It is written back at the top level, beside the known fields, so a
+    /// recording keeps it, and nothing is written when it is empty, so a
+    /// response without extras serialises as it did before the field
+    /// existed. The client does not warn about extras: they are expected
+    /// from a compatible server. A misspelt field in a hand-written body
+    /// lands here too, which is why tests assert it is empty. Fields inside
+    /// an answer are not kept.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Response {
@@ -438,11 +692,19 @@ impl FromAnswer for Score {
     }
 }
 
+/// The error for an answer of another primitive than `expected`. An unknown
+/// answer's kind is the server's own string, so it is escaped and cut
+/// ([`sanitize_kind`]) before it becomes part of a message.
 fn mismatch(id: &str, expected: &'static str, actual: &Answer) -> Error {
+    let kind = actual.kind();
     Error::AnswerTypeMismatch {
         id: id.to_owned(),
         expected,
-        actual: actual.kind(),
+        actual: if matches!(actual, Answer::Unknown(_)) {
+            sanitize_kind(kind)
+        } else {
+            kind.to_owned()
+        },
     }
 }
 
@@ -516,9 +778,9 @@ mod tests {
             r.get(&h),
             Err(Error::AnswerTypeMismatch {
                 expected: "noul",
-                actual: "score",
+                actual,
                 ..
-            })
+            }) if actual == "score"
         ));
     }
 
@@ -582,5 +844,308 @@ mod tests {
         let h = q.noul("absent", "?", None).unwrap();
         let r = response(&json!({}));
         assert!(matches!(r.get(&h), Err(Error::MissingAnswer(id)) if id == "absent"));
+    }
+
+    /// Decode `body`'s JSON text, the way the client decodes a reply.
+    fn decode<T: serde::de::DeserializeOwned>(body: &Value) -> serde_json::Result<T> {
+        serde_json::from_str(&body.to_string())
+    }
+
+    #[test]
+    fn an_unknown_answer_kind_is_kept_raw_and_serialises_back() {
+        let raw = json!({ "type": "rank", "ranking": ["b", "a"], "confidence": 0.4 });
+        let answer: Answer = decode(&raw).unwrap();
+        assert_eq!(answer, Answer::Unknown(raw.clone()));
+        assert_eq!(answer.kind(), "rank");
+        assert_eq!(serde_json::to_value(&answer).unwrap(), raw);
+
+        // Inside a response, and back out of it, unchanged.
+        let r = response(&json!({ "later": raw }));
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        let again: Response = decode(&serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(again, r);
+        assert_eq!(
+            serde_json::to_value(&again).unwrap()["answers"]["later"],
+            raw
+        );
+
+        // The known kinds serialise as they always did.
+        let noul = Answer::Noul {
+            noul: Probability::new(0.25).unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_value(&noul).unwrap(),
+            json!({ "type": "noul", "noul": 0.25 })
+        );
+
+        // A hand-built Unknown with a known `type` serialises as that kind,
+        // and decodes back as the known variant.
+        let hand = Answer::Unknown(json!({ "type": "noul", "noul": 0.5 }));
+        assert_eq!(hand.kind(), "noul");
+        assert_eq!(
+            decode::<Answer>(&serde_json::to_value(&hand).unwrap()).unwrap(),
+            Answer::Noul {
+                noul: Probability::new(0.5).unwrap()
+            }
+        );
+        // Only a hand-built one can lack a string `type`.
+        assert_eq!(Answer::Unknown(json!(5)).kind(), "unknown");
+        assert_eq!(Answer::Unknown(json!({ "type": 5 })).kind(), "unknown");
+    }
+
+    #[test]
+    fn a_known_kind_that_does_not_decode_is_still_an_error() {
+        let cases = [
+            (
+                json!({ "type": "noul", "noul": 1.2 }),
+                "is not a probability",
+            ),
+            (
+                json!({ "type": "choice", "choice": "billing", "confidence": 0.5 }),
+                "missing field `probabilities`",
+            ),
+            (
+                json!({ "type": "score", "score": 1.0, "legend": { "0": "a", "1": "b" },
+                        "probabilities": { "0": 0.0, "1": 1.0 } }),
+                "missing field `confidence`",
+            ),
+        ];
+        for (bad, message) in cases {
+            let err = decode::<Answer>(&bad).unwrap_err();
+            assert!(err.to_string().contains(message), "{bad}: {err}");
+            // And it fails the response, as before: a broken known answer
+            // is not an unknown one.
+            let body = json!({ "model": "m", "answers": { "x": bad }, "usage": {} });
+            let err = decode::<Response>(&body).unwrap_err();
+            assert!(err.to_string().contains(message), "{body}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_answer_without_a_string_type_is_an_error() {
+        let cases = [
+            (json!({ "noul": 0.5 }), "missing field `type`"),
+            (
+                json!({ "type": 3 }),
+                "invalid type: integer `3`, expected a string answer type",
+            ),
+            (
+                json!({ "type": null, "noul": 0.5 }),
+                "invalid type: null, expected a string answer type",
+            ),
+            (
+                json!(0.5),
+                "invalid type: floating point `0.5`, expected an answer object",
+            ),
+            (
+                json!(["noul", 0.5]),
+                "invalid type: sequence, expected an answer object",
+            ),
+        ];
+        for (bad, message) in cases {
+            let err = decode::<Answer>(&bad).unwrap_err();
+            assert!(err.to_string().contains(message), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn duplicate_keys_in_an_answer_are_last_one_wins() {
+        let answer: Answer =
+            serde_json::from_str(r#"{"type":"noul","noul":0.2,"noul":0.9}"#).unwrap();
+        assert_eq!(
+            answer,
+            Answer::Noul {
+                noul: Probability::new(0.9).unwrap()
+            }
+        );
+        // A duplicate `type` decides the kind by its last value, either way.
+        let answer: Answer =
+            serde_json::from_str(r#"{"type":"noul","noul":0.5,"type":"rank"}"#).unwrap();
+        assert!(matches!(&answer, Answer::Unknown(_)), "{answer:?}");
+        assert_eq!(answer.kind(), "rank");
+        let answer: Answer =
+            serde_json::from_str(r#"{"type":"rank","noul":0.5,"type":"noul"}"#).unwrap();
+        assert_eq!(
+            answer,
+            Answer::Noul {
+                noul: Probability::new(0.5).unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn an_unknown_kind_does_not_fail_the_other_answers() {
+        let mut q = Questions::new();
+        let dept = q.choice::<Dept>("dept", "Which?").unwrap();
+        let order = q.noul("order", "?", None).unwrap();
+        let r = response(&json!({
+            "dept": { "type": "choice", "choice": "billing",
+                      "probabilities": { "billing": 0.9, "technical": 0.1 }, "confidence": 0.8 },
+            "order": { "type": "rank", "ranking": ["billing", "technical"] }
+        }));
+        assert_eq!(r.get(&dept).unwrap().chosen, Dept::Billing);
+        let err = r.get(&order).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::AnswerTypeMismatch { id, expected: "noul", actual }
+                    if id == "order" && actual == "rank"
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            r#"answer "order" is a rank but a noul was requested"#
+        );
+    }
+
+    #[test]
+    fn a_hostile_unknown_kind_is_escaped_in_the_mismatch() {
+        let kind = format!("a\nb{}", "x".repeat(100));
+        let r = response(&json!({ "x": { "type": kind } }));
+        assert_eq!(r.answers["x"].kind(), kind, "kind() is the raw string");
+
+        let mut q = Questions::new();
+        let h = q.noul("x", "?", None).unwrap();
+        let err = r.get(&h).unwrap_err();
+        let Error::AnswerTypeMismatch { actual, .. } = &err else {
+            panic!("{err:?}");
+        };
+        assert!(!actual.contains('\n'), "{actual:?}");
+        assert!(actual.chars().count() <= 64, "{}", actual.chars().count());
+        assert!(actual.starts_with(r"a\nb"), "{actual:?}");
+        assert!(!err.to_string().contains('\n'), "{err}");
+        // A kind that needs no escaping and fits is kept as it is.
+        assert_eq!(sanitize_kind("rank"), "rank");
+        assert_eq!(sanitize_kind(&"r".repeat(64)), "r".repeat(64));
+        assert_eq!(sanitize_kind(&"r".repeat(65)), "r".repeat(64));
+    }
+
+    #[test]
+    fn usage_is_zero_when_absent_or_null() {
+        let bodies = [
+            json!({ "model": "m", "answers": {} }),
+            json!({ "model": "m", "answers": {}, "usage": null }),
+            json!({ "model": "m", "answers": {}, "usage": {} }),
+            json!({ "model": "m", "answers": {},
+                    "usage": { "input_tokens": null, "output_tokens": null, "cost": 1.7e-5 } }),
+        ];
+        for body in bodies {
+            let r: Response = decode(&body).unwrap();
+            assert_eq!(r.usage, Usage::default(), "{body}");
+            assert!(r.extra.is_empty(), "{body}: {:?}", r.extra);
+        }
+        let r: Response = decode(&json!({ "model": "m", "answers": {},
+                                          "usage": { "input_tokens": 7 } }))
+        .unwrap();
+        assert_eq!(
+            r.usage,
+            Usage {
+                input_tokens: 7,
+                output_tokens: 0
+            }
+        );
+        // Written back, a defaulted usage is explicit zeros.
+        assert_eq!(
+            serde_json::to_value(r.usage).unwrap(),
+            json!({ "input_tokens": 7, "output_tokens": 0 })
+        );
+    }
+
+    #[test]
+    fn negative_or_string_usage_is_still_an_error() {
+        for usage in [
+            json!({ "input_tokens": -1 }),
+            json!({ "input_tokens": "3" }),
+            json!({ "output_tokens": 1.5 }),
+        ] {
+            let body = json!({ "model": "m", "answers": {}, "usage": usage });
+            assert!(decode::<Response>(&body).is_err(), "{body}");
+        }
+        // `model` and `answers` stay required.
+        assert!(decode::<Response>(&json!({ "answers": {} })).is_err());
+        assert!(decode::<Response>(&json!({ "model": "m" })).is_err());
+    }
+
+    #[test]
+    fn undocumented_top_level_fields_are_kept_and_written_back() {
+        // The shape Laya's server answers in: a `routing` object at the top,
+        // and fields inside each answer that the API does not have.
+        let laya = json!({
+            "model": "laya-rl-agent",
+            "answers": {
+                "urgent": { "type": "noul", "noul": 0.8123, "confidence": 0.8123,
+                            "action": { "act_probability": 0.4 } }
+            },
+            "usage": { "input_tokens": 120, "output_tokens": 0 },
+            "routing": { "model": "typed-decisions", "reason": "explicit" }
+        });
+        let r: Response = decode(&laya).unwrap();
+        assert_eq!(r.extra.keys().collect::<Vec<_>>(), ["routing"]);
+        assert_eq!(r.extra["routing"]["model"], "typed-decisions");
+        assert_eq!(
+            r.answers["urgent"],
+            Answer::Noul {
+                noul: Probability::new(0.8123).unwrap()
+            },
+            "fields inside an answer are ignored"
+        );
+        let written = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            written["routing"], laya["routing"],
+            "written back at the top"
+        );
+        assert!(written.get("extra").is_none(), "{written}");
+        assert_eq!(decode::<Response>(&written).unwrap(), r);
+
+        // A body in the shape of OpenRouter's decisions endpoint, written for
+        // this test: `id` and `provider` at the top, `cost` in the usage,
+        // and integer zeros among the probabilities.
+        let routed = json!({
+            "model": "typesafe/jev-1.13",
+            "answers": {
+                "department": { "type": "choice", "choice": "billing",
+                                "probabilities": { "sales": 0, "billing": 0.9, "technical": 0.1 },
+                                "confidence": 0.85 },
+                "severity": { "type": "score", "score": 1.1,
+                              "legend": { "0": "minor", "1": "major", "2": "outage" },
+                              "probabilities": { "0": 0, "1": 0.9, "2": 0.1 },
+                              "confidence": 0.8 }
+            },
+            "usage": { "input_tokens": 400, "output_tokens": 60, "cost": 0.000_02 },
+            "id": "gen-dec-0001",
+            "provider": "TypeSafe"
+        });
+        let r: Response = decode(&routed).unwrap();
+        assert_eq!(r.extra.keys().collect::<Vec<_>>(), ["id", "provider"]);
+        assert_eq!(
+            r.usage,
+            Usage {
+                input_tokens: 400,
+                output_tokens: 60
+            }
+        );
+        let Answer::Choice { probabilities, .. } = &r.answers["department"] else {
+            panic!("{:?}", r.answers["department"]);
+        };
+        assert!(probabilities["sales"].value().abs() < f64::EPSILON);
+        let mut q = Questions::new();
+        let severity = q
+            .score("severity", "?", ["minor", "major", "outage"])
+            .unwrap();
+        assert_eq!(r.get(&severity).unwrap().nearest_label(), "major");
+        let written = serde_json::to_value(&r).unwrap();
+        assert_eq!(written["id"], "gen-dec-0001");
+        assert_eq!(written["provider"], "TypeSafe");
+        assert_eq!(decode::<Response>(&written).unwrap(), r);
+
+        // A body `request_id` goes to its own field, not to the extras.
+        let r: Response =
+            decode(&json!({ "model": "m", "answers": {}, "request_id": "req_1" })).unwrap();
+        assert_eq!(r.request_id.as_deref(), Some("req_1"));
+        assert!(r.extra.is_empty(), "{:?}", r.extra);
+        // A response is an object: the array form a derived struct accepted
+        // is gone (nothing sent or recorded it).
+        assert!(serde_json::from_str::<Response>(r#"["m", {}, {}]"#).is_err());
     }
 }

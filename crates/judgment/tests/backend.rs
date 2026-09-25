@@ -2,10 +2,15 @@
 //! table and refuses a question it has no answer for, a `Recorder` writes
 //! what another backend answered, and a `Replay` over that directory answers
 //! the same request without any backend and refuses a request nobody
-//! recorded. The client's implementation is checked in `client.rs`.
+//! recorded. The client's implementation is checked in `client.rs`. The
+//! committed Laya recordings decode, with nothing unknown and nothing extra,
+//! and write back byte for byte.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use judgment::{Error, Fake, Questions, Recorder, Replay, SystemOne, options};
+use std::path::Path;
+
+use judgment::eval::{Recording, write_recording};
+use judgment::{Answer, Error, Fake, Questions, Recorder, Replay, SystemOne, options};
 use serde_json::json;
 
 options! {
@@ -97,4 +102,47 @@ async fn a_recorder_writes_what_a_replay_answers_offline() {
     let dynamic: Box<dyn SystemOne> = Box::new(replay);
     assert!(dynamic.answer(&state, "m", &q).await.is_ok());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_committed_recordings_decode_and_rewrite_byte_for_byte() {
+    // The 40 Laya responses the benchmark example replays. The Recorder
+    // wrote the decoded Response, so none of Laya's extras are in them. The
+    // tolerant decoder must read them as the strict one did, and writing one
+    // back must give the same bytes, so a recording read and written again
+    // does not change.
+    let recordings =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/typed-decisions/recordings");
+    let out = std::env::temp_dir().join(format!(
+        "judgment-the_committed_recordings_decode_and_rewrite_byte_for_byte-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&out);
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&recordings).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let recording: Recording = serde_json::from_str(&text).unwrap();
+        let name = path.display();
+        assert!(
+            recording.response.extra.is_empty(),
+            "{name}: {:?}",
+            recording.response.extra
+        );
+        for (id, answer) in &recording.response.answers {
+            assert!(
+                !matches!(answer, Answer::Unknown(_)),
+                "{name}: {id} is {answer:?}"
+            );
+        }
+        let written = write_recording(&out, &recording).unwrap();
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), text, "{name}");
+        seen += 1;
+    }
+    assert_eq!(seen, 40);
+    assert_eq!(Replay::open(&recordings).unwrap().len(), 40);
+    let _ = std::fs::remove_dir_all(&out);
 }

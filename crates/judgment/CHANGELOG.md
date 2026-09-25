@@ -36,6 +36,9 @@ document (0.2.0) and the SDK references.
   retry policy, headers and extra body fields. Also `ClientBuilder::default_header`,
   `Client::model()` and `Client::retry()`. `x-typesafe-retry-count` is
   reserved (both SDKs own it) although this release does not send it.
+- `Answer::Unknown(Value)` for an answer kind this release does not know,
+  logged at `warn`. `Response::extra` keeps undocumented top-level fields.
+  (`#[serde(untagged)]` on a variant needs serde 1.0.181 or later.)
 
 ### Changed
 
@@ -49,6 +52,7 @@ document (0.2.0) and the SDK references.
   Null instructions are still sent as `null` (the schema accepts it, and Laya
   requires the key).
 - Backoff jitter only shortens a wait, as in both SDKs.
+- A missing `usage`, or null counts, read as zero.
 - The rustdoc states where retries match the SDKs and where they deliberately
   differ, instead of claiming to mirror them. The `/v1/models` notes are
   corrected against the OpenAPI document.
@@ -86,3 +90,11 @@ document (0.2.0) and the SDK references.
   `retry_after_max` on any retried status, for every client of the shared
   loop (S3).
 - New variants `Error::ReservedHeader` and `Error::ReservedField` (S4).
+- `Answer` gains `Unknown`, is `#[non_exhaustive]`, and its hand-written
+  `Deserialize` accepts unknown kinds (S5).
+- `Answer::kind` returns `&str` and is no longer `const` (S5).
+- `Error::AnswerTypeMismatch.actual` is a `String` (S5).
+- `Response` gains the public field `extra` and no longer decodes from a JSON
+  array (S5).
+- A response with no `usage`, or null counts, decodes with zero instead of
+  failing (S5).

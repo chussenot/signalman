@@ -61,7 +61,13 @@ crates for the same API were not adopted.
   before anything is sent.
 - `answer`: `Probability` and `Confidence` newtypes that refuse values outside
   `[0, 1]`, the wire `Answer`, and `Response::get(&handle)` returning `Noul`,
-  `Choice<T>` or `Score`.
+  `Choice<T>` or `Score`. Decoding is tolerant and reading is strict: an
+  answer of a kind this release does not know is kept as `Answer::Unknown`
+  (the client logs it at `warn`) instead of failing the whole response, a
+  missing `usage` reads as zero, and undocumented top-level fields (Laya's
+  `routing`, say) are kept in `Response::extra`; a known answer that breaks
+  its shape is still an error, and reading an unknown one through a handle
+  is `AnswerTypeMismatch` naming its kind.
 - `client` (feature `http`, default): `Client` with the official SDKs'
   defaults and `RetryPolicy`: two retries of 408, 429, 5xx and transport
   failures, exponential backoff whose jitter only shortens a wait, and the

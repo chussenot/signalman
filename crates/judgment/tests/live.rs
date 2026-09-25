@@ -21,8 +21,8 @@
 use std::time::Duration;
 
 use judgment::{
-    CallOptions, Client, Error, NoulCriteria, Questions, Recorder, Replay, Request, SystemOne,
-    options,
+    Answer, CallOptions, Client, Error, NoulCriteria, Questions, Recorder, Replay, Request,
+    SystemOne, options,
 };
 use serde_json::json;
 
@@ -96,6 +96,14 @@ async fn the_three_primitives_round_trip_through_typed_handles() {
         response.usage
     );
     assert_eq!(response.answers.len(), 3);
+    // Every answer is of a kind this release knows: an `Answer::Unknown`
+    // here means the server has a primitive the crate cannot read yet.
+    for (id, answer) in &response.answers {
+        assert!(
+            !matches!(answer, Answer::Unknown(_)),
+            "{id}: an answer of a kind this build does not know: {answer:?}"
+        );
+    }
 
     let dept = response.get(&dept).unwrap();
     assert_eq!(dept.probabilities.len(), 3, "one probability per option");
@@ -134,6 +142,10 @@ async fn the_three_primitives_round_trip_through_typed_handles() {
     assert!(severity.nearest_level() <= 2);
 
     eprintln!("request id: {:?}", response.request_id);
+    eprintln!(
+        "undocumented top-level fields: {:?}",
+        response.extra.keys().collect::<Vec<_>>()
+    );
     eprintln!(
         "model {}: department {:?} p={:.3} conf={:.3}; urgent {:.3}; severity {:.2} ({})",
         response.model,

@@ -88,6 +88,22 @@
 //! marked sensitive and redacted from `Debug` output, so a client or builder
 //! printed with `{:?}` cannot leak it, and no error message quotes it.
 //!
+//! What the API may add is not an error (`answer` module docs, `# Decoding
+//! is tolerant, reading is strict`). An answer of a kind this release does
+//! not know is kept as [`Answer::Unknown`] and logged once per answer at
+//! `warn`, inside the `typesafe.evaluate` span, with the question id and the
+//! kind (escaped, at most 64 characters): the sign that the API has a
+//! primitive this build cannot read, and that upgrading the crate is due.
+//! The Python SDK logs a warning too and skips the answer; this client keeps
+//! it, so a recording and a caller can still see it, and reading it through
+//! a handle is [`Error::AnswerTypeMismatch`]. An absent `usage` reads as
+//! zero, and undocumented top-level fields are kept in [`Response::extra`]
+//! without a warning, since a compatible server may add them to every
+//! response. A [`Replay`](crate::Replay), a [`Fake`](crate::Fake) and
+//! [`crate::eval::read_recording`] do not warn: a Fake answers what its
+//! test scripted, and a recorded answer was warned about when the client
+//! received it.
+//!
 //! # Request id
 //!
 //! TypeSafe identifies a call by an `x-typesafe-request-id` response header
@@ -212,7 +228,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::answer::Response;
+use crate::answer::{Answer, Response, sanitize_kind};
 use crate::error::{Error, Result, ValidationIssue};
 use crate::http::{self, Completed, Exhausted};
 use crate::observer::Observer;
@@ -728,6 +744,17 @@ impl Client {
         // The field means "the header": a body key of the same name is
         // overwritten, with `None` when the header was absent.
         response.request_id = reply.request_id;
+        // Inside this method's span, so the event carries `model` and
+        // `request_id` from it; the kind is the server's string, escaped.
+        for (id, answer) in &response.answers {
+            if matches!(answer, Answer::Unknown(_)) {
+                tracing::warn!(
+                    question = ?id,
+                    kind = %sanitize_kind(answer.kind()),
+                    "answer of a kind this client does not know; kept as Answer::Unknown"
+                );
+            }
+        }
         tracing::Span::current().record("input_tokens", response.usage.input_tokens);
         self.observer().on_usage(&response.model, &response.usage);
         Ok(response)
