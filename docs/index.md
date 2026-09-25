@@ -30,6 +30,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | Whether the judgment crate works against Laya, and what the benchmark measured | [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) |
 | What the open Jev reproductions and the Decision Index mean for provider choice, self-hosting, question design and thresholds | [Open System One models](research/open-system-one-models.md) |
+| What the other System One clients and the official SDKs do that judgment does not, and which of it to adopt | [System One client libraries](research/system-one-client-libraries.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |
 | What is unverified or missing | [Roadmap](roadmap.md) |

@@ -19,6 +19,7 @@ nav:
   - judgment against Laya typed-decisions: judgment-laya-typed-decisions.md
   - Research:
       - Open System One models: research/open-system-one-models.md
+      - System One client libraries: research/system-one-client-libraries.md
   - Triage: triage.md
   - Evaluation harness: evaluation.md
   - incident.io integration: incidentio.md

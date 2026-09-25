@@ -69,6 +69,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
 | [judgment against Laya typed-decisions](docs/judgment-laya-typed-decisions.md) | The crate against a second implementation of the wire: the tests, the bug they caught, the benchmark numbers |
 | [Open System One models](docs/research/open-system-one-models.md) | Research note: the open Jev reproductions, the Decision Index, Laya, and the decisions that follow for signalman and judgment |
+| [System One client libraries](docs/research/system-one-client-libraries.md) | Research note: the other Rust clients and the official SDKs against judgment, and the ranked changes to make |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
