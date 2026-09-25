@@ -249,10 +249,12 @@ impl Triager {
                     url: inc.permalink.clone(),
                 });
             } else {
-                // Unreachable: `TriageQuestions::read` confines the dedup
-                // answer to the references this map was built from, so the
-                // policy cannot choose one that is not a key here. Kept as a
-                // boundary check rather than a silent drop.
+                // Unreachable: `Response::verify`, in the client and again in
+                // `TriageQuestions::read`, refuses a dedup answer naming a
+                // reference the question did not offer, and the question
+                // offered exactly the references this map was built from, so
+                // the policy cannot choose one that is not a key here. Kept
+                // as a boundary check rather than a silent drop.
                 tracing::warn!(
                     reference,
                     "dedup chose a reference not in the candidate map"

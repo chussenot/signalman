@@ -2,7 +2,7 @@
 title: MCP server
 description: The Model Context Protocol tools signalman serves over stdio and Streamable HTTP, five always-on read-only tools and one gated write tool, what each one answers, the two transports and how they are served, how to configure and connect to them, and what still writes nothing on purpose.
 status: current
-last_reviewed: 2026-09-23
+last_reviewed: 2026-09-25
 tags: [mcp, agents, decisions]
 ---
 
@@ -24,7 +24,7 @@ Each tool answers one question an agent asks during an investigation, and each m
 | `lookup_owner` | Catalog resolution for a component: its record, owner candidates, and the TechDocs runbook excerpt. Needs Backstage configured. | `signalman backstage lookup` |
 | `open_incidents` | Incidents currently open in incident.io, the dedup candidate list. | `signalman incidentio open-incidents` |
 
-Every tool in this table has `read_only_hint: true`. Every result carries the value as structured content (validated against the tool's declared output where one is fixed, such as `qualify_alert`'s [outcome contract](triage.md#the-outcome-contract)) and a short text summary, for a client that renders content instead of structured JSON. A tool that runs and fails (an unreachable upstream, a missing catalog entry) returns a tool-level error the client shows; a malformed request (both or neither of two mutually exclusive fields) is refused as a protocol-level error before anything runs.
+Every tool in this table has `read_only_hint: true`. Every result carries the value as structured content (validated against the tool's declared output where one is fixed, such as `qualify_alert`'s [outcome contract](triage.md#the-outcome-contract)) and a short text summary, for a client that renders content instead of structured JSON. A tool that runs and fails (an unreachable upstream, a missing catalog entry) returns a tool-level error the client shows; a malformed request (both or neither of two mutually exclusive fields) is refused as a protocol-level error before anything runs. A TypeSafe answer that does not fit the questions (an owner or an incident the question never offered, a Score off its scale) is one of those tool-level errors: `qualify_alert` reports `TypeSafe call failed: …` with the client's message, which names the question and the option or level and ends with TypeSafe's request id. It fails there, in the client, rather than while reading the answer, and nothing is written ([Triage](triage.md#which-questions-are-asked)).
 
 ## Writing
 

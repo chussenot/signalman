@@ -271,6 +271,8 @@ sequenceDiagram
     R-->>Code: Noul{yes: 0.95}
 ```
 
+A handle checks one answer when it is read; the whole response is checked before anyone reads it. The client holds every response against the questions it sent (`Response::verify`): an answer for every question, of the question's primitive, a Choice that names only options it was offered (its choice and every key of its distribution), and a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error naming the question and the option or level, with TypeSafe's request id; it is not retried, since the call was billed, its token usage is still reported, and it is counted in `signalman.upstream.errors` as `status="unfit"` (a 2xx whose body does not decode is `decode`). The `Fake`, `Replay` and `Recorder` backends verify too, and signalman's `TriageQuestions::read` verifies again for a recording replayed by case id. For signalman this means an owner or an incident the model was never offered fails the triage instead of being read as the no-match option ([Triage](triage.md#which-questions-are-asked)); the official SDKs check the shape of each answer and stop there.
+
 ## Retries
 
 A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs. The defaults are the official SDKs': two retries; 0.5 s doubling to 5 s, with a jitter that only ever shortens a wait; 408, 429, every 5xx and every transport failure retried; the server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date, measured against the response's `Date` header) honoured on any retried status up to 30 s; and no overall budget, which a caller may set. The reasons for each, and a table of where the crate matches the SDKs and where it deliberately differs, are in the rustdoc of `RetryPolicy`. `RetryPolicy::conservative()` retries only 408, 429 and a connection that was never made, for a caller who would rather fail a billed call than pay for it twice. signalman uses the defaults for all three upstreams and sets no budget; in `serve`, each triage's own deadline bounds it instead ([Operations](operations.md#backpressure)).
@@ -554,7 +556,11 @@ flowchart TD
 
 Every question references the state by backticked path (`alert.title`, `alert.component.owner`). The owner question's instructions change when a catalog component is present: they name `alert.component.owner` as the registered owner and say when to deviate.
 
-Answers are confined to what was asked. A Choice that names an option the question never offered is read as that question's no-match option (`none_of_these` for the owner, `none` for the dedup), and keys the question never offered are dropped from the distribution; a Score whose legend is not the four-level scale the question sent, or whose value falls off the end of that scale, is refused outright. Everything downstream therefore holds: the policy cannot attach to an incident that was not a candidate, and `judgments` in the [outcome contract](#the-outcome-contract) lists one row per option offered.
+Answers are confined to what was asked, and are checked twice: in the TypeSafe client, which holds every response against the questions it sent (`Response::verify` in the `judgment` crate) before signalman sees it, and again in `TriageQuestions::read`, for a response that did not come through the client (a recording replayed by `signalman eval --replay`, or one built by hand). A Choice that names an option the question never offered, as its choice or anywhere in its distribution, fails the triage; so does a Score whose legend is not the levels the question sent, or whose value falls off the end of their scale. The error names the question and the option or level, and carries TypeSafe's request id. No answer is read as the no-match option in its place ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md): an unknown option is an explicit error naming the question): reading an unoffered owner as `none_of_these` would route the alert on an answer the model did not give, and reading an unoffered incident as `none` would page someone on the strength of a duplicate that was never a candidate.
+
+The cost is stated plainly: in `serve`, a triage that fails this way leaves the alert with no tags and no note. What shows it is the `triage failed` error log line and `signalman.upstream.errors{service="typesafe",status="unfit"}`; the recovery is `signalman incidentio triage-alert <id>` by hand once the cause is known ([Operations](operations.md#failure-modes)). The CLI exits non-zero, the MCP `qualify_alert` tool reports `TypeSafe call failed: …`, and `signalman eval` records the case as failed and carries on.
+
+What stays tolerant: an offered option missing from a Choice's distribution reads as zero, and a distribution that does not sum exactly to 1 is not an error. Everything downstream therefore holds: the policy cannot attach to an incident that was not a candidate, and `judgments` in the [outcome contract](#the-outcome-contract) lists one row per option offered. The level text signalman sends on (the `impact_label` metadata of `--forward-to-incidentio`) is therefore its own `[triage.text] impact_levels` wording: the legend the model echoes is checked against it, so the echo cannot put other words there.
 
 ### Owner candidates
 
@@ -1019,13 +1025,13 @@ failed (1), not graded: the answer did not fit the questions, so the figures abo
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
 
 1. `signalman eval cases.jsonl --record runs/<model>` once per model version.
-2. Edit `[policy]` (or `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file.
+2. Edit `[policy]` (or the question and guidance wording in `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file. Not `impact_levels` or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
 3. `signalman eval cases.jsonl --replay runs/<model> --config candidate.toml` and compare decision agreement.
 4. Pin `typesafe.model` to the version recorded against, in the same file as the thresholds.
 
 Pick thresholds from the `conf|right` and `conf|wrong` columns per question: the automatic-routing threshold should sit above most wrong confidences, the human-triage threshold below most right ones. When the two means are close, no threshold will separate them and the fix is the question's wording or the state, not the number.
 
-Wording changes do need a new run: they change the request. Record each variant under its own directory and compare.
+Wording changes do need a new run to be measured: they change the request, and a replay reads the old answers under the new wording. Record each variant under its own directory and compare. A replay whose recordings no longer fit the questions (reworded levels, a renamed team) stops with an error naming the question; re-record rather than edit the recordings.
 
 ## Comparing models
 
@@ -1326,7 +1332,7 @@ Each tool answers one question an agent asks during an investigation, and each m
 | `lookup_owner` | Catalog resolution for a component: its record, owner candidates, and the TechDocs runbook excerpt. Needs Backstage configured. | `signalman backstage lookup` |
 | `open_incidents` | Incidents currently open in incident.io, the dedup candidate list. | `signalman incidentio open-incidents` |
 
-Every tool in this table has `read_only_hint: true`. Every result carries the value as structured content (validated against the tool's declared output where one is fixed, such as `qualify_alert`'s [outcome contract](triage.md#the-outcome-contract)) and a short text summary, for a client that renders content instead of structured JSON. A tool that runs and fails (an unreachable upstream, a missing catalog entry) returns a tool-level error the client shows; a malformed request (both or neither of two mutually exclusive fields) is refused as a protocol-level error before anything runs.
+Every tool in this table has `read_only_hint: true`. Every result carries the value as structured content (validated against the tool's declared output where one is fixed, such as `qualify_alert`'s [outcome contract](triage.md#the-outcome-contract)) and a short text summary, for a client that renders content instead of structured JSON. A tool that runs and fails (an unreachable upstream, a missing catalog entry) returns a tool-level error the client shows; a malformed request (both or neither of two mutually exclusive fields) is refused as a protocol-level error before anything runs. A TypeSafe answer that does not fit the questions (an owner or an incident the question never offered, a Score off its scale) is one of those tool-level errors: `qualify_alert` reports `TypeSafe call failed: …` with the client's message, which names the question and the option or level and ends with TypeSafe's request id. It fails there, in the client, rather than while reading the answer, and nothing is written ([Triage](triage.md#which-questions-are-asked)).
 
 ## Writing
 
@@ -1819,7 +1825,8 @@ Each row says what the operator sees and whether the hub's retry, a manual re-ru
 | Component not in the catalog | triage continues with all team groups as candidates |
 | Backstage transport or auth error | triage fails and is logged; the alert stays untagged |
 | TypeSafe or incident.io error in the flow | logged at `error`; alert stays untagged; no retry because the delivery was already acknowledged |
-| TypeSafe returned an answer kind this build does not know | the `warn` line above, naming the question and the kind; an answer under an id signalman did not ask is kept and the triage goes on; under an asked id the triage fails reading it (`AnswerTypeMismatch`), is logged at `error` and leaves the alert untagged, as in the row above; upgrade judgment (a new signalman build), then re-run with `incidentio triage-alert` |
+| TypeSafe returned an answer kind this build does not know | the `warn` line above, naming the question and the kind; an answer under an id signalman did not ask is kept and the triage goes on; under an asked id the client refuses the response (`AnswerTypeMismatch`, counted as `status="unfit"`), the triage is logged at `error` and leaves the alert untagged, as in the row above; upgrade judgment (a new signalman build), then re-run with `incidentio triage-alert` |
+| TypeSafe answered outside the questions (an option not offered, a legend not the levels sent) | logged at `error` as `triage failed`, the message naming the question and the option or level and ending with TypeSafe's request id; the alert stays untagged with no note, and nothing is paged or suppressed; `signalman.upstream.errors{service="typesafe",status="unfit"}` counts it; the call is not retried (it was billed); recover with `signalman incidentio triage-alert <id>`, and report the request id to TypeSafe |
 | Notification fails | logged at `warn`; tags and attachment stay |
 | Process restart | the in-memory `webhook-id` set is lost; a resend within the window is processed again; tag adds are idempotent |
 
@@ -2287,7 +2294,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
-A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
+A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
 
 ## Failure containment
 
@@ -2299,6 +2306,7 @@ A fifth, internal boundary: every question returns a typed handle, and every ans
 | Component not in the catalog | Enricher | Every catalog group whose `spec.type` is in `backstage.group_types` becomes a candidate, capped at 24; the triage continues. The compiled team list is used only when no catalog is configured at all |
 | Backstage transport or auth error | Enricher | The triage fails and is logged; the alert stays untagged. A token without the `techdocs` plugin only loses the runbook, at `warn` |
 | TypeSafe or incident.io error during the flow | Flow logs at `error` | Alert stays untagged; nothing is paged or suppressed |
+| TypeSafe answer does not fit the questions | Client (`Response::verify`) | Triage fails and is logged; alert stays untagged; nothing is paged or suppressed |
 | Notification fails | Enricher logs at `warn` | Tags and attachment already written stay |
 | Change feed token unset | Receiver | `/changes` is not routed; `recent_changes` stays empty and `caused_by_change` is not asked |
 | Transient upstream status (408, 429, 5xx) | Shared retry loop | Two retries with backoff jittered downward; the server's wait honoured up to 30 s |

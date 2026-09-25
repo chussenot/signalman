@@ -420,8 +420,9 @@ fn attach_answers(owner: &OwnerPick<'_>) -> Value {
 }
 
 /// The model names an incident that was never offered: the client refuses
-/// it (`an_incident_the_question_never_offered_fails_the_cli_run`), so it is
-/// no fixture.
+/// it (`an_incident_the_question_never_offered_fails_the_cli_run`) and so
+/// does the reader (`an_incident_the_question_never_offered_fails_the_read`),
+/// so it is no fixture.
 fn hallucinated_dedup_answers(owner: &OwnerPick<'_>) -> Value {
     json!({
         "owner": owner_answer(owner, 0.91),
@@ -873,6 +874,36 @@ async fn run_cli(body: Value) -> std::process::Output {
     })
     .await
     .unwrap()
+}
+
+#[test]
+fn an_incident_the_question_never_offered_fails_the_read() {
+    // A response that never went through the client (a recording, a
+    // hand-built one) is held to the questions by the reader itself: the
+    // unoffered reference is an error naming the question, so it can reach
+    // neither the policy nor a document.
+    let alert = cli_alert();
+    let candidates = OwnerCandidates::from_teams();
+    let answers = hallucinated_dedup_answers(&OwnerPick {
+        candidates: &candidates,
+        chosen: "application",
+    });
+    let questions = TriageQuestions::for_alert_with(&alert, candidates.clone()).unwrap();
+    let response: signalman::Response = serde_json::from_value(json!({
+        "model": "jev-1.13.0",
+        "answers": answers,
+        "usage": { "input_tokens": 742, "output_tokens": 41 },
+    }))
+    .unwrap();
+    let err = questions.read(&response).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            signalman::Error::UnknownOption { id, option, .. }
+                if id == "duplicate_of" && option == "INC-9999"
+        ),
+        "{err:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

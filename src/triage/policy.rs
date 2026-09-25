@@ -186,8 +186,11 @@ pub fn decide(answers: &TriageAnswers, policy: &Policy) -> Decision {
 
     let chosen = answers.candidates.get(&answers.owner.chosen);
 
-    // "None of these", an option outside the candidate set, or low confidence
-    // all mean a person decides.
+    // "None of these" or low confidence means a person decides. An owner
+    // outside the candidate set cannot get here from a read response:
+    // `TriageQuestions::read` verifies the answer against the question
+    // (`Response::verify`), and the client refused it before that. The arm
+    // stays for answers built by hand, and sends them to a person too.
     let owner = match chosen {
         Some(c) if c.key != NONE_OF_THESE && owner_conf >= policy.human_below_confidence => {
             Owner::from(c)

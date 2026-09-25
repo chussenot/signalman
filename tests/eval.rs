@@ -299,6 +299,39 @@ fn the_committed_jev_run_grades_on_replay() {
     assert_eq!(report.questions["owner"].labelled, 3);
 }
 
+#[test]
+fn a_replay_under_reworded_impact_levels_names_the_question() {
+    // The recorded answers echo the levels they were asked with. Under other
+    // levels they no longer answer the question the setup asks, so the
+    // replay stops, naming it, instead of grading answers to another scale.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval");
+    let cases = eval::read_cases(&root.join("cases.jsonl")).unwrap();
+    let texts = Texts {
+        impact_levels: vec![
+            "Nothing a user notices".into(),
+            "A few users notice".into(),
+            "Most users notice".into(),
+            "Everyone notices".into(),
+        ],
+        ..Texts::default()
+    };
+    let (candidates, policy) = (OwnerCandidates::from_teams(), Policy::default());
+    let err = eval::replay(
+        &root.join("runs/jev-1.13.0"),
+        &cases,
+        &default_setup(&texts, &candidates, &policy),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            eval::Error::TypeSafe(signalman::Error::InvalidAnswer { id, reason, .. })
+                if id == "impact" && reason == "legend level 0 is not the level the question sent"
+        ),
+        "{err:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_live_run_records_an_unfit_answer_as_a_failed_case_and_continues() {
     let server = MockServer::start().await;
