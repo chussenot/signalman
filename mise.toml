@@ -83,6 +83,10 @@ run = "prek run --all-files"
 description = "Release build"
 run = "cargo build --release"
 
+[tasks.clean]
+description = "Remove the Cargo build output (target/, including rust-analyzer's) and this workspace's mbx state; the shared cache stays"
+run = ["cargo clean", "mbx clean"]
+
 [tasks.schema]
 description = "Regenerate the committed outcome contract schema at docs/schema/outcome.v1.json"
 # Written through a temporary file: a redirection straight onto the committed
