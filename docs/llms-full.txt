@@ -1975,7 +1975,7 @@ What the test suite proves: `tests/telemetry.rs` starts a `wiremock` server stan
 
 ## Tools
 
-[mise](https://mise.jdx.dev) pins every tool in `mise.toml`: the Rust toolchain (the same version as `rust-toolchain.toml`, which rustup and CI read) and [prek](https://prek.j178.dev) for git hooks. The beads CLI `bd` comes from the GitHub release binary rather than the npm package, whose postinstall step downloads a platform binary and fails behind some proxies.
+[mise](https://mise.jdx.dev) pins every tool in `mise.toml`: the Rust toolchain (the same version as `rust-toolchain.toml`, which rustup and CI read) and [prek](https://prek.j178.dev) for git hooks. [mr boxington](https://mr-boxington.jdx.dev) (`mbx`) is a shared Cargo build cache: the `wrappers.cargo` entry routes plain `cargo` through it in `mise run`, `mise exec`, activated shells and shims, so a rebuild after a small edit restores unchanged crates from `~/.cache/mbx` instead of recompiling them. Run `mbx doctor` if a build seems to bypass it. CI does not use it: the repository policy allows only GitHub-owned actions. The beads CLI `bd` comes from the GitHub release binary rather than the npm package, whose postinstall step downloads a platform binary and fails behind some proxies.
 
 ```sh
 mise install        # tools

@@ -1,3 +1,4 @@
+wrappers = { cargo = { command = "mbx", env = { MBX_CARGO_SHIM_MODE = "1" } } }
 # mise-en-place: tools and tasks for this repository.
 # https://mise.jdx.dev — run `mise install` once, then `mise run <task>` (or `mise tasks`).
 
@@ -5,6 +6,7 @@
 # Keep in step with rust-toolchain.toml, which rustup and CI read. mise must not read that
 # file itself: its parser keeps the TOML quotes and rejects the version (mise 2026.9.12).
 rust = { version = "1.94.1", components = "rustfmt,clippy" }
+mr-boxington = "latest"
 prek = "latest"
 # bd (beads) from the GitHub release binary. The npm package (@beads/bd) is avoided because it
 # downloads a platform binary in a postinstall step, which fails behind some proxies.
