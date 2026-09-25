@@ -104,7 +104,9 @@
 //!   views through those handles.
 //! * [`client`] (feature `http`, on by default) talks HTTP with the SDKs'
 //!   defaults, retries and errors; the differences are stated on
-//!   [`RetryPolicy`].
+//!   [`RetryPolicy`]. [`Client::evaluate_with`] takes a [`CallOptions`] for
+//!   one call's timeout, retry policy, headers and extra body fields, and
+//!   refuses any that would replace what the client sets itself.
 //! * [`http`] (feature `http`) is the retry loop and
 //!   [`RetryPolicy`], public so another client over
 //!   `reqwest` can share them.
@@ -137,7 +139,9 @@ pub use answer::{
 };
 pub use backend::{Fake, Recorder, Replay, SystemOne};
 #[cfg(feature = "http")]
-pub use client::{Client, ClientBuilder, ModelInfo, Request, RetryPolicy, TransportRetry};
+pub use client::{
+    CallOptions, Client, ClientBuilder, ModelInfo, Request, RetryPolicy, TransportRetry,
+};
 pub use error::{Error, Result, ValidationIssue};
 pub use observer::Observer;
 pub use question::{Handle, NoulCriteria, Options, Question, Questions};

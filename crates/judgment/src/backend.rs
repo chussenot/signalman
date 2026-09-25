@@ -101,6 +101,12 @@ impl<T: SystemOne + ?Sized> SystemOne for Box<T> {
     }
 }
 
+/// Through [`Client::evaluate`](crate::client::Client::evaluate), with the
+/// client's own settings and default headers: per-call options do not cross
+/// the trait (`client` module docs, `# Per-call options`). If extra body
+/// fields ever do, they must enter [`request_hash`], with an empty set
+/// hashing as it does today, or a [`Replay`] would answer a different
+/// request.
 #[cfg(feature = "http")]
 impl SystemOne for crate::client::Client {
     fn answer<'a>(

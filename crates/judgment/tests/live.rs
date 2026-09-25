@@ -20,7 +20,10 @@
 
 use std::time::Duration;
 
-use judgment::{Client, Error, NoulCriteria, Questions, Recorder, Replay, SystemOne, options};
+use judgment::{
+    CallOptions, Client, Error, NoulCriteria, Questions, Recorder, Replay, Request, SystemOne,
+    options,
+};
 use serde_json::json;
 
 options! {
@@ -278,6 +281,52 @@ async fn a_live_answer_replays_offline_from_its_recording() {
         live.get(&dept).unwrap().chosen
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Records the policy of the server under test for a top-level body field
+/// it does not document: it may answer as if the field were absent, use
+/// it, or refuse the request with a 400 or 422 naming it. The crate sends
+/// extra fields as given and leaves the choice to the server, so any of
+/// those is a pass; the outcome is printed so a run says which one this
+/// server takes. Anything else (a 5xx, a transport failure, a decode
+/// error) fails.
+#[tokio::test]
+#[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
+async fn an_unknown_extra_field_is_answered_or_refused_by_name() {
+    let client = client();
+    let mut q = Questions::new();
+    let urgent = q
+        .noul("urgent", "Does `message` convey urgency?", None)
+        .unwrap();
+    let state = json!({ "message": STATE_PAYOUTS });
+    let options = CallOptions::new()
+        .extra("judgment_live_unknown_field", 4)
+        .unwrap();
+    let request = Request {
+        state: &state,
+        model: client.model(),
+        questions: &q,
+    };
+    match client.evaluate_with(&request, &options).await {
+        Ok(response) => {
+            response.get(&urgent).unwrap();
+            eprintln!(
+                "an unknown extra field was answered (ignored or used) by model {:?}",
+                response.model
+            );
+        }
+        Err(Error::InvalidRequest {
+            status: status @ (400 | 422),
+            detail,
+            issues,
+            request_id,
+        }) => eprintln!(
+            "an unknown extra field was refused with {status}: {detail} \
+             (issues {:?}, request id {request_id:?})",
+            issues.iter().map(ToString::to_string).collect::<Vec<_>>()
+        ),
+        Err(other) => panic!("unexpected: {other}"),
+    }
 }
 
 #[tokio::test]

@@ -4,8 +4,10 @@
 //! retries (the server's wait from `retry-after-ms` or `Retry-After`, the
 //! budget, `RetryPolicy::conservative`, the transport levels against a
 //! refused connection, a timeout and a truncated body), exhausted retries,
-//! the models list, and the request id carried from the
-//! `x-typesafe-request-id` header onto responses and errors.
+//! the models list, the request id carried from the
+//! `x-typesafe-request-id` header onto responses and errors, and per-call
+//! options (timeout, retry policy, headers, extra body fields) beside the
+//! builder's default headers.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::{Read, Write};
@@ -15,12 +17,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use judgment::client::REQUEST_ID_HEADER;
+use judgment::client::{HeaderName, HeaderValue, REQUEST_ID_HEADER};
 use judgment::{
-    Client, Error, Questions, Recorder, Replay, RetryPolicy, SystemOne, TransportRetry, options,
+    CallOptions, Client, Error, Questions, Recorder, Replay, Request, RetryPolicy, SystemOne,
+    TransportRetry, options,
 };
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{body_json, body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 options! {
@@ -948,4 +951,356 @@ async fn a_recording_keeps_the_request_id_and_a_replay_returns_it() {
     assert_eq!(replayed, live);
     assert_eq!(replayed.request_id.as_deref(), Some("req_rec"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A header name for a test; lowercase, as `from_static` requires.
+fn name(n: &'static str) -> HeaderName {
+    HeaderName::from_static(n)
+}
+
+fn value(v: &'static str) -> HeaderValue {
+    HeaderValue::from_static(v)
+}
+
+/// The body [`one_noul`] and a string state make, as the OpenAPI document
+/// spells it.
+fn one_noul_body(state: &str) -> serde_json::Value {
+    json!({
+        "state": state,
+        "model": "jev-latest",
+        "questions": { "x": { "type": "noul", "instructions": "?" } }
+    })
+}
+
+#[tokio::test]
+async fn the_documented_body_is_all_that_is_sent_without_options() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(header("authorization", "Bearer test-key"))
+        .and(header("content-type", "application/json"))
+        .and(body_json(one_noul_body("s")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let c = client(&server, RetryPolicy::none());
+    let q = one_noul();
+    let request = Request {
+        state: &"s",
+        model: "jev-latest",
+        questions: &q,
+    };
+    c.evaluate(&request).await.unwrap();
+    c.evaluate_with(&request, &CallOptions::default())
+        .await
+        .unwrap();
+    c.system_one(&"s", &q).await.unwrap();
+
+    // The three bodies are the same bytes, not only the same JSON.
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 3);
+    assert!(
+        received.iter().all(|r| r.body == received[0].body),
+        "{:?}",
+        received
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(received[0].body, serde_json::to_vec(&request).unwrap());
+}
+
+#[tokio::test]
+async fn the_client_sets_no_header_it_does_not_reserve() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    client(&server, RetryPolicy::none())
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap();
+    let received = server.received_requests().await.unwrap();
+    // The four reserved headers (the retry count is reserved but not sent),
+    // and what HTTP itself adds.
+    let allowed = [
+        "authorization",
+        "content-type",
+        "user-agent",
+        "x-typesafe-retry-count",
+        "host",
+        "content-length",
+        "accept",
+    ];
+    let sent: Vec<&str> = received[0].headers.keys().map(HeaderName::as_str).collect();
+    for n in &sent {
+        assert!(allowed.contains(n), "unexpected header {n:?} in {sent:?}");
+    }
+    assert!(sent.contains(&"authorization") && sent.contains(&"user-agent"));
+    assert!(!sent.contains(&"x-typesafe-retry-count"), "not sent yet");
+}
+
+#[tokio::test]
+async fn extra_fields_are_sent_beside_the_documented_ones() {
+    let server = MockServer::start().await;
+    let mut expected = one_noul_body("s");
+    expected["beam_width"] = json!(4);
+    expected["tag"] = json!(null);
+    Mock::given(method("POST"))
+        .and(body_json(expected))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let q = one_noul();
+    let options = CallOptions::new()
+        .extra("beam_width", 4)
+        .unwrap()
+        .extra("tag", serde_json::Value::Null)
+        .unwrap();
+    client(&server, RetryPolicy::none())
+        .evaluate_with(
+            &Request {
+                state: &"s",
+                model: "jev-latest",
+                questions: &q,
+            },
+            &options,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn call_headers_replace_builder_defaults_and_never_the_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(header("authorization", "Bearer test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let c = Client::builder()
+        .api_key("test-key")
+        .base_url(server.uri())
+        .retry(RetryPolicy::none())
+        .default_header(name("x-team"), value("builder"))
+        .default_header(name("x-tenant"), value("acme"))
+        .build()
+        .unwrap();
+    let q = one_noul();
+    let request = Request {
+        state: &"s",
+        model: "jev-latest",
+        questions: &q,
+    };
+    c.evaluate(&request).await.unwrap();
+    let options = CallOptions::new()
+        .header(name("x-team"), value("per-call"))
+        .unwrap();
+    c.evaluate_with(&request, &options).await.unwrap();
+
+    let received = server.received_requests().await.unwrap();
+    let values = |i: usize, n: &str| -> Vec<String> {
+        received[i]
+            .headers
+            .get_all(n)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(values(0, "x-team"), ["builder"]);
+    assert_eq!(values(1, "x-team"), ["per-call"], "replaced, not appended");
+    assert_eq!(values(1, "x-tenant"), ["acme"], "other defaults stay");
+    for i in 0..2 {
+        assert_eq!(values(i, "authorization"), ["Bearer test-key"]);
+        assert_eq!(values(i, "content-type"), ["application/json"]);
+    }
+
+    // The key cannot be replaced for one call.
+    let err = CallOptions::new()
+        .header(name("authorization"), value("Bearer other"))
+        .unwrap_err();
+    assert!(matches!(err, Error::ReservedHeader(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn per_call_headers_and_extras_reach_every_attempt() {
+    let server = MockServer::start().await;
+    let mut expected = one_noul_body("s");
+    expected["beam_width"] = json!(4);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    Mock::given(method("POST"))
+        .and(header("x-team", "per-call"))
+        .and(body_json(expected))
+        .respond_with(move |_: &wiremock::Request| {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(529)
+            } else {
+                ResponseTemplate::new(200).set_body_json(noul_body())
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let q = one_noul();
+    let options = CallOptions::new()
+        .header(name("x-team"), value("per-call"))
+        .unwrap()
+        .extra("beam_width", 4)
+        .unwrap();
+    client(&server, fast_retries(2))
+        .evaluate_with(
+            &Request {
+                state: &"s",
+                model: "jev-latest",
+                questions: &q,
+            },
+            &options,
+        )
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn the_client_behind_the_trait_sends_its_default_headers() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(header("x-team", "builder"))
+        .and(body_json(one_noul_body("s")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = Client::builder()
+        .api_key("test-key")
+        .base_url(server.uri())
+        .retry(RetryPolicy::none())
+        .default_header(name("x-team"), value("builder"))
+        .build()
+        .unwrap();
+    let backend: &dyn SystemOne = &c;
+    backend
+        .answer(&json!("s"), "jev-latest", &one_noul())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn builder_default_headers_reach_list_models() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("x-team", "builder"))
+        .and(header("authorization", "Bearer test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": [] })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let models = Client::builder()
+        .api_key("test-key")
+        .base_url(server.uri())
+        .retry(RetryPolicy::none())
+        .default_header(name("x-team"), value("builder"))
+        .build()
+        .unwrap()
+        .list_models()
+        .await
+        .unwrap();
+    assert!(models.is_empty());
+}
+
+#[tokio::test]
+async fn a_call_timeout_replaces_the_per_attempt_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(noul_body())
+                .set_delay(Duration::from_millis(500)),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let c = client_at(&server.uri(), RetryPolicy::none(), Duration::from_secs(2));
+    let q = one_noul();
+    let request = Request {
+        state: &"s",
+        model: "jev-latest",
+        questions: &q,
+    };
+    let short = CallOptions::new().timeout(Duration::from_millis(50));
+    let err = c.evaluate_with(&request, &short).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Transport { attempts: 1, source } if source.is_timeout()),
+        "{err:?}"
+    );
+    // The client's own 2 s still applies to a call without options.
+    c.evaluate(&request).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_longer_call_timeout_is_not_capped_by_the_builder() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(noul_body())
+                .set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client_at(
+        &server.uri(),
+        RetryPolicy::none(),
+        Duration::from_millis(50),
+    );
+    let q = one_noul();
+    let long = CallOptions::new().timeout(Duration::from_secs(2));
+    c.evaluate_with(
+        &Request {
+            state: &"s",
+            model: "jev-latest",
+            questions: &q,
+        },
+        &long,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_call_retry_policy_replaces_the_client_policy() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(529))
+        .mount(&server)
+        .await;
+    let c = client(&server, fast_retries(1));
+    let q = one_noul();
+    let request = Request {
+        state: &"s",
+        model: "jev-latest",
+        questions: &q,
+    };
+    let once = CallOptions::new().retry(RetryPolicy::none());
+    let err = c.evaluate_with(&request, &once).await.unwrap_err();
+    assert!(
+        matches!(err, Error::Overloaded { attempts: 1, .. }),
+        "{err:?}"
+    );
+    let err = c.evaluate(&request).await.unwrap_err();
+    assert!(
+        matches!(err, Error::Overloaded { attempts: 2, .. }),
+        "{err:?}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    // The client's policy is unchanged by the call's.
+    assert_eq!(c.retry().max_retries, 1);
 }

@@ -9,8 +9,10 @@
 //! * Request: [`Error::InvalidRequest`] (the API's 400 or 422, with the
 //!   server's message and the fields it names as [`ValidationIssue`]s),
 //!   [`Error::InvalidQuestion`] and [`Error::DuplicateQuestionId`] (caught by
-//!   the builder before anything is sent) and [`Error::Url`]. Fix the
-//!   request; no retry helps either.
+//!   the builder before anything is sent), [`Error::ReservedHeader`] and
+//!   [`Error::ReservedField`] (a per-call option or a default header that
+//!   would replace something the client sets itself, refused before anything
+//!   is sent) and [`Error::Url`]. Fix the request; no retry helps either.
 //! * Transient, retries exhausted: [`Error::RateLimited`] (429, carrying the
 //!   server's `Retry-After` when it sent one) and [`Error::Overloaded`] (529,
 //!   which carries no header). Both are returned only after the retry policy
@@ -295,6 +297,35 @@ pub enum Error {
         /// The offending value.
         value: f64,
     },
+    /// A header the client sets itself was given as a per-call header
+    /// ([`crate::client::CallOptions::header`]) or a default header
+    /// ([`crate::client::ClientBuilder::default_header`]); the value is its
+    /// lowercase name. Refused before anything is sent, so no attempt is
+    /// made or counted.
+    ///
+    /// The reserved headers are `authorization`, `content-type`,
+    /// `user-agent` and `x-typesafe-retry-count`. The first three are the
+    /// client's own: a per-call `authorization` would really replace the key,
+    /// and the other two describe the body and the client. The last one is
+    /// not sent by this release, but both official SDKs own it and strip a
+    /// caller's value, so it is reserved now and sending it later breaks no
+    /// caller. To use another key, build another client with it
+    /// ([`crate::client::ClientBuilder::api_key`]).
+    #[error("header {0:?} is set by the client and cannot be overridden")]
+    ReservedHeader(String),
+    /// A body field the client sets itself (`state`, `model` or
+    /// `questions`) was given as a per-call extra field
+    /// ([`crate::client::CallOptions::extra`]); the value is the name.
+    /// Refused before anything is sent, so no attempt is made or counted.
+    ///
+    /// Replacing `questions` or `state` would send a request the response is
+    /// not read against and a recording is not keyed by, and replacing
+    /// `model` would make the span name a model that was not asked for. Put
+    /// the model on the [`crate::client::Request`], or send another request.
+    /// The names are matched exactly, so `Model` is an extra field like any
+    /// other.
+    #[error("body field {0:?} is set by the client and cannot be an extra field")]
+    ReservedField(String),
     /// The base URL does not parse or cannot be joined with a path. Fix the
     /// URL given to the builder.
     #[error("invalid URL: {0}")]
@@ -335,6 +366,8 @@ impl Error {
             | Self::NoRecording(_)
             | Self::DuplicateQuestionId(_)
             | Self::InvalidQuestion { .. }
+            | Self::ReservedHeader(_)
+            | Self::ReservedField(_)
             | Self::MissingAnswer(_)
             | Self::AnswerTypeMismatch { .. }
             | Self::UnknownOption { .. }
@@ -527,6 +560,8 @@ mod tests {
             },
             Error::Url("nope".into()),
             Error::NoRecording("abc".into()),
+            Error::ReservedHeader("authorization".into()),
+            Error::ReservedField("model".into()),
         ] {
             assert_eq!(err.request_id(), None, "{err:?}");
         }

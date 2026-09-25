@@ -69,7 +69,14 @@ crates for the same API were not adopted.
   date) honoured up to a cap. An overall retry budget is available and off by
   default, and `RetryPolicy::conservative()` retries only what cannot have
   been billed twice. The rustdoc of `RetryPolicy` lists where it matches the
-  SDKs and where it deliberately differs.
+  SDKs and where it deliberately differs. `Client::evaluate_with` takes a
+  `CallOptions` for one call's timeout, retry policy, headers and extra body
+  fields, and `ClientBuilder::default_header` sets a header on every call.
+  What the client sets itself (the key, the content type, the user agent, the
+  retry count both SDKs own, and the `state`, `model` and `questions` fields)
+  is refused with an error before anything is sent, where the SDKs silently
+  keep or overwrite it. Options stay off the `SystemOne` trait, so a
+  recording's key is unchanged.
 - `http` (feature `http`): the retry loop behind `Client`, shareable by other
   `reqwest` clients.
 - `error`: one enum grouped by remedy: configuration, request, transient
@@ -127,9 +134,9 @@ The unit and integration tests never leave the process, so they cannot tell
 whether a server speaks the wire the way the mocks assume. Two things can:
 
 - `tests/live.rs` holds `#[ignore]` tests that run the three primitives, a
-  structured level, the model list, an unknown model name, a bearer check
-  and a record-then-replay against whatever `JUDGMENT_LIVE_BASE_URL` points
-  at. `cargo test` skips them; run them by hand with `-- --ignored`.
+  structured level, the model list, an unknown model name, an unknown extra
+  body field, a bearer check and a record-then-replay against whatever
+  `JUDGMENT_LIVE_BASE_URL` points at. `cargo test` skips them; run them by hand with `-- --ignored`.
 - `examples/typed_decisions.rs` replays the
   [typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions)
   benchmark (400 cases, 2,000 typed decisions) through the crate and scores it

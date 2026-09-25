@@ -32,6 +32,10 @@ document (0.2.0) and the SDK references.
   total retry budget is off by default.
 - `retry-after-ms` and the HTTP-date form of `Retry-After` are honoured, up to
   `retry_after_max`. A date is measured against the response's `Date` header.
+- `Client::evaluate_with(&Request, &CallOptions)`, for a per-call timeout,
+  retry policy, headers and extra body fields. Also `ClientBuilder::default_header`,
+  `Client::model()` and `Client::retry()`. `x-typesafe-retry-count` is
+  reserved (both SDKs own it) although this release does not send it.
 
 ### Changed
 
@@ -81,3 +85,4 @@ document (0.2.0) and the SDK references.
 - `retry-after-ms` and HTTP-date `Retry-After` are honoured up to
   `retry_after_max` on any retried status, for every client of the shared
   loop (S3).
+- New variants `Error::ReservedHeader` and `Error::ReservedField` (S4).

@@ -9,7 +9,10 @@
 //! attempt, and two retries with exponential backoff and jitter. Where the
 //! retries deliberately differ from the SDKs is stated on [`RetryPolicy`].
 //! The user agent is `judgment/<crate version>`, so the API's logs can tell
-//! this client from the SDKs and from the application embedding it.
+//! this client from the SDKs and from the application embedding it. The
+//! client sends no header of its own beyond `authorization`, `content-type`
+//! and that user agent; [`ClientBuilder::default_header`] adds one to every
+//! call, under the rule in `# Per-call options`.
 //!
 //! The key is checked when the client is built, with the Python SDK's
 //! (0.7.1) rules: surrounding whitespace is trimmed (the characters Python's
@@ -54,8 +57,11 @@
 //!
 //! # Errors
 //!
-//! The final response is classified by status into [`Error`], grouped by
-//! what fixes it:
+//! Before anything is sent, a per-call option or a default header that
+//! would replace what the client sets itself is refused
+//! ([`Error::ReservedHeader`], [`Error::ReservedField`]; `# Per-call
+//! options`), with no attempt made or counted. After, the final response is
+//! classified by status into [`Error`], grouped by what fixes it:
 //!
 //! * 400 and 422 are [`Error::InvalidRequest`], with `status` telling them
 //!   apart. Its `detail` is the server's message (read from `error`,
@@ -111,6 +117,79 @@
 //!   API. A value that is empty, not printable ASCII, or longer than 256
 //!   bytes is ignored, so what reaches a span or a message stays bounded.
 //!
+//! # Per-call options
+//!
+//! One client usually serves calls that want different things: a batch job
+//! that can wait longer than an interactive request, a billed call that must
+//! not be retried, a header a gateway in front of the API routes on, or a
+//! server parameter this crate does not model. A client per combination
+//! would duplicate the connection pool and the key checks, so
+//! [`Client::evaluate_with`] takes a [`CallOptions`] for one call: a
+//! per-attempt timeout, a retry policy, headers and extra top-level body
+//! fields. [`ClientBuilder::default_header`] sets a header for every call.
+//! The model is not an option: it is already per call, on the [`Request`],
+//! and a second place to set it would let the span's `model` field and the
+//! request a recording is filed under name one model while another was
+//! sent.
+//!
+//! Precedence, lowest first: the builder's settings and default headers,
+//! then the call's options, then what the client owns. What the client owns
+//! is refused, never overwritten: the `authorization`, `content-type`,
+//! `user-agent` and `x-typesafe-retry-count` headers are
+//! [`Error::ReservedHeader`], the `state`, `model` and `questions` fields
+//! [`Error::ReservedField`]. A call's option is refused when it is added to
+//! the [`CallOptions`], and a default header when the client is built,
+//! where the key and URL are checked too; both before anything is sent.
+//!
+//! The official SDKs do not refuse. They silently keep their own headers
+//! over a caller's, and the Python SDK merges `extra_body` last-write-wins,
+//! so an extra `questions` replaces the questions. This crate is stricter on
+//! purpose: an overwritten `questions` or `state` would send a request that
+//! the response is not read against and that a recording is not filed
+//! under; an overwritten `model` would make the span name a model that was
+//! not sent; and a per-call `authorization` would really replace the key,
+//! authenticating as another account through a client built for one. An
+//! error names the conflict where the SDKs hide it. `x-typesafe-retry-count`
+//! is not sent by this release, but both SDKs own it and strip a caller's
+//! value, so reserving it now means sending it later breaks no caller.
+//!
+//! How each option behaves:
+//!
+//! * The timeout replaces the client's for that call, rather than the
+//!   shorter of the two winning, so a call can be given longer as well as
+//!   shorter. It keeps the crate's meaning: one deadline per attempt, from
+//!   connecting to the end of the body. That is the JS SDK's per-call
+//!   timeout; the Python SDK's is httpx's per-phase timeout, which this one
+//!   is stricter than.
+//! * The retry policy replaces the client's whole policy, as in the Python
+//!   SDK. The JS SDK merges a partial policy into the client's field by
+//!   field; here that is `RetryPolicy { max_retries: 1,
+//!   ..client.retry().clone() }`. A budget, when wanted, comes with the
+//!   policy.
+//! * A header replaces a default header of the same name for that call.
+//!   Names are case-insensitive.
+//! * Extra fields go at the top level, after `state`, `model` and
+//!   `questions`; `null` is sent as `null`. A server may use, ignore or
+//!   refuse a field it does not know; the live test
+//!   `an_unknown_extra_field_is_answered_or_refused_by_name` records which.
+//! * Headers and the timeout reach every attempt, retries included.
+//! * No option's value is ever a span field, since a header can be a
+//!   credential and an extra field a piece of the state.
+//!
+//! Without options a call sends exactly what it did before options existed:
+//! the same body bytes, headers and span.
+//!
+//! The options stop at the [`SystemOne`](crate::SystemOne) trait: its
+//! implementation for [`Client`] calls [`Client::evaluate`] with the
+//! client's own settings, and [`Fake`](crate::Fake),
+//! [`Recorder`](crate::Recorder) and [`Replay`](crate::Replay) take none.
+//! A recording is filed under a hash of the state and the questions
+//! ([`crate::eval::request_hash`]), and an extra field can change the
+//! answer, so if extras ever cross the trait they must enter that hash, with
+//! an empty set hashing as it does today; otherwise a replay would return
+//! the answer to a different request. [`Client::list_models`] takes no
+//! options either; the default headers reach it.
+//!
 //! # `GET /v1/models`
 //!
 //! [`Client::list_models`] calls the model listing: the models and aliases
@@ -127,11 +206,11 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use reqwest::{StatusCode, Url};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT};
+use reqwest::{RequestBuilder, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::answer::Response;
 use crate::error::{Error, Result, ValidationIssue};
@@ -157,6 +236,22 @@ pub const REQUEST_ID_HEADER: &str = "x-typesafe-request-id";
 const REQUEST_ID_MAX_LEN: usize = 256;
 
 pub use crate::http::{RetryPolicy, TransportRetry};
+/// The header types [`CallOptions::header`] and
+/// [`ClientBuilder::default_header`] take, re-exported from `reqwest` so a
+/// caller needs no direct dependency on it.
+pub use reqwest::header::{HeaderName, HeaderValue};
+
+/// The retry-count header both official SDKs send on a retry and strip from
+/// a caller's headers. This release does not send it; it is reserved so that
+/// sending it later is not a break for a caller who set it.
+const RETRY_COUNT_HEADER: HeaderName = HeaderName::from_static("x-typesafe-retry-count");
+/// Every header the client sets itself, plus the one both SDKs own (module
+/// docs, `# Per-call options`). Refused as a per-call or default header.
+const RESERVED_HEADERS: [HeaderName; 4] =
+    [AUTHORIZATION, CONTENT_TYPE, USER_AGENT, RETRY_COUNT_HEADER];
+/// The body fields the client sets from the [`Request`]. Refused as extra
+/// fields, matched exactly.
+const RESERVED_FIELDS: [&str; 3] = ["state", "model", "questions"];
 
 /// The body of `POST /v1/systemone`.
 #[derive(Debug, Clone, Serialize)]
@@ -186,6 +281,169 @@ struct ModelsResponse {
     models: Vec<ModelInfo>,
 }
 
+/// What one call to [`Client::evaluate_with`] changes from the client's own
+/// settings: the per-attempt timeout, the retry policy, extra headers and
+/// extra top-level body fields (module docs, `# Per-call options`).
+///
+/// Empty by default, and an empty set is exactly [`Client::evaluate`]: the
+/// same body bytes, headers and span. Anything the client sets itself is
+/// refused when it is added, with [`Error::ReservedHeader`] or
+/// [`Error::ReservedField`], so a set that was built can always be sent.
+/// The model is not here: it is already per call, on the [`Request`].
+///
+/// ```
+/// use std::time::Duration;
+/// use judgment::client::{CallOptions, HeaderName, HeaderValue};
+/// use judgment::RetryPolicy;
+///
+/// # fn main() -> judgment::Result<()> {
+/// let options = CallOptions::new()
+///     .timeout(Duration::from_secs(30))
+///     .retry(RetryPolicy::conservative())
+///     .header(
+///         HeaderName::from_static("x-team"),
+///         HeaderValue::from_static("billing"),
+///     )?
+///     .extra("beam_width", 4)?;
+/// assert!(CallOptions::new().extra("model", "other").is_err());
+/// # let _ = options;
+/// # Ok(()) }
+/// ```
+///
+/// `Debug` prints the timeout, the policy and the names of the headers and
+/// extra fields, never their values, since a header can be a credential and
+/// an extra field can be a piece of the state.
+#[derive(Clone, Default)]
+pub struct CallOptions {
+    timeout: Option<Duration>,
+    retry: Option<RetryPolicy>,
+    headers: HeaderMap,
+    extra: Map<String, Value>,
+}
+
+impl fmt::Debug for CallOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CallOptions")
+            .field("timeout", &self.timeout)
+            .field("retry", &self.retry)
+            .field("headers", &header_names(&self.headers))
+            .field("extra", &self.extra.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl CallOptions {
+    /// No options: what [`Client::evaluate`] sends.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The timeout of each attempt of this call, from connecting to the end
+    /// of the body, in place of the client's (not the shorter of the two:
+    /// a call may be given longer than the client's default as well as
+    /// shorter). It is per attempt, like the client's, so with retries the
+    /// call can take longer; [`RetryPolicy::budget`] bounds the whole call.
+    /// Not validated, like [`ClientBuilder::timeout`].
+    #[must_use]
+    pub fn timeout(mut self, per_attempt: Duration) -> Self {
+        self.timeout = Some(per_attempt);
+        self
+    }
+
+    /// The retry policy of this call, in place of the client's whole policy,
+    /// as the Python SDK does. The JS SDK merges a partial policy field by
+    /// field instead; the Rust spelling of that merge is struct update
+    /// syntax over the client's own policy:
+    ///
+    /// ```
+    /// # use judgment::{Client, RetryPolicy, client::CallOptions};
+    /// # fn run(client: &Client) {
+    /// let once_more = CallOptions::new().retry(RetryPolicy {
+    ///     max_retries: 1,
+    ///     ..client.retry().clone()
+    /// });
+    /// # let _ = once_more; }
+    /// ```
+    ///
+    /// A budget, when wanted, comes with the policy given here.
+    #[must_use]
+    pub fn retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = Some(policy);
+        self
+    }
+
+    /// A header sent on every attempt of this call. It replaces a
+    /// [`ClientBuilder::default_header`] of the same name, and a second call
+    /// with the same name replaces the first; names are case-insensitive.
+    ///
+    /// A header the client sets itself is [`Error::ReservedHeader`]:
+    /// `authorization`, `content-type`, `user-agent` and
+    /// `x-typesafe-retry-count` (module docs, `# Per-call options`). Mark a
+    /// secret value with [`HeaderValue::set_sensitive`], so `reqwest` and
+    /// anything printing the request with `{:?}` redact it; this type never
+    /// prints header values either way.
+    pub fn header(mut self, name: HeaderName, value: HeaderValue) -> Result<Self> {
+        refuse_reserved_header(&name)?;
+        self.headers.insert(name, value);
+        Ok(self)
+    }
+
+    /// A top-level body field sent beside `state`, `model` and `questions`,
+    /// for a server parameter this crate does not model. `null` is sent as
+    /// `null`, and a second value with the same name replaces the first.
+    ///
+    /// `state`, `model` and `questions` are [`Error::ReservedField`], matched
+    /// exactly, so `Model` is allowed. The server decides what an unknown
+    /// field means: it may use it, ignore it or refuse the request with a
+    /// 400 or 422.
+    pub fn extra(mut self, name: impl Into<String>, value: impl Into<Value>) -> Result<Self> {
+        let name = name.into();
+        if RESERVED_FIELDS.contains(&name.as_str()) {
+            return Err(Error::ReservedField(name));
+        }
+        self.extra.insert(name, value.into());
+        Ok(self)
+    }
+
+    /// Put this call's headers and timeout on one attempt's request. Called
+    /// inside the retry loop's `make`, so every attempt carries them.
+    fn apply(&self, mut rb: RequestBuilder) -> RequestBuilder {
+        if !self.headers.is_empty() {
+            rb = rb.headers(self.headers.clone());
+        }
+        if let Some(timeout) = self.timeout {
+            rb = rb.timeout(timeout);
+        }
+        rb
+    }
+}
+
+/// `Err(ReservedHeader)` when `name` is one the client sets itself.
+fn refuse_reserved_header(name: &HeaderName) -> Result<()> {
+    if RESERVED_HEADERS.contains(name) {
+        return Err(Error::ReservedHeader(name.as_str().to_owned()));
+    }
+    Ok(())
+}
+
+/// The names in `headers`, once each and in order, for a `Debug` that must
+/// not print values.
+fn header_names(headers: &HeaderMap) -> Vec<&str> {
+    headers.keys().map(HeaderName::as_str).collect()
+}
+
+/// The body [`Client::evaluate_with`] sends: the request's fields, then the
+/// extra ones. Without extras it serialises to the same bytes as the
+/// [`Request`] alone, so a call without options is on the wire exactly what
+/// it was before options existed (pinned by a unit test).
+#[derive(Serialize)]
+struct Body<'r, 'a, S: Serialize> {
+    #[serde(flatten)]
+    request: &'r Request<'a, S>,
+    #[serde(flatten)]
+    extra: &'r Map<String, Value>,
+}
+
 /// Builder for [`Client`].
 #[derive(Clone)]
 pub struct ClientBuilder {
@@ -195,6 +453,7 @@ pub struct ClientBuilder {
     timeout: Duration,
     retry: RetryPolicy,
     observer: Option<Arc<dyn Observer>>,
+    headers: HeaderMap,
 }
 
 impl fmt::Debug for ClientBuilder {
@@ -206,6 +465,7 @@ impl fmt::Debug for ClientBuilder {
             .field("retry", &self.retry)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("observer", &self.observer.as_ref().map(|_| "set"))
+            .field("default_headers", &header_names(&self.headers))
             .finish()
     }
 }
@@ -219,6 +479,7 @@ impl Default for ClientBuilder {
             timeout: DEFAULT_TIMEOUT,
             retry: RetryPolicy::default(),
             observer: None,
+            headers: HeaderMap::new(),
         }
     }
 }
@@ -274,6 +535,25 @@ impl ClientBuilder {
         self
     }
 
+    /// A header sent on every request this client makes, the models list
+    /// included: a routing or tenant header a gateway in front of the API
+    /// wants, for instance. A [`CallOptions::header`] of the same name
+    /// replaces it for one call, and a second default with the same name
+    /// replaces the first; names are case-insensitive.
+    ///
+    /// A header the client sets itself (`authorization`, `content-type`,
+    /// `user-agent`, `x-typesafe-retry-count`) is refused by
+    /// [`build`](Self::build) with [`Error::ReservedHeader`], beside the key
+    /// and URL checks, so this method can stay infallible and the refusal
+    /// still comes before anything is sent. Mark a secret value with
+    /// [`HeaderValue::set_sensitive`]; the builder's `Debug` prints header
+    /// names only.
+    #[must_use]
+    pub fn default_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.headers.insert(name, value);
+        self
+    }
+
     /// Build the client. Reads `TYPESAFE_API_KEY` if no key was set.
     ///
     /// The key is checked first, before the URL and before anything is
@@ -282,10 +562,14 @@ impl ClientBuilder {
     /// when it has whitespace inside it, a control character or a non-ASCII
     /// character, or when `TYPESAFE_API_KEY` is not valid UTF-8. Neither
     /// message contains any part of the key. A base URL that does not parse
-    /// is [`Error::Url`].
+    /// is [`Error::Url`]. A [`default_header`](Self::default_header) the
+    /// client sets itself is [`Error::ReservedHeader`].
     pub fn build(self) -> Result<Client> {
         let api_key = resolve_api_key(self.api_key, || std::env::var(API_KEY_ENV))?;
         let base_url = Url::parse(&self.base_url).map_err(|e| Error::Url(e.to_string()))?;
+        for name in self.headers.keys() {
+            refuse_reserved_header(name)?;
+        }
         // Unreachable after `resolve_api_key` (printable ASCII always fits a
         // header), kept so a future change to that check cannot turn a bad
         // key into a panic or back into the URL error it used to be.
@@ -295,7 +579,9 @@ impl ClientBuilder {
             }
         })?;
         auth.set_sensitive(true);
-        let mut headers = HeaderMap::new();
+        // The caller's defaults first, then what the client owns; none of
+        // the caller's can collide with it after the check above.
+        let mut headers = self.headers;
         headers.insert(AUTHORIZATION, auth);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let http = reqwest::Client::builder()
@@ -352,6 +638,21 @@ impl Client {
         ClientBuilder::default().build()
     }
 
+    /// The default model: the one [`Client::system_one`] sends, and the
+    /// value to put on a [`Request`] built for [`Client::evaluate_with`]
+    /// when the call wants no other. [`SystemOne::answer`](crate::SystemOne::answer)
+    /// sends the model it is given instead.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// The client's retry policy, which every call uses unless
+    /// [`CallOptions::retry`] replaces it; the starting point for a per-call
+    /// policy that changes one field.
+    pub fn retry(&self) -> &RetryPolicy {
+        &self.retry
+    }
+
     /// Evaluate `state` against `questions` with the default model.
     pub async fn system_one<S: Serialize + Sync>(
         &self,
@@ -366,10 +667,29 @@ impl Client {
         .await
     }
 
-    /// Evaluate a fully specified request.
+    /// Evaluate a fully specified request with the client's own settings:
+    /// [`Client::evaluate_with`] with no [`CallOptions`].
     ///
     /// The response's [`Response::request_id`] is the last attempt's
     /// `x-typesafe-request-id`, and it is recorded on the span, on success
+    /// and on failure (module docs, `# Request id`).
+    pub async fn evaluate<S: Serialize + Sync>(
+        &self,
+        request: &Request<'_, S>,
+    ) -> Result<Response> {
+        self.evaluate_with(request, &CallOptions::default()).await
+    }
+
+    /// Evaluate a fully specified request with per-call options: a timeout,
+    /// a retry policy, headers or extra body fields for this call only
+    /// (module docs, `# Per-call options`). Without options it is exactly
+    /// [`Client::evaluate`].
+    ///
+    /// The `typesafe.evaluate` span is this method's, so there is one per
+    /// call whichever of the two was called. None of the options is a span
+    /// field: a header can be a credential and an extra field a piece of
+    /// the state. The response's [`Response::request_id`] is the last
+    /// attempt's `x-typesafe-request-id`, recorded on the span on success
     /// and on failure (module docs, `# Request id`).
     #[tracing::instrument(
         name = "typesafe.evaluate",
@@ -380,15 +700,20 @@ impl Client {
             request_id = tracing::field::Empty
         )
     )]
-    pub async fn evaluate<S: Serialize + Sync>(
+    pub async fn evaluate_with<S: Serialize + Sync>(
         &self,
         request: &Request<'_, S>,
+        options: &CallOptions,
     ) -> Result<Response> {
         let url = self.url("v1/systemone")?;
-        let body = serde_json::to_vec(request)?;
+        let body = serde_json::to_vec(&Body {
+            request,
+            extra: &options.extra,
+        })?;
+        let policy = options.retry.as_ref().unwrap_or(&self.retry);
         let reply = match self
-            .send(&self.retry, || {
-                self.http.post(url.clone()).body(body.clone())
+            .send(policy, || {
+                options.apply(self.http.post(url.clone()).body(body.clone()))
             })
             .await
         {
@@ -413,7 +738,8 @@ impl Client {
     /// server that does not serve it answers [`Error::Http`] with status 404.
     ///
     /// The list carries no request id; the `typesafe.list_models` span and
-    /// every error do.
+    /// every error do. It takes no [`CallOptions`]: it sends the client's
+    /// default headers under the client's retry policy.
     #[tracing::instrument(
         name = "typesafe.list_models",
         skip_all,
@@ -1016,6 +1342,206 @@ mod tests {
         // Best-effort only: a body with no usable entry is still quoted.
         let body = r#"{"detail":[{"loc":["body","state"],"input":"SECRET-STATE"}]}"#;
         assert!(only_detail(body).contains("SECRET-STATE"));
+    }
+
+    fn questions() -> Questions {
+        let mut q = Questions::new();
+        q.noul("urgent", "Does `message` convey urgency?", None)
+            .unwrap();
+        q.score("severity", "How bad is `message`?", ["minor", "major"])
+            .unwrap();
+        q
+    }
+
+    fn body<S: Serialize>(request: &Request<'_, S>, options: &CallOptions) -> Vec<u8> {
+        serde_json::to_vec(&Body {
+            request,
+            extra: &options.extra,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_call_without_extras_is_the_request_byte_for_byte() {
+        let q = questions();
+        let object = serde_json::json!({ "message": "help", "nested": { "b": 1, "a": [2, 3] } });
+        let text = "Help! My payouts have been failing.";
+        let none = CallOptions::new();
+        // Headers, a timeout and a retry policy change nothing in the body.
+        let no_extras = CallOptions::new()
+            .timeout(Duration::from_secs(1))
+            .retry(RetryPolicy::none())
+            .header(
+                HeaderName::from_static("x-team"),
+                HeaderValue::from_static("a"),
+            )
+            .unwrap();
+        let object_request = Request {
+            state: &object,
+            model: "jev-latest",
+            questions: &q,
+        };
+        let text_request = Request {
+            state: &text,
+            model: "jev-latest",
+            questions: &q,
+        };
+        for options in [&none, &no_extras] {
+            assert_eq!(
+                body(&object_request, options),
+                serde_json::to_vec(&object_request).unwrap()
+            );
+            assert_eq!(
+                body(&text_request, options),
+                serde_json::to_vec(&text_request).unwrap()
+            );
+        }
+        // And extras come after the documented fields, which are unchanged.
+        let with = CallOptions::new()
+            .extra("beam_width", 4)
+            .unwrap()
+            .extra("tag", Value::Null)
+            .unwrap();
+        let sent = String::from_utf8(body(&text_request, &with)).unwrap();
+        let bare = String::from_utf8(serde_json::to_vec(&text_request).unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            format!(
+                "{},\"beam_width\":4,\"tag\":null}}",
+                bare.strip_suffix('}').unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn an_extra_field_may_not_replace_state_model_or_questions() {
+        for name in RESERVED_FIELDS {
+            let err = CallOptions::new().extra(name, "x").unwrap_err();
+            assert!(
+                matches!(&err, Error::ReservedField(n) if n == name),
+                "{name}: {err:?}"
+            );
+            assert_eq!(
+                err.to_string(),
+                format!("body field {name:?} is set by the client and cannot be an extra field")
+            );
+            assert_eq!(err.request_id(), None);
+        }
+        // Matched exactly: another case is another field.
+        let options = CallOptions::new()
+            .extra("Model", "x")
+            .unwrap()
+            .extra("STATE", 1)
+            .unwrap();
+        assert_eq!(options.extra.len(), 2);
+        // A second value replaces the first.
+        let options = CallOptions::new()
+            .extra("tag", 1)
+            .unwrap()
+            .extra("tag", 2)
+            .unwrap();
+        assert_eq!(options.extra.get("tag"), Some(&Value::from(2)));
+    }
+
+    #[test]
+    fn the_client_owned_headers_are_refused_whatever_their_case() {
+        let value = || HeaderValue::from_static("x");
+        for spelled in [
+            "Authorization",
+            "AUTHORIZATION",
+            "Content-Type",
+            "content-type",
+            "User-Agent",
+            "X-TypeSafe-Retry-Count",
+            "x-typesafe-retry-count",
+        ] {
+            let name = HeaderName::from_bytes(spelled.as_bytes()).unwrap();
+            let lower = spelled.to_ascii_lowercase();
+            let expected =
+                format!("header {lower:?} is set by the client and cannot be overridden");
+
+            let err = CallOptions::new()
+                .header(name.clone(), value())
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::ReservedHeader(n) if *n == lower),
+                "{spelled}: {err:?}"
+            );
+            assert_eq!(err.to_string(), expected);
+            assert_eq!(err.request_id(), None);
+
+            // As a default header, refused at build(), before any request:
+            // nothing listens on the base URL.
+            let err = Client::builder()
+                .api_key("sk-test")
+                .base_url("http://127.0.0.1:1")
+                .default_header(HeaderName::from_static("x-team"), value())
+                .default_header(name, value())
+                .build()
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::ReservedHeader(n) if *n == lower),
+                "{spelled}: {err:?}"
+            );
+        }
+        // The key is still checked first.
+        let err = Client::builder()
+            .api_key(" ")
+            .default_header(AUTHORIZATION, value())
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, Error::MissingApiKey), "{err:?}");
+        // Any other header is fine.
+        CallOptions::new()
+            .header(HeaderName::from_static("x-team"), value())
+            .unwrap();
+        Client::builder()
+            .api_key("sk-test")
+            .default_header(HeaderName::from_static("x-team"), value())
+            .build()
+            .unwrap();
+    }
+
+    #[test]
+    fn debug_output_names_headers_and_extras_but_never_their_values() {
+        let mut secret = HeaderValue::from_static("SECRET-HEADER");
+        secret.set_sensitive(true);
+        let options = CallOptions::new()
+            .timeout(Duration::from_millis(250))
+            .header(HeaderName::from_static("x-gateway-token"), secret.clone())
+            .unwrap()
+            .header(
+                HeaderName::from_static("x-team"),
+                HeaderValue::from_static("PLAIN-HEADER"),
+            )
+            .unwrap()
+            .extra("beam_width", "SECRET-EXTRA")
+            .unwrap();
+        let dbg = format!("{options:?}");
+        for name in ["x-gateway-token", "x-team", "beam_width", "250ms"] {
+            assert!(dbg.contains(name), "{name}: {dbg}");
+        }
+        for value in ["SECRET-HEADER", "PLAIN-HEADER", "SECRET-EXTRA"] {
+            assert!(!dbg.contains(value), "{value}: {dbg}");
+        }
+
+        let builder = Client::builder()
+            .api_key("sk-secret")
+            .default_header(HeaderName::from_static("x-gateway-token"), secret)
+            .default_header(
+                HeaderName::from_static("x-team"),
+                HeaderValue::from_static("PLAIN-HEADER"),
+            );
+        let dbg = format!("{builder:?}");
+        assert!(dbg.contains("x-gateway-token"), "{dbg}");
+        assert!(dbg.contains("x-team"), "{dbg}");
+        for value in ["SECRET-HEADER", "PLAIN-HEADER", "sk-secret"] {
+            assert!(!dbg.contains(value), "{value}: {dbg}");
+        }
+        let dbg = format!("{:?}", builder.build().unwrap());
+        for value in ["SECRET-HEADER", "PLAIN-HEADER", "sk-secret"] {
+            assert!(!dbg.contains(value), "{value}: {dbg}");
+        }
     }
 
     #[test]

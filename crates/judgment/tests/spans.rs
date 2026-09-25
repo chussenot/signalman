@@ -1,8 +1,9 @@
 //! What the client writes on its spans, seen through a capturing
 //! `tracing_subscriber` layer: the `request_id` field of `typesafe.evaluate`
 //! and `typesafe.list_models` on success and on failure, its absence when
-//! no id came back, and the `debug` event that drops an overlong id without
-//! logging it.
+//! no id came back, the `debug` event that drops an overlong id without
+//! logging it, and the one `typesafe.evaluate` span of `evaluate_with`,
+//! which carries no per-call option.
 //!
 //! Its own test target (see `Cargo.toml`): tracing caches each callsite's
 //! interest process-wide, and a binary of its own keeps the other client
@@ -15,8 +16,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use judgment::client::REQUEST_ID_HEADER;
-use judgment::{Client, Questions, RetryPolicy};
+use judgment::client::{HeaderName, HeaderValue, REQUEST_ID_HEADER};
+use judgment::{CallOptions, Client, Questions, Request, RetryPolicy};
 use serde_json::json;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
@@ -290,5 +291,76 @@ async fn the_span_records_the_request_id_on_success_and_on_failure() {
     assert!(
         values(&seen, "typesafe.evaluate", "request_id").is_empty(),
         "{seen:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn evaluate_with_records_the_request_id_on_its_one_span() {
+    let cap = Capture::default();
+    let _g = tracing::subscriber::set_default(Registry::default().with(cap.clone()));
+    let server = MockServer::start().await;
+    let c = client(&server.uri());
+    let q = one_noul();
+    let request = Request {
+        state: &"s",
+        model: "jev-latest",
+        questions: &q,
+    };
+    let mut token = HeaderValue::from_static("SECRET-HEADER");
+    token.set_sensitive(true);
+    let options = CallOptions::new()
+        .timeout(Duration::from_secs(2))
+        .header(HeaderName::from_static("x-gateway-token"), token)
+        .unwrap()
+        .extra("beam_width", "SECRET-EXTRA")
+        .unwrap();
+
+    serve_once(&server, "POST", ok(Some("req_with"))).await;
+    c.evaluate_with(&request, &options).await.unwrap();
+    let seen = cap.take();
+    assert_eq!(
+        values(&seen, "typesafe.evaluate", "request_id"),
+        ["req_with"],
+        "{seen:#?}"
+    );
+    assert_eq!(values(&seen, "typesafe.evaluate", "model"), ["jev-latest"]);
+    assert_eq!(values(&seen, "typesafe.evaluate", "input_tokens"), ["3"]);
+    let shown = format!("{seen:?}");
+    for secret in [
+        "SECRET-HEADER",
+        "SECRET-EXTRA",
+        "x-gateway-token",
+        "beam_width",
+    ] {
+        assert!(!shown.contains(secret), "{secret} reached a span: {shown}");
+    }
+
+    // On failure too.
+    serve_once(
+        &server,
+        "POST",
+        ResponseTemplate::new(529).insert_header(REQUEST_ID_HEADER, "req_529"),
+    )
+    .await;
+    c.evaluate_with(&request, &options).await.unwrap_err();
+    let seen = cap.take();
+    assert_eq!(
+        values(&seen, "typesafe.evaluate", "request_id"),
+        ["req_529"],
+        "{seen:#?}"
+    );
+
+    // `evaluate` goes through `evaluate_with`: still one span per call.
+    serve_once(&server, "POST", ok(Some("req_plain"))).await;
+    c.evaluate(&request).await.unwrap();
+    let seen = cap.take();
+    assert_eq!(
+        values(&seen, "typesafe.evaluate", "model"),
+        ["jev-latest"],
+        "exactly one typesafe.evaluate span: {seen:#?}"
+    );
+    assert_eq!(
+        values(&seen, "typesafe.evaluate", "request_id"),
+        ["req_plain"]
     );
 }
