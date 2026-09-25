@@ -354,17 +354,22 @@ impl Answer {
 /// [`Answer::Unknown`].
 const KNOWN_KINDS: [&str; 3] = ["noul", "choice", "score"];
 
-/// Longest unknown kind, in characters, that reaches an error message, a log
-/// line or a graded judgment.
-const KIND_MAX_CHARS: usize = 64;
+/// Longest server-chosen string, in characters once escaped, that reaches an
+/// error message, a log line, a span event or a graded judgment.
+const SERVER_STR_MAX_CHARS: usize = 64;
 
-/// An unknown answer's kind made safe to print: control characters, quotes
+/// A string the server chose, made safe to print: control characters, quotes
 /// and anything else `escape_debug` escapes are escaped, and the result is
-/// cut to 64 characters. The kind is chosen by the server, so without this a
-/// hostile or broken one could put a line break or an unbounded string into
-/// a log line or an exported span event.
-pub(crate) fn sanitize_kind(kind: &str) -> String {
-    kind.escape_debug().take(KIND_MAX_CHARS).collect()
+/// cut to 64 characters, with no marker. Without this a hostile or broken
+/// server could put a line break or an unbounded string into a log line or
+/// an exported span event.
+///
+/// The one bound for every such string, so they all read the same way: an
+/// unknown answer's kind, and an answer's key in the client's warning about
+/// it, which is the server's own string when no question by that id was
+/// asked.
+pub(crate) fn sanitize_server_str(text: &str) -> String {
+    text.escape_debug().take(SERVER_STR_MAX_CHARS).collect()
 }
 
 /// The known answers, decoded strictly: the derive `Answer` had before
@@ -926,14 +931,14 @@ impl FromAnswer for Score {
 /// The error for an answer of another primitive than `expected`, with no
 /// request id (the caller that has the response adds it). An unknown
 /// answer's kind is the server's own string, so it is escaped and cut
-/// ([`sanitize_kind`]) before it becomes part of a message.
+/// ([`sanitize_server_str`]) before it becomes part of a message.
 fn mismatch(id: &str, expected: &'static str, actual: &Answer) -> Error {
     let kind = actual.kind();
     Error::AnswerTypeMismatch {
         id: id.to_owned(),
         expected,
         actual: if matches!(actual, Answer::Unknown(_)) {
-            sanitize_kind(kind)
+            sanitize_server_str(kind)
         } else {
             kind.to_owned()
         },
@@ -1249,9 +1254,9 @@ mod tests {
         assert!(actual.starts_with(r"a\nb"), "{actual:?}");
         assert!(!err.to_string().contains('\n'), "{err}");
         // A kind that needs no escaping and fits is kept as it is.
-        assert_eq!(sanitize_kind("rank"), "rank");
-        assert_eq!(sanitize_kind(&"r".repeat(64)), "r".repeat(64));
-        assert_eq!(sanitize_kind(&"r".repeat(65)), "r".repeat(64));
+        assert_eq!(sanitize_server_str("rank"), "rank");
+        assert_eq!(sanitize_server_str(&"r".repeat(64)), "r".repeat(64));
+        assert_eq!(sanitize_server_str(&"r".repeat(65)), "r".repeat(64));
     }
 
     #[test]

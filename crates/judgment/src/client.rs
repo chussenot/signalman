@@ -13,6 +13,20 @@
 //! and that user agent; [`ClientBuilder::default_header`] adds one to every
 //! call, under the rule in `# Per-call options`.
 //!
+//! The client follows no redirect, like the Python SDK (httpx follows none
+//! by default) and unlike the JS SDK, whose `fetch` follows them. A 3xx is
+//! [`Error::Http`] with that status, not retried. Both paths are fixed and
+//! neither the API reference nor the OpenAPI document gives either one a
+//! redirect, so a 3xx means a base URL that points at something else, and
+//! following it would be worse than failing: `reqwest` strips
+//! `authorization` on a cross-origin redirect but not a header set with
+//! [`ClientBuilder::default_header`] or [`CallOptions::header`], so a
+//! gateway credential would reach whatever `Location` named, over plain HTTP
+//! if it said so; a 307 or 308 re-sends the body, the caller's state
+//! included; and even a same-origin redirect re-sends a billed call. No
+//! same-origin policy is offered instead: a moved API is a base URL to
+//! change.
+//!
 //! The key is checked when the client is built, with the Python SDK's
 //! (0.7.1) rules: surrounding whitespace is trimmed (the characters Python's
 //! `str.isspace` accepts, so a key file's trailing newline is fine), a blank
@@ -107,9 +121,11 @@
 //! What the API may add is not an error (`answer` module docs, `# Decoding
 //! is tolerant, reading is strict`). An answer of a kind this release does
 //! not know is kept as [`Answer::Unknown`] and logged once per answer at
-//! `warn`, inside the `typesafe.evaluate` span, with the question id and the
-//! kind (escaped, at most 64 characters): the sign that the API has a
-//! primitive this build cannot read, and that upgrading the crate is due.
+//! `warn`, inside the `typesafe.evaluate` span, with the answer's key and
+//! its kind, both escaped and cut to 64 characters, since the server chose
+//! both (the key is the question id, or any string at all for an answer to a
+//! question that was not asked): the sign that the API has a primitive this
+//! build cannot read, and that upgrading the crate is due.
 //! The Python SDK logs a warning too and skips the answer; this client keeps
 //! it, so a recording and a caller can still see it, and reading it through
 //! a handle is [`Error::AnswerTypeMismatch`]. An absent `usage` reads as
@@ -160,18 +176,19 @@
 //! per-attempt timeout, a retry policy, headers and extra top-level body
 //! fields. [`ClientBuilder::default_header`] sets a header for every call.
 //! The model is not an option: it is already per call, on the [`Request`],
-//! and a second place to set it would let the span's `model` field and the
-//! request a recording is filed under name one model while another was
-//! sent.
+//! and a second place to set it would let the span's `model` field name one
+//! model while another was sent.
 //!
 //! Precedence, lowest first: the builder's settings and default headers,
 //! then the call's options, then what the client owns. What the client owns
 //! is refused, never overwritten: the `authorization`, `content-type`,
-//! `user-agent` and `x-typesafe-retry-count` headers are
-//! [`Error::ReservedHeader`], the `state`, `model` and `questions` fields
-//! [`Error::ReservedField`]. A call's option is refused when it is added to
-//! the [`CallOptions`], and a default header when the client is built,
-//! where the key and URL are checked too; both before anything is sent.
+//! `user-agent` and `x-typesafe-retry-count` headers, and the headers HTTP
+//! itself owns (`content-length`, `transfer-encoding`, `host`,
+//! `connection`, `te` and `upgrade`), are [`Error::ReservedHeader`]; the
+//! `state`, `model` and `questions` fields are [`Error::ReservedField`]. A
+//! call's option is refused when it is added to the [`CallOptions`], and a
+//! default header when the client is built, where the key and URL are
+//! checked too; both before anything is sent.
 //!
 //! The official SDKs do not refuse. They silently keep their own headers
 //! over a caller's, and the Python SDK merges `extra_body` last-write-wins,
@@ -184,6 +201,17 @@
 //! error names the conflict where the SDKs hide it. `x-typesafe-retry-count`
 //! is not sent by this release, but both SDKs own it and strip a caller's
 //! value, so reserving it now means sending it later breaks no caller.
+//!
+//! The HTTP headers are refused because the HTTP stack keeps a caller's
+//! value over its own instead of refusing it: a `content-length` shorter
+//! than the body sends the JSON truncated, a longer one stalls the write
+//! until the attempt fails, `transfer-encoding`, `connection`, `te` and
+//! `upgrade` change how the body is framed or the connection used, and a
+//! `host` sends the key to whatever virtual host a gateway routes that name
+//! to rather than the one the base URL names. The base URL is the one place
+//! the target is set; a caller who needs another host sets it there.
+//! Refusing a name now and allowing it in a later release breaks nobody,
+//! where the reverse would.
 //!
 //! How each option behaves:
 //!
@@ -238,13 +266,16 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT};
+use reqwest::header::{
+    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, TE,
+    TRANSFER_ENCODING, UPGRADE, USER_AGENT,
+};
 use reqwest::{RequestBuilder, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::answer::{Answer, Response, sanitize_kind};
+use crate::answer::{Answer, Response, sanitize_server_str};
 use crate::error::{Error, Result, ValidationIssue};
 use crate::http::{self, Completed, Exhausted};
 use crate::observer::Observer;
@@ -281,6 +312,18 @@ const RETRY_COUNT_HEADER: HeaderName = HeaderName::from_static("x-typesafe-retry
 /// docs, `# Per-call options`). Refused as a per-call or default header.
 const RESERVED_HEADERS: [HeaderName; 4] =
     [AUTHORIZATION, CONTENT_TYPE, USER_AGENT, RETRY_COUNT_HEADER];
+/// The headers HTTP itself owns: they frame the body, manage the connection
+/// or pick the virtual host, and the HTTP stack keeps a caller's value over
+/// the one it would compute (a short `content-length` truncates the body).
+/// Refused like [`RESERVED_HEADERS`] (module docs, `# Per-call options`).
+const TRANSPORT_HEADERS: [HeaderName; 6] = [
+    CONTENT_LENGTH,
+    TRANSFER_ENCODING,
+    HOST,
+    CONNECTION,
+    TE,
+    UPGRADE,
+];
 /// The body fields the client sets from the [`Request`]. Refused as extra
 /// fields, matched exactly.
 const RESERVED_FIELDS: [&str; 3] = ["state", "model", "questions"];
@@ -318,9 +361,10 @@ struct ModelsResponse {
 /// extra top-level body fields (module docs, `# Per-call options`).
 ///
 /// Empty by default, and an empty set is exactly [`Client::evaluate`]: the
-/// same body bytes, headers and span. Anything the client sets itself is
-/// refused when it is added, with [`Error::ReservedHeader`] or
-/// [`Error::ReservedField`], so a set that was built can always be sent.
+/// same body bytes, headers and span. Anything the client or HTTP sets
+/// itself is refused when it is added, with [`Error::ReservedHeader`] or
+/// [`Error::ReservedField`], so a set that was built can always be sent as
+/// it reads.
 /// The model is not here: it is already per call, on the [`Request`].
 ///
 /// ```
@@ -374,8 +418,12 @@ impl CallOptions {
     /// of the body, in place of the client's (not the shorter of the two:
     /// a call may be given longer than the client's default as well as
     /// shorter). It is per attempt, like the client's, so with retries the
-    /// call can take longer; [`RetryPolicy::budget`] bounds the whole call.
-    /// Not validated, like [`ClientBuilder::timeout`].
+    /// call can take longer. [`RetryPolicy::budget`] stops any retry whose
+    /// wait would end at or past the budget, but it never cuts an attempt in
+    /// flight, so a call can run to just under the budget plus one
+    /// per-attempt timeout (`# The budget` on [`RetryPolicy`]); wrap the call
+    /// in `tokio::time::timeout` for a hard deadline. Not validated, like
+    /// [`ClientBuilder::timeout`].
     #[must_use]
     pub fn timeout(mut self, per_attempt: Duration) -> Self {
         self.timeout = Some(per_attempt);
@@ -410,10 +458,13 @@ impl CallOptions {
     ///
     /// A header the client sets itself is [`Error::ReservedHeader`]:
     /// `authorization`, `content-type`, `user-agent` and
-    /// `x-typesafe-retry-count` (module docs, `# Per-call options`). Mark a
-    /// secret value with [`HeaderValue::set_sensitive`], so `reqwest` and
-    /// anything printing the request with `{:?}` redact it; this type never
-    /// prints header values either way.
+    /// `x-typesafe-retry-count`, and so is one HTTP owns: `content-length`,
+    /// `transfer-encoding`, `host`, `connection`, `te` and `upgrade` (module
+    /// docs, `# Per-call options`). Mark a secret value with
+    /// [`HeaderValue::set_sensitive`], so `reqwest` and anything printing the
+    /// request with `{:?}` redact it; this type never prints header values
+    /// either way. The client follows no redirect (module docs,
+    /// `# Defaults`), so a header is sent to the base URL's host only.
     pub fn header(mut self, name: HeaderName, value: HeaderValue) -> Result<Self> {
         refuse_reserved_header(&name)?;
         self.headers.insert(name, value);
@@ -450,9 +501,10 @@ impl CallOptions {
     }
 }
 
-/// `Err(ReservedHeader)` when `name` is one the client sets itself.
+/// `Err(ReservedHeader)` when `name` is one the client sets itself or one
+/// HTTP owns.
 fn refuse_reserved_header(name: &HeaderName) -> Result<()> {
-    if RESERVED_HEADERS.contains(name) {
+    if RESERVED_HEADERS.contains(name) || TRANSPORT_HEADERS.contains(name) {
         return Err(Error::ReservedHeader(name.as_str().to_owned()));
     }
     Ok(())
@@ -576,12 +628,15 @@ impl ClientBuilder {
     /// replaces the first; names are case-insensitive.
     ///
     /// A header the client sets itself (`authorization`, `content-type`,
-    /// `user-agent`, `x-typesafe-retry-count`) is refused by
-    /// [`build`](Self::build) with [`Error::ReservedHeader`], beside the key
-    /// and URL checks, so this method can stay infallible and the refusal
-    /// still comes before anything is sent. Mark a secret value with
+    /// `user-agent`, `x-typesafe-retry-count`) or one HTTP owns
+    /// (`content-length`, `transfer-encoding`, `host`, `connection`, `te`,
+    /// `upgrade`) is refused by [`build`](Self::build) with
+    /// [`Error::ReservedHeader`], beside the key and URL checks, so this
+    /// method can stay infallible and the refusal still comes before
+    /// anything is sent. Mark a secret value with
     /// [`HeaderValue::set_sensitive`]; the builder's `Debug` prints header
-    /// names only.
+    /// names only. The client follows no redirect (module docs,
+    /// `# Defaults`), so a header is sent to the base URL's host only.
     #[must_use]
     pub fn default_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
         self.headers.insert(name, value);
@@ -597,7 +652,7 @@ impl ClientBuilder {
     /// character, or when `TYPESAFE_API_KEY` is not valid UTF-8. Neither
     /// message contains any part of the key. A base URL that does not parse
     /// is [`Error::Url`]. A [`default_header`](Self::default_header) the
-    /// client sets itself is [`Error::ReservedHeader`].
+    /// client or HTTP sets itself is [`Error::ReservedHeader`].
     pub fn build(self) -> Result<Client> {
         let api_key = resolve_api_key(self.api_key, || std::env::var(API_KEY_ENV))?;
         let base_url = Url::parse(&self.base_url).map_err(|e| Error::Url(e.to_string()))?;
@@ -622,6 +677,8 @@ impl ClientBuilder {
             .default_headers(headers)
             .timeout(self.timeout)
             .user_agent(concat!("judgment/", env!("CARGO_PKG_VERSION")))
+            // A 3xx is an error, never followed (module docs, `# Defaults`).
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::Transport {
                 attempts: 0,
@@ -750,30 +807,26 @@ impl Client {
             extra: &options.extra,
         })?;
         let policy = options.retry.as_ref().unwrap_or(&self.retry);
-        let reply = match self
+        let reply = self
             .send(policy, || {
                 options.apply(self.http.post(url.clone()).body(body.clone()))
             })
             .await
-        {
-            Ok(reply) => reply,
-            Err(e) => {
-                record_request_id(e.request_id());
-                return Err(e);
-            }
-        };
+            .inspect_err(|e| record_request_id(e.request_id()))?;
         record_request_id(reply.request_id.as_deref());
         let mut response: Response = reply.decode()?;
         // The field means "the header": a body key of the same name is
         // overwritten, with `None` when the header was absent.
         response.request_id = reply.request_id;
         // Inside this method's span, so the event carries `model` and
-        // `request_id` from it; the kind is the server's string, escaped.
+        // `request_id` from it. The kind is the server's string, and so is
+        // the key of an answer to a question that was not asked (`verify`
+        // walks only the asked ones): both escaped and cut.
         for (id, answer) in &response.answers {
             if matches!(answer, Answer::Unknown(_)) {
                 tracing::warn!(
-                    question = ?id,
-                    kind = %sanitize_kind(answer.kind()),
+                    question = %sanitize_server_str(id),
+                    kind = %sanitize_server_str(answer.kind()),
                     "answer of a kind this client does not know; kept as Answer::Unknown"
                 );
             }
@@ -804,13 +857,10 @@ impl Client {
     )]
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let url = self.url("v1/models")?;
-        let reply = match self.send(&self.retry, || self.http.get(url.clone())).await {
-            Ok(reply) => reply,
-            Err(e) => {
-                record_request_id(e.request_id());
-                return Err(e);
-            }
-        };
+        let reply = self
+            .send(&self.retry, || self.http.get(url.clone()))
+            .await
+            .inspect_err(|e| record_request_id(e.request_id()))?;
         record_request_id(reply.request_id.as_deref());
         let parsed: ModelsResponse = reply.decode()?;
         Ok(parsed.models)
@@ -938,13 +988,14 @@ fn classify(
 /// The message is the first non-empty string of `error`, `error.message`,
 /// `message`, `detail` (a string) and `detail.message`, which is the Python
 /// SDK's order (`extract_message` in its `errors.py`); then the issues of a
-/// `detail` list joined as `path: msg; …`; then the body itself. The issues
-/// are parsed from a `detail` list whatever supplies the message, so code
-/// gets them even when the server also sent prose. An entry without a string
-/// `msg` is skipped, a missing or non-list `loc` is an empty location, a
-/// non-string location item keeps its JSON text, and a missing `type` is an
-/// empty kind. A body that is a JSON string is the message itself, as in the
-/// SDK, unless it is empty; a blank one is kept, since the SDK keeps it too.
+/// `detail` list joined as `path: msg; …`, when that is not empty; then the
+/// body itself. The issues are parsed from a `detail` list whatever supplies
+/// the message, so code gets them even when the server also sent prose. An
+/// entry without a string `msg` is skipped, a missing or non-list `loc` is
+/// an empty location, a non-string location item keeps its JSON text, and a
+/// missing `type` is an empty kind. A body that is a JSON string is the
+/// message itself, as in the SDK, unless it is empty; a blank one is kept,
+/// since the SDK keeps it too.
 /// The result is truncated to 2,000 bytes, like every body this crate quotes.
 ///
 /// Where it differs from the SDK, on purpose:
@@ -996,6 +1047,9 @@ fn error_detail(body: &str) -> (String, Vec<ValidationIssue>) {
                     .join("; ")
             })
         })
+        // Issues that join to nothing (an empty `msg` at an empty path) are
+        // no message either, as in the SDK (`"; ".join(parts) or None`).
+        .filter(|message| !message.is_empty())
         .unwrap_or_else(|| body.to_owned());
     (http::truncate(message), issues)
 }
@@ -1086,13 +1140,15 @@ fn resolve_api_key(
 }
 
 /// The usable request id in `headers`, if any: the first value of
-/// [`REQUEST_ID_HEADER`], trimmed, when it is printable ASCII (`to_str`
-/// accepts only that, spaces and tabs; CR, LF and any other byte are
-/// refused), not empty, and at most [`REQUEST_ID_MAX_LEN`] bytes. A longer
-/// one is dropped and logged at `debug` with its length only.
+/// [`REQUEST_ID_HEADER`], trimmed, when it is printable ASCII, not empty,
+/// and at most [`REQUEST_ID_MAX_LEN`] bytes. `to_str` refuses CR, LF, DEL
+/// and any byte that is not ASCII but lets a tab through, so a tab left
+/// inside the value after trimming is refused here; a space inside it is
+/// printable and kept. A value that is too long is dropped and logged at
+/// `debug` with its length only.
 fn read_request_id(headers: &HeaderMap) -> Option<String> {
     let v = headers.get(REQUEST_ID_HEADER)?.to_str().ok()?.trim();
-    if v.is_empty() {
+    if v.is_empty() || v.bytes().any(|b| b.is_ascii_control()) {
         return None;
     }
     if v.len() > REQUEST_ID_MAX_LEN {
@@ -1151,6 +1207,19 @@ mod tests {
         );
         let opaque = HeaderValue::from_bytes(b"req\x80").unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(read(opaque), None, "not printable ASCII");
+        // `to_str` lets a tab through; one left inside after trimming is
+        // not printable, so the value is refused. A space is printable.
+        assert_eq!(read(HeaderValue::from_static("req\t1")), None, "inner tab");
+        assert_eq!(
+            read(HeaderValue::from_static("\treq_3\t")).as_deref(),
+            Some("req_3"),
+            "outer tabs are trimmed"
+        );
+        assert_eq!(
+            read(HeaderValue::from_static("req 1")).as_deref(),
+            Some("req 1"),
+            "inner space kept"
+        );
     }
 
     /// An environment that must not be read.
@@ -1373,6 +1442,17 @@ mod tests {
         // No entry has a msg: the raw body.
         let body = r#"{"detail":[{"loc":["body","a"]}]}"#;
         assert_eq!(only_detail(body), body);
+        // Issues that join to nothing are no message: the raw body, as in
+        // the SDK, with the issue still parsed.
+        let body = r#"{"detail":[{"loc":["body"],"msg":"","type":"x"}]}"#;
+        let (message, issues) = detail(body);
+        assert_eq!(message, body);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].msg, "");
+        // Two of them join to "; ", which is kept, as the SDK keeps it.
+        let (message, _) =
+            detail(r#"{"detail":[{"loc":["body"],"msg":""},{"loc":["body"],"msg":""}]}"#);
+        assert_eq!(message, "; ");
 
         // A missing loc, or one that is not a list, is an empty path.
         let (message, issues) = detail(r#"{"detail":[{"msg":"Field required","type":"missing"}]}"#);
@@ -1480,7 +1560,10 @@ mod tests {
 
     #[test]
     fn an_extra_field_may_not_replace_state_model_or_questions() {
-        for name in RESERVED_FIELDS {
+        // The names themselves, not the constant: a name dropped from it
+        // must fail here. A name added to it must be added here too.
+        assert_eq!(RESERVED_FIELDS.len(), 3);
+        for name in ["state", "model", "questions"] {
             let err = CallOptions::new().extra(name, "x").unwrap_err();
             assert!(
                 matches!(&err, Error::ReservedField(n) if n == name),
@@ -1519,6 +1602,16 @@ mod tests {
             "User-Agent",
             "X-TypeSafe-Retry-Count",
             "x-typesafe-retry-count",
+            // Owned by HTTP: a caller's value would reframe the body or
+            // pick another virtual host.
+            "Content-Length",
+            "content-length",
+            "Transfer-Encoding",
+            "Host",
+            "HOST",
+            "Connection",
+            "TE",
+            "Upgrade",
         ] {
             let name = HeaderName::from_bytes(spelled.as_bytes()).unwrap();
             let lower = spelled.to_ascii_lowercase();

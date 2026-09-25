@@ -187,8 +187,9 @@ pub enum Error {
         request_id: Option<String>,
     },
     /// Any other non-success HTTP status: a proxy in the way, a base URL
-    /// that is not the API, or a status the API did not have when this crate
-    /// was written. The truncated body says which.
+    /// that is not the API (a 3xx among them, since the client follows no
+    /// redirect), or a status the API did not have when this crate was
+    /// written. The truncated body says which.
     #[error("unexpected HTTP status {status}: {body}{}", request_id_suffix(.request_id.as_deref()))]
     Http {
         /// Status code.
@@ -367,8 +368,8 @@ pub enum Error {
         /// The offending value.
         value: f64,
     },
-    /// A header the client sets itself was given as a per-call header
-    /// ([`crate::client::CallOptions::header`]) or a default header
+    /// A header the client or HTTP sets itself was given as a per-call
+    /// header ([`crate::client::CallOptions::header`]) or a default header
     /// ([`crate::client::ClientBuilder::default_header`]); the value is its
     /// lowercase name. Refused before anything is sent, so no attempt is
     /// made or counted.
@@ -376,11 +377,17 @@ pub enum Error {
     /// The reserved headers are `authorization`, `content-type`,
     /// `user-agent` and `x-typesafe-retry-count`. The first three are the
     /// client's own: a per-call `authorization` would really replace the key,
-    /// and the other two describe the body and the client. The last one is
+    /// and the other two describe the body and the client. The fourth is
     /// not sent by this release, but both official SDKs own it and strip a
     /// caller's value, so it is reserved now and sending it later breaks no
     /// caller. To use another key, build another client with it
     /// ([`crate::client::ClientBuilder::api_key`]).
+    ///
+    /// `content-length`, `transfer-encoding`, `host`, `connection`, `te` and
+    /// `upgrade` are refused too: they belong to HTTP, which would keep a
+    /// caller's value over its own, so it would truncate or reframe the body,
+    /// or send the key to another virtual host than the base URL names. Put
+    /// another host in the base URL instead.
     #[error("header {0:?} is set by the client and cannot be overridden")]
     ReservedHeader(String),
     /// A body field the client sets itself (`state`, `model` or

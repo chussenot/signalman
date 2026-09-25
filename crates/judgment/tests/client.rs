@@ -7,7 +7,7 @@
 //! exhausted retries, the models list, the request id carried from the
 //! `x-typesafe-request-id` header onto responses and errors, and per-call
 //! options (timeout, retry policy, headers, extra body fields) beside the
-//! builder's default headers, the tolerant decoding of an answer kind this
+//! builder's default headers, a redirect refused rather than followed, the tolerant decoding of an answer kind this
 //! release does not know, undocumented fields and a missing `usage`, and the
 //! refusal, without a retry, of a response that does not answer the
 //! questions it was sent.
@@ -1056,7 +1056,9 @@ async fn the_client_sets_no_header_it_does_not_reserve() {
         .unwrap();
     let received = server.received_requests().await.unwrap();
     // The four reserved headers (the retry count is reserved but not sent),
-    // and what HTTP itself adds.
+    // and what HTTP itself adds: `host` and `content-length` are two of the
+    // headers HTTP owns, which the client refuses from a caller, and
+    // `accept`. The other four it owns are not sent at all.
     let allowed = [
         "authorization",
         "content-type",
@@ -1072,6 +1074,53 @@ async fn the_client_sets_no_header_it_does_not_reserve() {
     }
     assert!(sent.contains(&"authorization") && sent.contains(&"user-agent"));
     assert!(!sent.contains(&"x-typesafe-retry-count"), "not sent yet");
+}
+
+#[tokio::test]
+async fn a_redirect_is_an_error_and_never_followed() {
+    // Where the redirects point. Following one would hand it the gateway
+    // header (reqwest strips only `authorization` across origins) and, on a
+    // 307, the body with the state in it.
+    let elsewhere = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(noul_body()))
+        .expect(0)
+        .mount(&elsewhere)
+        .await;
+    let server = MockServer::start().await;
+    for (verb, route, status) in [("POST", "/v1/systemone", 307), ("GET", "/v1/models", 302)] {
+        Mock::given(method(verb))
+            .and(path(route))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("location", format!("{}{route}", elsewhere.uri())),
+            )
+            // Not retried either: a 3xx is not a retried status.
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let mut token = value("GW-SECRET");
+    token.set_sensitive(true);
+    let c = Client::builder()
+        .api_key("test-key")
+        .base_url(server.uri())
+        .retry(fast_retries(3))
+        .default_header(name("x-gateway-token"), token)
+        .build()
+        .unwrap();
+
+    let err = c
+        .system_one(&"sensitive state", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::Http { status: 307, .. }), "{err:?}");
+    let err = c.list_models().await.unwrap_err();
+    assert!(matches!(&err, Error::Http { status: 302, .. }), "{err:?}");
+    assert!(
+        elsewhere.received_requests().await.unwrap().is_empty(),
+        "a redirect was followed"
+    );
 }
 
 #[tokio::test]

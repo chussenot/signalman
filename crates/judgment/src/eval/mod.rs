@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::answer::{Answer, Response, sanitize_kind};
+use crate::answer::{Answer, Response, sanitize_server_str};
 use crate::question::Questions;
 
 /// Bins for expected calibration error.
@@ -269,7 +269,7 @@ impl Judgment {
     pub fn of_answer(answer: &Answer, expected: Option<&str>) -> Self {
         match answer {
             Answer::Unknown(_) => Self {
-                predicted: format!("<{}>", sanitize_kind(answer.kind())),
+                predicted: format!("<{}>", sanitize_server_str(answer.kind())),
                 expected: expected.map(str::to_owned),
                 correct: expected.map(|_| false),
                 confidence: 0.0,

@@ -4,7 +4,7 @@
 //! no id came back, the `debug` event that drops an overlong id without
 //! logging it, the one `typesafe.evaluate` span of `evaluate_with`, which
 //! carries no per-call option, and the `warn` event for an answer of a kind
-//! the client does not know.
+//! the client does not know, with its key and kind escaped and cut.
 //!
 //! Its own test target (see `Cargo.toml`): tracing caches each callsite's
 //! interest process-wide, and a binary of its own keeps the other client
@@ -427,7 +427,7 @@ async fn an_unknown_answer_is_warned_once_with_question_and_kind() {
     let mut names: Vec<&str> = warned[0].iter().map(|(k, _)| k.as_str()).collect();
     names.sort_unstable();
     assert_eq!(names, ["kind", "message", "question"], "{warned:?}");
-    assert_eq!(field(warned[0], "question"), Some("\"later\""));
+    assert_eq!(field(warned[0], "question"), Some("later"));
     assert_eq!(field(warned[0], "kind"), Some("rank"));
     assert!(
         field(warned[0], "message").is_some_and(|m| m.contains("Answer::Unknown")),
@@ -455,6 +455,31 @@ async fn an_unknown_answer_is_warned_once_with_question_and_kind() {
         seen.iter()
             .all(|c| !format!("{c:?}").contains(&"k".repeat(100))),
         "the whole kind reached a span or event"
+    );
+
+    // The key of an answer to a question that was not asked is the server's
+    // own string too, and `verify` keeps it (it walks the asked questions
+    // only), so it is escaped and cut like the kind.
+    let key = format!("q\nq{}", "i".repeat(100));
+    serve_once(
+        &server,
+        "POST",
+        with_answers(&json!({ "x": noul, key: { "type": "rank" } }), &[]),
+    )
+    .await;
+    c.system_one(&"s", &q).await.unwrap();
+    let seen = cap.take();
+    let warned = warnings(&seen);
+    assert_eq!(warned.len(), 1, "{seen:#?}");
+    let question = field(warned[0], "question").unwrap();
+    assert_eq!(question.chars().count(), 64, "{question:?}");
+    assert!(question.starts_with(r"q\nq"), "{question:?}");
+    assert!(!question.contains('\n'), "{question:?}");
+    assert_eq!(field(warned[0], "kind"), Some("rank"));
+    assert!(
+        seen.iter()
+            .all(|c| !format!("{c:?}").contains(&"i".repeat(100))),
+        "the whole key reached a span or event"
     );
 
     // Undocumented top-level fields are expected from a compatible server:

@@ -19,7 +19,8 @@ document (0.2.0) and the SDK references.
   ` [request_id …]` suffix on the message), and as the `request_id` field of
   the `typesafe.evaluate` and `typesafe.list_models` spans. It is the last
   attempt's id, and optional everywhere, because the OpenAPI document lists
-  no response headers.
+  no response headers. A value that is empty, longer than 256 bytes or not
+  printable ASCII (a tab inside it included) is ignored.
 - `http::Completed::headers`: the retry loop hands back the last response's
   headers, so each client reads its own upstream's headers.
 - `Error::PermissionDenied` for HTTP 403, and `Error::InvalidApiKey` for a key
@@ -36,10 +37,16 @@ document (0.2.0) and the SDK references.
 - `Client::evaluate_with(&Request, &CallOptions)`, for a per-call timeout,
   retry policy, headers and extra body fields. Also `ClientBuilder::default_header`,
   `Client::model()` and `Client::retry()`. `x-typesafe-retry-count` is
-  reserved (both SDKs own it) although this release does not send it.
+  reserved (both SDKs own it) although this release does not send it. The
+  headers HTTP owns (`content-length`, `transfer-encoding`, `host`,
+  `connection`, `te`, `upgrade`) are refused too: the HTTP stack would keep a
+  caller's value over its own, truncating or reframing the body, or sending
+  the key to another virtual host than the base URL names.
 - `Answer::Unknown(Value)` for an answer kind this release does not know,
-  logged at `warn`. `Response::extra` keeps undocumented top-level fields.
-  (`#[serde(untagged)]` on a variant needs serde 1.0.181 or later.)
+  logged at `warn` with the answer's key and kind, both escaped and cut to 64
+  characters because the server chose them. `Response::extra` keeps
+  undocumented top-level fields. (`#[serde(untagged)]` on a variant needs
+  serde 1.0.181 or later.)
 - `Response::verify(&Questions)`, `Question::kind()` and `Error::is_unfit()`.
   Every backend in the crate (Client, Fake, Replay, Recorder) returns only a
   response that answers the questions it was sent. A structured Score level
@@ -60,6 +67,12 @@ document (0.2.0) and the SDK references.
   Null instructions are still sent as `null` (the schema accepts it, and Laya
   requires the key).
 - Backoff jitter only shortens a wait, as in both SDKs.
+- The client follows no redirect, like the Python SDK and unlike the JS SDK:
+  a 3xx is `Error::Http` with its status, not retried. 0.1 followed up to
+  ten, re-sending the body (the state included) on a 307 or 308; with 0.2's
+  default and per-call headers it would also have sent a gateway credential
+  to whatever origin the redirect named, since only `authorization` is
+  stripped across origins. A moved API is a base URL to change.
 - A missing `usage`, or null counts, read as zero.
 - A 2xx that does not decode or does not fit the questions is reported to the
   observer as a failed attempt (`decode` or `unfit`) and is not retried.
@@ -102,6 +115,7 @@ document (0.2.0) and the SDK references.
   `retry_after_max` on any retried status, for every client of the shared
   loop (S3).
 - New variants `Error::ReservedHeader` and `Error::ReservedField` (S4).
+- A 3xx is `Error::Http` instead of being followed (S4).
 - `Answer` gains `Unknown`, is `#[non_exhaustive]`, and its hand-written
   `Deserialize` accepts unknown kinds (S5).
 - `Answer::kind` returns `&str` and is no longer `const` (S5).
