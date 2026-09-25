@@ -67,9 +67,10 @@ document (0.2.0) and the SDK references.
 - The API key is trimmed (a trailing newline from a key file is fine) and
   validated when the client is built. A blank explicit key never falls back to
   `TYPESAFE_API_KEY`.
-- A Noul with neither instructions nor criteria is refused by the builder.
-  Null instructions are still sent as `null` (the schema accepts it, and Laya
-  requires the key).
+- A Noul with neither instructions nor criteria is refused by the builder;
+  criteria that describe neither outcome (`{}`, or both sides null) count as
+  none. Null instructions are still sent as `null` (the schema accepts it, and
+  Laya requires the key).
 - Backoff jitter only shortens a wait, as in both SDKs.
 - The client follows no redirect, like the Python SDK and unlike the JS SDK:
   a 3xx is `Error::Http` with its status, not retried. 0.1 followed up to
@@ -122,7 +123,8 @@ document (0.2.0) and the SDK references.
 - A non-UTF-8 `TYPESAFE_API_KEY` is `InvalidApiKey`, not `MissingApiKey` (S2).
 - The key is trimmed; a blank explicit key is `MissingApiKey` and never falls
   back to the environment; the `MissingApiKey` message is reworded (S2).
-- `Questions::noul` refuses a Noul with neither instructions nor criteria (S2).
+- `Questions::noul` refuses a Noul with neither instructions nor criteria;
+  criteria that describe neither outcome count as none (S2).
 - `RetryPolicy` gains public fields, so struct literals need
   `..RetryPolicy::default()` (S3).
 - `RetryPolicy::is_retryable` takes `&self` (S3).

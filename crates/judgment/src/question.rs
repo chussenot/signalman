@@ -23,7 +23,8 @@
 //! `()`, [`Value::Null`], `None::<&str>` or an `Option<String>` for them.
 //! Leave them null only then; with neither instructions nor criteria a Noul
 //! asks the model nothing, and [`Questions::noul`] refuses it, because the
-//! answer would still be a confident-looking probability.
+//! answer would still be a confident-looking probability. Criteria that
+//! describe neither outcome (`{}`, or both sides null) count as none.
 //!
 //! A null is sent as `"instructions": null`, not left out. The OpenAPI
 //! document requires only `type` (and `criteria` for a Choice or a Score)
@@ -313,10 +314,11 @@ impl Questions {
     ///
     /// `instructions` may be null when `criteria` say what yes and no mean;
     /// with neither, the question is refused with [`Error::InvalidQuestion`].
-    /// The id is never shown to the model, so such a Noul asks it nothing,
-    /// yet the answer would come back as a probability that reads like a
-    /// judgment. A Choice and a Score always carry criteria, so they have no
-    /// such check.
+    /// Criteria that describe neither outcome (both sides `None` or null)
+    /// count as none. The id is never shown to the model, so such a Noul
+    /// asks it nothing, yet the answer would come back as a probability that
+    /// reads like a judgment. A Choice and a Score always carry criteria, so
+    /// they have no such check.
     pub fn noul(
         &mut self,
         id: impl Into<String>,
@@ -325,7 +327,12 @@ impl Questions {
     ) -> Result<Handle<Noul>> {
         let id = id.into();
         let instructions = instructions.into();
-        if instructions.is_null() && criteria.is_none() {
+        // Criteria that describe neither outcome (`{}`, or both sides null)
+        // tell the model no more than no criteria at all.
+        let criteria_say_nothing = criteria.as_ref().is_none_or(|c| {
+            c.yes.as_ref().is_none_or(Value::is_null) && c.no.as_ref().is_none_or(Value::is_null)
+        });
+        if instructions.is_null() && criteria_say_nothing {
             return Err(Error::InvalidQuestion {
                 id,
                 reason: "a Noul needs instructions or criteria: the id is never shown to the model"
@@ -564,13 +571,38 @@ mod tests {
     #[test]
     fn a_noul_with_neither_instructions_nor_criteria_is_refused() {
         let mut q = Questions::new();
-        for (id, instructions) in [("unit", Value::from(())), ("null", Value::Null)] {
-            let err = q.noul(id, instructions, None).unwrap_err();
-            assert!(
-                matches!(&err, Error::InvalidQuestion { id: got, reason }
-                    if got == id && reason == "a Noul needs instructions or criteria: the id is never shown to the model"),
-                "{err}"
-            );
+        // Criteria that describe neither outcome say no more than none: `{}`
+        // on the wire, or both sides null.
+        let says_nothing = [
+            ("none", None),
+            ("empty", Some(NoulCriteria::default())),
+            (
+                "all_null",
+                Some(NoulCriteria {
+                    yes: Some(Value::Null),
+                    no: Some(Value::Null),
+                }),
+            ),
+            (
+                "one_null",
+                Some(NoulCriteria {
+                    yes: Some(Value::Null),
+                    no: None,
+                }),
+            ),
+        ];
+        for (form, instructions) in [("unit", Value::from(())), ("null", Value::Null)] {
+            for (shape, criteria) in &says_nothing {
+                let id = format!("{form}_{shape}");
+                let err = q
+                    .noul(id.clone(), instructions.clone(), criteria.clone())
+                    .unwrap_err();
+                assert!(
+                    matches!(&err, Error::InvalidQuestion { id: got, reason }
+                        if *got == id && reason == "a Noul needs instructions or criteria: the id is never shown to the model"),
+                    "{id}: {err}"
+                );
+            }
         }
         assert!(q.is_empty(), "a refused question is not added");
 
@@ -584,9 +616,35 @@ mod tests {
             )),
         )
         .unwrap();
-        // Instructions alone: accepted, as always.
+        // One side described is enough, whether the other is absent or null.
+        q.noul(
+            "spam_yes_only",
+            (),
+            Some(NoulCriteria {
+                yes: Some("unsolicited advertising".into()),
+                no: None,
+            }),
+        )
+        .unwrap();
+        q.noul(
+            "spam_no_only",
+            (),
+            Some(NoulCriteria {
+                yes: Some(Value::Null),
+                no: Some("a real message".into()),
+            }),
+        )
+        .unwrap();
+        // Instructions alone: accepted, as always, and so are instructions
+        // with criteria that describe nothing.
         q.noul("urgent", "Is `message` urgent?", None).unwrap();
-        assert_eq!(q.len(), 2);
+        q.noul(
+            "urgent_empty_criteria",
+            "Is `message` urgent?",
+            Some(NoulCriteria::default()),
+        )
+        .unwrap();
+        assert_eq!(q.len(), 5);
     }
 
     #[test]
