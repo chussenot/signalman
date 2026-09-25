@@ -129,7 +129,7 @@ header() {
 {
   header
   cat <<EOF
-This index is generated from the documentation nav (\`mkdocs.yml\`) and each page's frontmatter by \`scripts/gen-llms-txt.sh\`; the pages are the source of truth and every page carries \`title\`, \`description\`, \`status\` and \`last_reviewed\`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. Nothing here has been verified against a live TypeSafe, incident.io or Backstage account yet; pages say so where it matters.
+This index is generated from the documentation nav (\`mkdocs.yml\`) and each page's frontmatter by \`scripts/gen-llms-txt.sh\`; the pages are the source of truth and every page carries \`title\`, \`description\`, \`status\` and \`last_reviewed\`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. TypeSafe has answered live once (\`jev-1.13.0\`, the three example alerts), and the Backstage catalog and incident.io's read endpoints have been called once; no write has reached a live incident.io alert, and neither TechDocs nor Notifications has been reached. Everything else is checked against wiremock and the published OpenAPI documents; the Roadmap says what is still unverified, and pages say so where it matters.
 
 ## Start here
 

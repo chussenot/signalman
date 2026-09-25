@@ -46,9 +46,13 @@ async fn run() -> judgment::Result<()> {
 
 It was the client half of [signalman](https://github.com/chussenot/signalman),
 an alert triager, where it has been run against the hosted model and against
-an open-weights model through a shim, with the retry behaviour and the wire
-shape verified live. A second project wanting the same layer had to depend on
-the whole application. Decision record
+an open-weights model through a shim, with the wire shape verified live (and
+a 401 seen not to be retried). The retry rules this release rewrote or added
+(the status set, the jitter, `retry-after-ms` and `Retry-After` parsing, the
+budget) are checked offline only, against wiremock in `tests/client.rs` and
+by the unit tests in `src/http.rs`, until a live 408, 429 or 529 is recorded.
+A second project wanting the same layer had to depend on the whole
+application. Decision record
 [0010](https://github.com/chussenot/signalman/blob/main/docs/decisions/0010-extract-the-judgment-core-into-a-crate.md)
 records why it became a crate, what stayed behind, and why the existing
 crates for the same API were not adopted.
