@@ -3,7 +3,8 @@
 //! issues, 403 apart from 401, 404 left as an HTTP error), the trimmed key,
 //! retries (the server's wait from `retry-after-ms` or `Retry-After`, the
 //! budget, `RetryPolicy::conservative`, a listed 2xx sent once, the transport
-//! levels against a refused connection, a timeout and a truncated body),
+//! levels against a refused connection, a timeout and a truncated body, a
+//! body over the cap refused with and without a `Content-Length`),
 //! exhausted retries, the models list, the request id carried from the
 //! `x-typesafe-request-id` header onto responses and errors, and per-call
 //! options (timeout, retry policy, headers, extra body fields) beside the
@@ -622,12 +623,18 @@ async fn transport_never_does_not_retry() {
     );
 }
 
-/// A raw HTTP/1.1 server whose every response promises a 100-byte body and
-/// closes after 9 bytes of it, counting the connections it accepts.
-/// wiremock cannot truncate a body, hence a thread over a std listener. Its
-/// accept loop polls, so it stops when `stop` is set or after 5 s, and a
-/// regression fails the test instead of hanging it.
-fn truncating_server() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle<()>) {
+/// A response that promises a 100-byte body and stops after 9 bytes of it.
+const TRUNCATED: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+    content-length: 100\r\n\r\n{\"model\":";
+
+/// A raw HTTP/1.1 server that answers every request with `response`, byte
+/// for byte, then closes, counting the connections it accepts. wiremock
+/// cannot truncate a body or send one chunked, hence a thread over a std
+/// listener. Its accept loop polls, so it stops when `stop` is set or after
+/// 5 s, and a regression fails the test instead of hanging it.
+fn raw_server(
+    response: &'static [u8],
+) -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -645,10 +652,7 @@ fn truncating_server() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle
                         .set_read_timeout(Some(Duration::from_secs(5)))
                         .unwrap();
                     read_request(&mut stream);
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
-                          content-length: 100\r\n\r\n{\"model\":",
-                    );
+                    let _ = stream.write_all(response);
                     let _ = stream.flush();
                     let _ = stream.shutdown(Shutdown::Both);
                 }
@@ -696,7 +700,7 @@ fn read_request(stream: &mut TcpStream) {
 #[tokio::test]
 async fn a_truncated_body_is_retried_by_default_only() {
     for (transport, attempts) in [(TransportRetry::BeforeSend, 1), (TransportRetry::Any, 3)] {
-        let (url, connections, stop, thread) = truncating_server();
+        let (url, connections, stop, thread) = raw_server(TRUNCATED);
         let policy = RetryPolicy {
             transport,
             ..fast_retries(2)
@@ -717,6 +721,67 @@ async fn a_truncated_body_is_retried_by_default_only() {
             "{transport:?}"
         );
     }
+}
+
+/// Seventeen bytes under a sixteen-byte cap, once with a `Content-Length`
+/// (wiremock sets one, so the loop refuses before it reads) and once
+/// chunked (the raw server, so the loop stops on the read). Neither is
+/// retried; the mock's `expect(1)` and the raw server's connection count say
+/// so. A body exactly at the cap is read whole: it is not JSON, so it fails
+/// as a decode error, which proves it was read rather than refused.
+#[tokio::test]
+async fn a_body_over_the_cap_is_refused_and_not_retried() {
+    const CHUNKED: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+        transfer-encoding: chunked\r\n\r\n11\r\naaaaaaaaaaaaaaaaa\r\n0\r\n\r\n";
+    let capped = RetryPolicy {
+        max_body_bytes: 16,
+        ..fast_retries(2)
+    };
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; 17]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, capped.clone())
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::ResponseTooLarge { limit: 16 }),
+        "{err:?}"
+    );
+    assert_eq!(err.request_id(), None);
+    server.verify().await;
+    server.reset().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; 16]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, capped.clone())
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Decode { .. }), "at the cap: {err:?}");
+    server.verify().await;
+
+    let (url, connections, stop, thread) = raw_server(CHUNKED);
+    let err = client_at(&url, capped, Duration::from_secs(2))
+        .system_one(&"s", &one_noul())
+        .await
+        .unwrap_err();
+    stop.store(true, Ordering::SeqCst);
+    thread.join().unwrap();
+    assert!(
+        matches!(err, Error::ResponseTooLarge { limit: 16 }),
+        "chunked: {err:?}"
+    );
+    assert_eq!(connections.load(Ordering::SeqCst), 1, "not retried");
 }
 
 /// The body is the fixture `tests/contract.rs` checks against the OpenAPI

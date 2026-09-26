@@ -4,6 +4,24 @@ All notable changes to the `judgment` crate. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate follows
 [Semantic Versioning](https://semver.org/) (0.x: a minor bump may break).
 
+## [Unreleased]
+
+### Added
+
+- `RetryPolicy::max_body_bytes` (default 8 MiB) caps what the shared retry
+  loop buffers of a response body: a `Content-Length` over it fails before a
+  byte is read, a body without one is read until it passes the cap. The
+  failure is `Error::ResponseTooLarge { limit }`, never retried, reported to
+  the observer as `too_large`.
+
+### Changed
+
+- `http::Exhausted` is an enum, `Transport { attempts, source }` beside the
+  new `TooLarge { attempts, limit }`; a caller that destructured the struct
+  matches the first variant instead.
+- Bodies are decoded as UTF-8 with invalid sequences replaced, no longer by
+  the `Content-Type` charset; every upstream answers in JSON.
+
 ## [0.2.0] - 2026-09-25
 
 Hardens the wire and closes the gaps against the official TypeSafe SDKs that

@@ -1,5 +1,5 @@
 //! incident.io client against a mock server: query shape, pagination,
-//! auth per endpoint, error mapping, retry on 429.
+//! auth per endpoint, error mapping, retry on 429, a body over the cap.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Duration;
@@ -279,4 +279,30 @@ async fn firing_alerts_and_alert_notes_use_documented_shapes() {
     assert_eq!(created.id, "n3");
     let replaced = c.update_alert_note("n1", "# replaced").await.unwrap();
     assert_eq!(replaced.content, "# replaced");
+}
+
+#[tokio::test]
+async fn a_body_over_the_cap_is_refused_and_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/alerts/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'{'; 33]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = Client::builder()
+        .api_key("inc-key")
+        .base_url(server.uri())
+        .retry(RetryPolicy {
+            max_body_bytes: 32,
+            ..RetryPolicy::default()
+        })
+        .build()
+        .unwrap();
+    let err = c.get_alert("a1").await.unwrap_err();
+    assert!(
+        matches!(err, Error::ResponseTooLarge { limit: 32 }),
+        "{err:?}"
+    );
+    server.verify().await;
 }

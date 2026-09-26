@@ -1,7 +1,8 @@
 //! What the TypeSafe client reports to the process-wide observer for a 2xx
 //! it cannot use: `decode` for a body that does not decode (on both
-//! endpoints) and `unfit` for a response that does not answer the questions
-//! it was sent, never a status code, and never retried.
+//! endpoints), `unfit` for a response that does not answer the questions
+//! it was sent, and `too_large` for a body over the cap; never a status
+//! code, and never retried.
 //!
 //! A target of its own, with one test: `observer::set_global` succeeds once
 //! per process, and any other test in the same binary would add its own
@@ -43,6 +44,7 @@ async fn an_unfit_or_undecodable_200_is_counted_as_a_failed_attempt() {
             max_retries: 3,
             backoff_initial: Duration::from_millis(5),
             backoff_max: Duration::from_millis(20),
+            max_body_bytes: 256,
             ..RetryPolicy::default()
         })
         .build()
@@ -96,6 +98,21 @@ async fn an_unfit_or_undecodable_200_is_counted_as_a_failed_attempt() {
     let err = c.list_models().await.unwrap_err();
     assert!(matches!(err, Error::Decode { .. }), "{err:?}");
     server.verify().await;
+    server.reset().await;
+
+    // A 200 whose body is over the cap: refused before it is read.
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'{'; 257]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = c.system_one(&"s", &q).await.unwrap_err();
+    assert!(
+        matches!(err, Error::ResponseTooLarge { limit: 256 }),
+        "{err:?}"
+    );
+    server.verify().await;
 
     let seen = failures.0.lock().unwrap().clone();
     assert_eq!(
@@ -104,6 +121,7 @@ async fn an_unfit_or_undecodable_200_is_counted_as_a_failed_attempt() {
             ("typesafe", "decode".to_owned()),
             ("typesafe", "unfit".to_owned()),
             ("typesafe", "decode".to_owned()),
+            ("typesafe", "too_large".to_owned()),
         ],
         "one failed attempt each, none of them an HTTP status"
     );

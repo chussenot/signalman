@@ -22,8 +22,9 @@
 //!   remedy is to slow down; 529 is TypeSafe's capacity and the remedy is to
 //!   wait.
 //! * Transport and decode: [`Error::Transport`] (network, TLS or timeout,
-//!   once the retry policy stopped), [`Error::Http`] (any other non-success
-//!   status, with the attempt count and the body truncated) and
+//!   once the retry policy stopped), [`Error::ResponseTooLarge`] (a body
+//!   over the policy's cap, not read), [`Error::Http`] (any other
+//!   non-success status, with the attempt count and the body truncated) and
 //!   [`Error::Decode`] (a body that is not the documented shape). An
 //!   [`Error::Http`] is most often the API's own 408 or 5xx (other than 529)
 //!   once the retry policy stopped, and the remedy is to wait and try again
@@ -68,8 +69,8 @@
 //! ([`Error::request_id`]) and at the end of the message (` [request_id …]`),
 //! where a log line that keeps only the message still has it. It is the last
 //! attempt's id and optional, because the API does not promise the header.
-//! [`Error::Transport`] never has one, and the variants raised before a
-//! request is sent have none either.
+//! [`Error::Transport`] and [`Error::ResponseTooLarge`] never have one, and
+//! the variants raised before a request is sent have none either.
 //!
 //! The enum is `#[non_exhaustive]`: new variants may arrive in minor
 //! releases, so a `match` outside the crate needs a wildcard arm.
@@ -235,6 +236,19 @@ pub enum Error {
         /// Underlying reqwest error.
         #[source]
         source: reqwest::Error,
+    },
+    /// The response body was over the retry policy's
+    /// [`max_body_bytes`](crate::RetryPolicy::max_body_bytes) and was not
+    /// read: the API answered with far more than it documents, or something
+    /// else answered in its place. Check the base URL; raise the cap only
+    /// for a body that is known to be that large.
+    ///
+    /// Never retried, and never carries a request id: the response was
+    /// dropped with its headers.
+    #[error("response body over {limit} bytes; not read")]
+    ResponseTooLarge {
+        /// The cap that was passed, in bytes.
+        limit: usize,
     },
     /// The response was not the JSON shape the API documents, or a
     /// recording was not one. The API changed, the base URL points at
@@ -470,7 +484,8 @@ impl Error {
             | Self::InvalidAnswer { request_id, .. } => request_id.as_deref(),
             #[cfg(feature = "http")]
             Self::Transport { .. } => None,
-            Self::MissingApiKey
+            Self::ResponseTooLarge { .. }
+            | Self::MissingApiKey
             | Self::InvalidApiKey { .. }
             | Self::Io { .. }
             | Self::NoRecording(_)

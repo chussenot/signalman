@@ -909,9 +909,10 @@ impl Client {
                     Err(classify(status, body, attempts, retry_after, request_id))
                 }
             }
-            Err(Exhausted {
-                attempts, source, ..
-            }) => Err(Error::Transport { attempts, source }),
+            Err(Exhausted::Transport { attempts, source }) => {
+                Err(Error::Transport { attempts, source })
+            }
+            Err(Exhausted::TooLarge { limit, .. }) => Err(Error::ResponseTooLarge { limit }),
         }
     }
 }

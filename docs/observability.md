@@ -2,7 +2,7 @@
 title: Observability
 description: What signalman exports over OpenTelemetry and when, the spans over one triage and its upstream calls, every metric with its attributes, how the OTLP endpoint is configured, how to verify the export against a local collector, and what is not instrumented.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-09-26
 tags: [observability, operations, opentelemetry]
 ---
 
@@ -72,7 +72,7 @@ Names are OpenTelemetry dotted names with a unit. A Prometheus exporter renders 
 | `signalman.triage.duration` | histogram | `s` | `decision` | from the start of the triage to its decision and write-back done |
 | `signalman.alert.time_to_qualify` | histogram | `s` | `decision` | from the alert's creation in incident.io to signalman's decision; recorded only when the alert carried `created_at` |
 | `signalman.typesafe.tokens` | counter | `{token}` | `model`, `direction` (`input`, which is billed, or `output`) | TypeSafe token usage |
-| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, `transport`, or for `typesafe` `decode` and `unfit`) | every failed attempt, retried or not, counted in the shared retry loop; a 2xx the TypeSafe client could not use is counted by the client as `decode` (the body did not decode) or `unfit` (the answers did not fit the questions sent), neither retried |
+| `signalman.upstream.errors` | counter | `{attempt}` | `service` (`typesafe`, `incidentio`, `backstage`), `status` (the HTTP status, `transport`, `too_large`, or for `typesafe` `decode` and `unfit`) | every failed attempt, retried or not, counted in the shared retry loop, `too_large` being a body over the retry policy's 8 MiB cap, dropped unread and not retried; a 2xx the TypeSafe client could not use is counted by the client as `decode` (the body did not decode) or `unfit` (the answers did not fit the questions sent), neither retried |
 | `signalman.webhook.deliveries` | counter | `{delivery}` | `result` (the `webhook.receive` values) | what the receiver did with each delivery |
 | `signalman.triage.inflight` | observable gauge | `{triage}` | `state` (`running` or `queued`) | this replica's in-flight triages, read at each export; registered by `serve` only |
 

@@ -39,6 +39,14 @@ pub enum Error {
         /// Truncated body.
         body: String,
     },
+    /// A body over the retry policy's `max_body_bytes`, dropped unread and
+    /// not retried: Backstage answered with far more than it documents, or
+    /// something else answered in its place.
+    #[error("Backstage response body over {limit} bytes; not read")]
+    ResponseTooLarge {
+        /// The cap that was passed, in bytes.
+        limit: usize,
+    },
     /// Network, TLS or timeout, after retries.
     #[error("transport error talking to Backstage after {attempts} attempts: {source}")]
     Transport {

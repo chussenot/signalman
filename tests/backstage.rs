@@ -476,3 +476,33 @@ async fn techdocs_forbidden_leaves_runbook_empty() {
     assert!(e.runbook.is_none());
     assert!(e.runbook_url.is_none());
 }
+
+#[tokio::test]
+async fn a_body_over_the_cap_is_refused_and_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/catalog/entities/by-name/component/default/big"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'{'; 33]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = Client::builder()
+        .base_url(server.uri())
+        .token("bs-token")
+        .retry(RetryPolicy {
+            max_body_bytes: 32,
+            ..RetryPolicy::default()
+        })
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let err = c
+        .get_by_name(&EntityRef::new("component", "default", "big"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::ResponseTooLarge { limit: 32 }),
+        "{err:?}"
+    );
+    server.verify().await;
+}

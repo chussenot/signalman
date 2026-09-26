@@ -407,7 +407,10 @@ impl Client {
                 attempts,
                 retry_after,
             )),
-            Err(Exhausted { attempts, source }) => Err(Error::Transport { attempts, source }),
+            Err(Exhausted::Transport { attempts, source }) => {
+                Err(Error::Transport { attempts, source })
+            }
+            Err(Exhausted::TooLarge { limit, .. }) => Err(Error::ResponseTooLarge { limit }),
         }
     }
 }

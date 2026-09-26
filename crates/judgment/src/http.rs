@@ -105,6 +105,15 @@ pub enum TransportRetry {
 ///   fails the call.
 /// * `budget` too short turns a slow upstream into a failed call after one
 ///   attempt; `None`, the default, leaves the bound to the attempt count.
+/// * `max_body_bytes` is the most of a response body the loop will buffer,
+///   8 MiB by default: a `Content-Length` above it fails the call before a
+///   byte is read, and a body without one is read until it passes the cap.
+///   Every body is decoded from that buffer, so an upstream that answers
+///   with far more than it should, or a proxy that answers in its place,
+///   cannot grow the process without bound. Too small fails a legitimate
+///   page; no upstream this crate serves sends a body near the default. The
+///   failure is [`Exhausted::TooLarge`], never retried: the next attempt
+///   would carry the same body.
 ///
 /// # The server's wait
 ///
@@ -206,6 +215,8 @@ pub enum TransportRetry {
 ///   ISO 8601; Python's `email.utils.parsedate_to_datetime` also takes RFC
 ///   5322 forms, such as a numeric offset or no weekday).
 /// * [`RetryPolicy::conservative`] has no SDK equivalent.
+/// * `max_body_bytes` has no SDK equivalent either: both SDKs buffer
+///   whatever the server sends.
 ///
 /// Not implemented:
 ///
@@ -243,6 +254,9 @@ pub struct RetryPolicy {
     /// would end at or beyond it. `None` (the default) for no budget; see
     /// "The budget" above.
     pub budget: Option<Duration>,
+    /// Most bytes of a response body the loop buffers; over it the call
+    /// fails as [`Exhausted::TooLarge`] without a retry. Default 8 MiB.
+    pub max_body_bytes: usize,
 }
 
 impl Default for RetryPolicy {
@@ -256,6 +270,7 @@ impl Default for RetryPolicy {
             retry_after_max: Duration::from_secs(30),
             transport: TransportRetry::Any,
             budget: None,
+            max_body_bytes: 8 * 1024 * 1024,
         }
     }
 }
@@ -404,13 +419,30 @@ pub struct Completed {
     pub headers: HeaderMap,
 }
 
-/// The retry loop gave up on a transport-level failure.
+/// The retry loop gave up without a response the caller can classify.
+///
+/// Exhaustive on purpose: a new kind must be mapped by every client, the
+/// way [`crate::Error::request_id`] names every variant.
 #[derive(Debug)]
-pub struct Exhausted {
-    /// Total attempts made, including the first.
-    pub attempts: u32,
-    /// The last error.
-    pub source: reqwest::Error,
+pub enum Exhausted {
+    /// A transport-level failure the policy stopped retrying.
+    Transport {
+        /// Total attempts made, including the first.
+        attempts: u32,
+        /// The last error.
+        source: reqwest::Error,
+    },
+    /// The last response's body was over the policy's
+    /// [`max_body_bytes`](RetryPolicy::max_body_bytes): its `Content-Length`
+    /// said so before a byte was read, or the read passed the cap. Never
+    /// retried, since the next attempt would carry the same body; the
+    /// response's status and headers are dropped with it.
+    TooLarge {
+        /// Total attempts made, including the first.
+        attempts: u32,
+        /// The cap that was passed, in bytes.
+        limit: usize,
+    },
 }
 
 /// Send `make()` until it yields a response the policy does not retry, or
@@ -427,13 +459,16 @@ pub struct Exhausted {
 ///
 /// Successful and non-retried statuses, and the last retried one when the
 /// policy stops, return `Ok(Completed)` so the caller maps them; the last
-/// transport failure returns `Err(Exhausted)`. `service` labels every failed
-/// attempt reported to the global [`crate::Observer`] (an application
-/// passes its own upstream names). Every failed attempt is reported, retried
-/// or not: a retry that succeeds hides the failure from the caller, but the
-/// attempt was still load on the upstream and still a symptom. The loop is
-/// the one place every client passes through, so it is where the count
-/// lives.
+/// transport failure, or a body over the policy's
+/// [`max_body_bytes`](RetryPolicy::max_body_bytes), returns `Err(Exhausted)`.
+/// The body is decoded as UTF-8, invalid sequences replaced: every upstream
+/// this loop serves answers in JSON, which is UTF-8 by definition. `service`
+/// labels every failed attempt reported to the global [`crate::Observer`]
+/// (an application passes its own upstream names): the status, `transport`,
+/// or `too_large`. Every failed attempt is reported, retried or not: a retry
+/// that succeeds hides the failure from the caller, but the attempt was
+/// still load on the upstream and still a symptom. The loop is the one place
+/// every client passes through, so it is where the count lives.
 pub async fn send_with_retries(
     policy: &RetryPolicy,
     service: &'static str,
@@ -444,18 +479,29 @@ pub async fn send_with_retries(
     loop {
         attempt += 1;
         match make().send().await {
-            Ok(resp) => {
+            Ok(mut resp) => {
                 let status = resp.status();
                 let retry_after = parse_retry_after(resp.headers());
                 if !status.is_success() {
                     crate::observer::global().on_failed_attempt(service, status.as_str());
                 }
-                // Cloned, not taken: with the `charset` feature `text()`
-                // reads `Content-Type` to pick the decoding.
-                let headers = resp.headers().clone();
-                let body = match resp.text().await {
+                let headers = std::mem::take(resp.headers_mut());
+                let body = match read_body(resp, policy.max_body_bytes).await {
                     Ok(b) => b,
-                    Err(source) => {
+                    Err(BodyRead::TooLarge) => {
+                        crate::observer::global().on_failed_attempt(service, "too_large");
+                        tracing::warn!(
+                            attempt,
+                            status = status.as_u16(),
+                            limit = policy.max_body_bytes,
+                            "response body over the cap; not retried"
+                        );
+                        return Err(Exhausted::TooLarge {
+                            attempts: attempt,
+                            limit: policy.max_body_bytes,
+                        });
+                    }
+                    Err(BodyRead::Transport(source)) => {
                         crate::observer::global().on_failed_attempt(service, "transport");
                         if policy.retries_transport(&source)
                             && let Some(delay) = policy.next_wait(attempt, None, started.elapsed())
@@ -464,7 +510,7 @@ pub async fn send_with_retries(
                             tokio::time::sleep(delay).await;
                             continue;
                         }
-                        return Err(Exhausted {
+                        return Err(Exhausted::Transport {
                             attempts: attempt,
                             source,
                         });
@@ -499,13 +545,37 @@ pub async fn send_with_retries(
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                return Err(Exhausted {
+                return Err(Exhausted::Transport {
                     attempts: attempt,
                     source,
                 });
             }
         }
     }
+}
+
+/// Why [`read_body`] stopped.
+enum BodyRead {
+    TooLarge,
+    Transport(reqwest::Error),
+}
+
+/// Buffer a body of at most `limit` bytes: a `Content-Length` over the cap
+/// fails before a read, otherwise chunks are read until they would pass it.
+async fn read_body(mut resp: reqwest::Response, limit: usize) -> Result<String, BodyRead> {
+    let declared = resp.content_length();
+    if declared.is_some_and(|n| n > u64::try_from(limit).unwrap_or(u64::MAX)) {
+        return Err(BodyRead::TooLarge);
+    }
+    let mut buf = Vec::with_capacity(declared.and_then(|n| usize::try_from(n).ok()).unwrap_or(0));
+    while let Some(chunk) = resp.chunk().await.map_err(BodyRead::Transport)? {
+        if buf.len().saturating_add(chunk.len()) > limit {
+            return Err(BodyRead::TooLarge);
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8(buf)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
 /// The server's wait, from a response's headers ([`RetryPolicy`], "The

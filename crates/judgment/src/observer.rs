@@ -31,13 +31,14 @@ pub trait Observer: Send + Sync + 'static {
     }
 
     /// One attempt against `service` failed with `status`: an HTTP status
-    /// code, `transport` when no response came back, or, from the TypeSafe
-    /// client, `decode` (a 2xx whose body did not decode) or `unfit` (a 2xx
-    /// that did not fit the questions sent, [`crate::Response::verify`]).
-    /// Retried attempts are reported too; they are load whether or not a
-    /// later attempt succeeds. `decode` and `unfit` are never retried, and a
-    /// `unfit` response's usage is reported through [`Observer::on_usage`]
-    /// as well, since it was billed.
+    /// code, `transport` when no response came back, `too_large` when the
+    /// body was over the policy's cap, or, from the TypeSafe client,
+    /// `decode` (a 2xx whose body did not decode) or `unfit` (a 2xx that did
+    /// not fit the questions sent, [`crate::Response::verify`]). Retried
+    /// attempts are reported too; they are load whether or not a later
+    /// attempt succeeds. `too_large`, `decode` and `unfit` are never
+    /// retried, and a `unfit` response's usage is reported through
+    /// [`Observer::on_usage`] as well, since it was billed.
     fn on_failed_attempt(&self, service: &'static str, status: &str) {
         let _ = (service, status);
     }
