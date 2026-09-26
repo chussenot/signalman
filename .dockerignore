@@ -1,0 +1,16 @@
+# Everything a release build does not read. The build copies the rest.
+.git
+.beads
+.beads.gate.lock
+.remember
+.agents
+.claude
+.codex
+.cursor
+.env
+.env.*
+target
+docs
+examples/eval/runs
+mkdocs.yml
+catalog-info.yaml

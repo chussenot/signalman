@@ -8,6 +8,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -68,3 +69,32 @@ jobs:
         run: prek run --all-files --hook-stage pre-commit
         env:
           SKIP: cargo-fmt,cargo-clippy,no-commit-to-branch
+
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build --tag "$IMAGE:${GITHUB_SHA::12}" .
+
+      - name: Smoke test the runtime image
+        run: docker run --rm "$IMAGE:${GITHUB_SHA::12}" --version
+
+      # A tag v1.2.3 publishes :1.2.3 and :latest; pull requests and pushes
+      # to main only prove the image builds. Plain docker, no third-party
+      # action, for the same repository policy as the other jobs.
+      - name: Publish on a version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$IMAGE:${GITHUB_SHA::12}" "$IMAGE:${GITHUB_REF_NAME#v}"
+          docker tag "$IMAGE:${GITHUB_SHA::12}" "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_REF_NAME#v}"
+          docker push "$IMAGE:latest"

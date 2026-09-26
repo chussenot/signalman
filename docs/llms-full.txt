@@ -1706,6 +1706,20 @@ signalman eval examples/eval/cases.jsonl --record runs/x  # grade labelled alert
 
 `incidentio triage-alert` is also the way to retry a triage that failed after the webhook was acknowledged.
 
+## Container image
+
+`Dockerfile` builds the image in two stages: the workspace compiles on the pinned Rust toolchain, and the binary is copied onto a slim Debian that carries only CA certificates (the HTTP client uses rustls, so there is no OpenSSL to patch) and `curl` for the `HEALTHCHECK`. The process runs as an unprivileged user, listens on `0.0.0.0:8080` and serves by default; any other subcommand works as `docker run --rm signalman:dev triage /alert.json` with the file mounted. `mise run image` builds it locally as `signalman:dev`.
+
+```sh
+docker run --rm -p 8080:8080 --env-file .env \
+  -v ./signalman.toml:/etc/signalman/config.toml:ro \
+  ghcr.io/chussenot/signalman:0.4.0
+```
+
+Two things follow from the layering in [Configuration](configuration.md). The listen address is set in the image as the environment variable `SIGNALMAN_ADDR`, which sits above the file: a `server.addr` in a mounted config has no effect, and a different port is `-e SIGNALMAN_ADDR=0.0.0.0:9090`, which also moves the process out from under the `HEALTHCHECK`, fixed at port 8080. Secrets come in as environment variables, never in the file, so `--env-file` or a `Secret` is the only way to pass them.
+
+CI builds the image on every pull request and push to `main` and runs the binary from it once, so a runtime image that cannot start the program fails the check rather than the deploy. A tag `vX.Y.Z` on `main` publishes `ghcr.io/chussenot/signalman:X.Y.Z` and `:latest`; nothing else publishes. The job uses plain `docker` under the repository's policy of GitHub-owned actions only, so there is no build cache between runs and an image build takes the full compile. The image has been built and started locally; no published tag has been pulled by a cluster yet.
+
 ## Kubernetes
 
 A rollout is the unit of change: the shape of a deployment is a `ConfigMap`, the secrets are a `Secret`, and a change to either rolls the pods, so every configuration change is visible in the deployment history and there is nothing to hot-reload ([decision 0006](decisions/0006-layered-configuration.md)). Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
@@ -1756,7 +1770,7 @@ spec:
     spec:
       containers:
         - name: signalman
-          image: ghcr.io/example/signalman:0.4.0
+          image: ghcr.io/chussenot/signalman:0.4.0
           args: ["serve"]                       # finds /etc/signalman/config.toml
           envFrom:
             - secretRef: { name: signalman-secrets }
@@ -1998,6 +2012,7 @@ mise tasks          # everything below
 | `schema` | regenerate `docs/schema/outcome.v1.json` from the wire types in `src/outcome.rs` |
 | `precommit` | `prek run --all-files` |
 | `build` | release build |
+| `image` | `docker build` of the container image as `signalman:dev` ([Operations](operations.md#container-image)) |
 | `serve` | `cargo run -- serve` plus any flags |
 | `triage <file>` | `cargo run -- triage <file>` plus any flags |
 | `triage:examples` | print the TypeSafe request for every example alert |
@@ -2007,7 +2022,7 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the libraries carry: the crate-level walkthroughs in `src/lib.rs` and `crates/judgment/src/lib.rs` are `no_run`, so they compile against the public API on every test run without an API key; the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys; and the `RetryPolicy` example in `crates/judgment/src/http.rs` builds a policy with a budget by struct update, which pins that the struct stays constructible that way. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the libraries carry: the crate-level walkthroughs in `src/lib.rs` and `crates/judgment/src/lib.rs` are `no_run`, so they compile against the public API on every test run without an API key; the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys; and the `RetryPolicy` example in `crates/judgment/src/http.rs` builds a policy with a budget by struct update, which pins that the struct stays constructible that way. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only; a third job builds the container image with plain `docker` and publishes it to GHCR on a `v*` tag.
 
 The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and `mise run check` and CI run it as `check:minimal`. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
 
@@ -2140,7 +2155,7 @@ No write has reached a live incident.io alert yet; the reads have (`signalman-b1
 
 ## Hardening the receiver (`signalman-m28`)
 
-Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). OpenTelemetry tracing and metrics are delivered (`signalman-m28.2`, [Observability](observability.md)): spans over the delivery, the triage and every upstream call, and metrics that export time to qualify and the queue depth rather than logging them, over OTLP/HTTP when a collector endpoint is set. Verified against a mock collector only, never a real one. The readiness endpoint is delivered (`signalman-m28.3`, [Operations](operations.md#readiness)): `GET /readyz` checks incident.io, TypeSafe and, when configured, Backstage with the configured credentials, under a per-check deadline and a cached report. Open: a container image and the CI job that builds it (`signalman-m28.4`); a JSON log format (`signalman-m28.5`).
+Concurrency is bounded (running plus waiting triages per replica, `503` with `Retry-After` beyond) and every triage runs under a deadline ([Operations](operations.md#backpressure)). OpenTelemetry tracing and metrics are delivered (`signalman-m28.2`, [Observability](observability.md)): spans over the delivery, the triage and every upstream call, and metrics that export time to qualify and the queue depth rather than logging them, over OTLP/HTTP when a collector endpoint is set. Verified against a mock collector only, never a real one. The readiness endpoint is delivered (`signalman-m28.3`, [Operations](operations.md#readiness)): `GET /readyz` checks incident.io, TypeSafe and, when configured, Backstage with the configured credentials, under a per-check deadline and a cached report. The container image is delivered (`signalman-m28.4`, [Operations](operations.md#container-image)): built on every pull request, published to GHCR on a version tag, started locally but not yet pulled by a cluster. Open: a JSON log format (`signalman-m28.5`).
 
 ## Triage quality (`signalman-ufg`)
 

@@ -83,6 +83,10 @@ run = "prek run --all-files"
 description = "Release build"
 run = "cargo build --release"
 
+[tasks.image]
+description = "Build the container image as signalman:dev (CI publishes ghcr.io/chussenot/signalman on a v* tag)"
+run = "docker build --tag signalman:dev ."
+
 [tasks.clean]
 description = "Remove the Cargo build output (target/, including rust-analyzer's) and this workspace's mbx state; the shared cache stays"
 run = ["cargo clean", "mbx clean"]

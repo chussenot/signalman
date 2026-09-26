@@ -2,7 +2,7 @@
 title: Operations
 description: Running the webhook receiver, its endpoints including liveness and readiness, its manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-09-26
 tags: [operations]
 ---
 
@@ -82,6 +82,20 @@ signalman eval examples/eval/cases.jsonl --record runs/x  # grade labelled alert
 
 `incidentio triage-alert` is also the way to retry a triage that failed after the webhook was acknowledged.
 
+## Container image
+
+`Dockerfile` builds the image in two stages: the workspace compiles on the pinned Rust toolchain, and the binary is copied onto a slim Debian that carries only CA certificates (the HTTP client uses rustls, so there is no OpenSSL to patch) and `curl` for the `HEALTHCHECK`. The process runs as an unprivileged user, listens on `0.0.0.0:8080` and serves by default; any other subcommand works as `docker run --rm signalman:dev triage /alert.json` with the file mounted. `mise run image` builds it locally as `signalman:dev`.
+
+```sh
+docker run --rm -p 8080:8080 --env-file .env \
+  -v ./signalman.toml:/etc/signalman/config.toml:ro \
+  ghcr.io/chussenot/signalman:0.4.0
+```
+
+Two things follow from the layering in [Configuration](configuration.md). The listen address is set in the image as the environment variable `SIGNALMAN_ADDR`, which sits above the file: a `server.addr` in a mounted config has no effect, and a different port is `-e SIGNALMAN_ADDR=0.0.0.0:9090`, which also moves the process out from under the `HEALTHCHECK`, fixed at port 8080. Secrets come in as environment variables, never in the file, so `--env-file` or a `Secret` is the only way to pass them.
+
+CI builds the image on every pull request and push to `main` and runs the binary from it once, so a runtime image that cannot start the program fails the check rather than the deploy. A tag `vX.Y.Z` on `main` publishes `ghcr.io/chussenot/signalman:X.Y.Z` and `:latest`; nothing else publishes. The job uses plain `docker` under the repository's policy of GitHub-owned actions only, so there is no build cache between runs and an image build takes the full compile. The image has been built and started locally; no published tag has been pulled by a cluster yet.
+
 ## Kubernetes
 
 A rollout is the unit of change: the shape of a deployment is a `ConfigMap`, the secrets are a `Secret`, and a change to either rolls the pods, so every configuration change is visible in the deployment history and there is nothing to hot-reload ([decision 0006](decisions/0006-layered-configuration.md)). Nothing below has been run against a cluster yet; it follows the configuration contract in [Configuration](configuration.md).
@@ -132,7 +146,7 @@ spec:
     spec:
       containers:
         - name: signalman
-          image: ghcr.io/example/signalman:0.4.0
+          image: ghcr.io/chussenot/signalman:0.4.0
           args: ["serve"]                       # finds /etc/signalman/config.toml
           envFrom:
             - secretRef: { name: signalman-secrets }
