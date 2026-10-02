@@ -41,10 +41,12 @@ Adopted in signalman's [evaluation harness](../evaluation.md), in this order of 
 | Replay refuses a changed question set | `Error::StaleRecording`, naming both fingerprints and the recording date; `--stale-ok` grades anyway with `STALE` on the evidence line | a replay cannot silently report old answers as a measurement of new wording |
 | Development and held-out splits | `Case.split`, `--split`, counts in the manifest and the report | a threshold can be chosen on one set and reported on another |
 | Wilson intervals | `judgment::eval::metrics::wilson_interval`, `accuracy_interval95` per question and on the decision, the `acc 95%` column | 3 of 3 prints as `0.44..1.00`, which is the honest claim for three cases |
+| A frozen policy for held-out runs | `--freeze-policy` on a development replay writes `policy.json` beside the recordings; `--split held-out` is graded under that policy and refuses any other (`held_out_gate`); the `policy` line on every report | a held-out number cannot be revised after seeing it; each re-freeze is dated, so the record shows how often the held-out cases were looked at |
+
+Where the frozen policy differs from the original: jev-recipes freezes the policy inside the archive of the development run and keys the held-out check on the recipe fingerprint and the model as well; signalman keeps one `policy.json` per recording directory, since the recordings already fix the model and the manifest already fixes the questions, and the file records the question fingerprint and the development figures it was chosen on rather than enforcing them.
 
 Not adopted, and why:
 
-- **The frozen-policy check on held-out runs.** jev-recipes stores the policy an archive was graded under and refuses another one on held-out data. signalman's policy is a configuration file, and the harness has no store of "the policy chosen on development" to compare against. The split and the manifest make the discipline possible; enforcing it needs a place to record the chosen policy, which is worth adding when there is a held-out set to protect, not before.
 - **Four fingerprints.** One over the question texts and candidates, and one over the case file, cover what a replay can get wrong here: the state is the case file, and the answer key is in it.
 - **Price per run and the evidence audit.** Token counts are already reported; a price needs a tariff the harness does not know. The audit script exists to keep a published catalogue honest about hundreds of numbers; signalman publishes one report per run and the manifest is its audit trail.
 - **`readyAccuracy`.** The decision agreement already measures what the policy would have done; a second accuracy over the subset that was not sent to a person would be the same number under another name here.
@@ -53,7 +55,7 @@ Not adopted, and why:
 
 1. Record the example cases again with the rule in place (`signalman-whv.5`), keep both directories, and compare: that is the first measurement of the rule, and it removes `--stale-ok` from the documented commands.
 2. Label real alerts with `observed-outcome` provenance from incident.io history (the team that took the alert, the incident it was attached to, whether anyone was paged). Until then every number this harness prints is against the maintainers' reading, and the report now says so.
-3. When there are tens of labelled cases per question, mark a held-out set, choose thresholds on the rest, and grade it once. Add the frozen-policy record at that point.
+3. When there are tens of labelled cases per question, mark a held-out set, choose thresholds on the rest with `--split development`, freeze them, and grade the held-out set once.
 4. Read the catalogue's `route`, `rerank`, `tool-call-gate` and `injection-signal` recipes before adding a sixth question here; their instructions and option sets are tested wording for the shapes signalman is most likely to need next.
 
 ## Sources

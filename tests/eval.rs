@@ -592,6 +592,8 @@ fn live_evidence() -> eval::Evidence {
         ),
         recorded_fingerprint: None,
         stale: false,
+        policy_fingerprint: eval::policy_fingerprint(&Policy::default()),
+        frozen_policy: None,
         splits: std::collections::BTreeMap::default(),
         provenance: std::collections::BTreeMap::default(),
     }
@@ -733,4 +735,133 @@ fn cases_carry_their_split_and_provenance() {
     let json = serde_json::to_value(&cases[1]).unwrap();
     assert_eq!(json["split"], "development");
     assert!(json.get("provenance").is_none() && json.get("rationale").is_none());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one workflow, in the order a person runs it
+async fn a_held_out_replay_is_graded_only_under_the_policy_frozen_on_development() {
+    // Record both cases, mark noise as held out, choose a policy on oom
+    // alone and freeze it; the held-out replay then accepts that policy
+    // and nothing else, and a report under another policy says so.
+    let server = mock_typesafe().await;
+    let dir = tmp("frozen");
+    run_two(&server, &dir).await.unwrap();
+    let mut cases = two_cases();
+    cases[1].split = eval::Split::HeldOut;
+    let development: Vec<_> = cases
+        .iter()
+        .filter(|c| c.split == eval::Split::Development)
+        .cloned()
+        .collect();
+    let held_out: Vec<_> = cases
+        .iter()
+        .filter(|c| c.split == eval::Split::HeldOut)
+        .cloned()
+        .collect();
+    let (texts, candidates) = (Texts::default(), OwnerCandidates::from_teams());
+    let strict = Policy {
+        attach_confidence: 0.9,
+        ..Policy::default()
+    };
+    let strict_fp = eval::policy_fingerprint(&strict);
+    assert_ne!(strict_fp, eval::policy_fingerprint(&Policy::default()));
+
+    // Nothing frozen yet: the held-out gate refuses, whatever the policy.
+    let err = eval::held_out_gate(&dir, &strict).unwrap_err();
+    assert!(matches!(err, eval::Error::NoFrozenPolicy { .. }), "{err}");
+    assert!(err.to_string().contains("--freeze-policy"), "{err}");
+
+    // A policy cannot be frozen from a replay that saw the held-out case.
+    let mixed = eval::replay(
+        &dir,
+        &cases,
+        &default_setup(&texts, &candidates, &strict),
+        false,
+    )
+    .unwrap();
+    let err = eval::freeze_policy(&dir, &strict, &mixed).unwrap_err();
+    assert!(
+        matches!(&err, eval::Error::FreezeNeedsDevelopment { splits } if splits == "development, held-out"),
+        "{err}"
+    );
+    assert!(!dir.join(eval::POLICY_FILE).exists());
+
+    // Chosen on development: oom pages under the strict policy, which is right.
+    let dev = eval::replay(
+        &dir,
+        &development,
+        &default_setup(&texts, &candidates, &strict),
+        false,
+    )
+    .unwrap();
+    assert_eq!(dev.decision.correct, 1);
+    assert_eq!(dev.evidence.frozen_policy, None);
+    let frozen = eval::freeze_policy(&dir, &strict, &dev).unwrap();
+    assert_eq!(frozen.policy_fingerprint, strict_fp);
+    assert_eq!(frozen.policy, strict);
+    assert_eq!(
+        frozen.questions_fingerprint,
+        dev.evidence.questions_fingerprint
+    );
+    assert_eq!((frozen.chosen_on.cases, frozen.chosen_on.labelled), (1, 1));
+    assert_eq!(frozen.chosen_on.agreement, Some(1.0));
+    let on_disk: eval::FrozenPolicy =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(eval::POLICY_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(on_disk, frozen);
+    assert_eq!(
+        eval::read_frozen_policy(&dir).unwrap(),
+        Some(frozen.clone())
+    );
+
+    // The held-out replay: the frozen policy passes, any other is refused.
+    assert_eq!(eval::held_out_gate(&dir, &strict).unwrap(), frozen);
+    let graded = eval::replay(
+        &dir,
+        &held_out,
+        &default_setup(&texts, &candidates, &strict),
+        false,
+    )
+    .unwrap();
+    assert_eq!(graded.cases, 1);
+    assert_eq!(graded.evidence.policy_fingerprint, strict_fp);
+    assert_eq!(
+        graded.evidence.frozen_policy.as_deref(),
+        Some(strict_fp.as_str())
+    );
+    assert!(graded.render().contains("(frozen)"), "{}", graded.render());
+    let err = eval::held_out_gate(&dir, &Policy::default()).unwrap_err();
+    assert!(
+        matches!(&err, eval::Error::PolicyNotFrozen { frozen, current, .. }
+            if *frozen == strict_fp && *current == eval::policy_fingerprint(&Policy::default())),
+        "{err}"
+    );
+
+    // A development replay under another policy still grades, and says it
+    // is not the frozen one.
+    let other = eval::replay(
+        &dir,
+        &development,
+        &default_setup(&texts, &candidates, &Policy::default()),
+        false,
+    )
+    .unwrap();
+    assert_ne!(
+        other.evidence.frozen_policy,
+        Some(other.evidence.policy_fingerprint.clone())
+    );
+    assert!(
+        other.render().contains("not the frozen one"),
+        "{}",
+        other.render()
+    );
+    let json = serde_json::to_value(&other).unwrap();
+    assert_eq!(json["evidence"]["frozen_policy"], strict_fp);
+
+    // Freezing again replaces the file.
+    let again = eval::freeze_policy(&dir, &Policy::default(), &other).unwrap();
+    assert_eq!(
+        eval::held_out_gate(&dir, &Policy::default()).unwrap(),
+        again
+    );
 }

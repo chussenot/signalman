@@ -64,7 +64,8 @@ The best labels are observed outcomes: the team that actually took the alert, th
 signalman eval examples/eval/cases.jsonl                       # call the model, print the report
 signalman eval cases.jsonl --record runs/jev-1.13.0            # also keep every graded response
 signalman eval cases.jsonl --replay runs/jev-1.13.0            # re-grade under the current configuration, no model call
-signalman eval cases.jsonl --replay runs/jev-1.13.0 --split held-out   # the held-out cases once, under the policy chosen on the others
+signalman eval cases.jsonl --replay runs/jev-1.13.0 --split development --freeze-policy   # keep the chosen policy beside the recordings
+signalman eval cases.jsonl --replay runs/jev-1.13.0 --split held-out   # the held-out cases once, under the frozen policy only
 signalman eval cases.jsonl --replay runs/old --stale-ok        # grade answers recorded under other question texts anyway, marked as such
 signalman eval cases.jsonl --json > report.json                # the full report, every case included
 ```
@@ -81,6 +82,7 @@ The committed `jev-1.13.0` run, replayed on 2026-10-02 under the default policy 
 cases     3   model jev-1.13.0
 decision  labelled 3  agreement 1.00  95% 0.44..1.00
 evidence  replay recorded 2026-09-23T13:21:37Z  questions 1677815da49da9d9  STALE: recorded under 0165f119e3162330; these answers were given to other questions
+policy    cdddb2572b782200
 origin    split development 3   labels author-synthetic 3
 
 question             n   acc    acc 95%  brier   ece conf|right conf|wrong
@@ -108,6 +110,7 @@ Read the second line with the fourth: three author-written cases decided as thei
 | `conf\|right`, `conf\|wrong` | mean confidence when right and when wrong | the gap between them is what a threshold can exploit; no gap, no useful threshold |
 | decision `agreement` | share of labelled cases where the policy reached the expected action | the product metric: everything above feeds it |
 | `evidence` | `live` or `replay`, when the answers were recorded, the fingerprint of the question texts and owner candidates they are graded under, and `STALE` with the recorded fingerprint when the two differ, or `(recording has no manifest)` for a directory older than manifests | whether the numbers say how the model answers these questions, or how the policy reads answers to earlier ones |
+| `policy` | fingerprint of the thresholds the decisions were made under, `(frozen)` when it is the policy frozen beside the recordings, or the frozen one's fingerprint when it is not | whether the decision agreement is under the policy chosen on the development cases, which is the only one a held-out number may be reported under |
 | `origin` | cases per split and per provenance method | whether the accuracy is against observed outcomes or against the harness author's own examples, and whether it was fitted to the cases it is reported on |
 
 Confidence is the Choice or Score confidence for those primitives and `max(p, 1 - p)` for a Noul. The JSON report adds per-question confusion tables, the decision confusion table, an `evidence` object with the same fields as the two lines above, and every graded case with its full distributions.
@@ -127,6 +130,12 @@ A recorded run writes `run.json` beside the recordings: when it finished, the mo
 
 That is why a replay compares the manifest's fingerprint with the current configuration's and stops when they differ, naming both and the recording date, rather than printing a report that looks like a measurement of the current wording. `--stale-ok` grades the recordings anyway, with `STALE` on the evidence line and `stale: true` in the JSON, for the one legitimate use: seeing how a policy change reads old answers while a new recording is on its way. A directory recorded before manifests existed has no `run.json`; it is graded, and the evidence line says the recorded fingerprint is unknown. The checks on `Response::verify` below still apply on top: a changed level text or team key fails the question itself, manifest or not. The fingerprint is deliberately coarser than that check. It fires on a wording change that could not possibly have changed an answer, because whether a change could is exactly what cannot be known without recording again. The discipline is borrowed from jev-recipes' evaluation archive ([Decision recipes](research/decision-recipes.md)).
 
+### Freezing the policy
+
+A threshold chosen by looking at every labelled case is a number about those cases. The held-out split exists so that one set of cases is never looked at while choosing, and `policy.json` is what keeps that promise after the fact. `--replay DIR --split development --freeze-policy` writes it beside the recordings: the policy itself, its fingerprint, the question fingerprint in force, and the development figures it was chosen on (cases, labelled, agreement and its interval). It can only be written from a replay of the development split; a replay that graded a held-out case refuses to freeze, since a policy chosen with those cases in view is not one the held-out replay can vouch for.
+
+`--replay DIR --split held-out` is then graded only under the frozen policy. Without `policy.json` it stops and says to freeze first; under a policy whose fingerprint differs from the frozen one it stops naming both fingerprints and the freeze date. There is no flag past that gate. The way to change the policy is to replay the development cases again with `--freeze-policy`, which replaces the file with a new date: the held-out cases have then been seen once per freeze, and the dates are the record of how many times. Every report prints the `policy` line, so a development replay under a candidate policy says it is not the frozen one, and the JSON `evidence` carries both fingerprints. A live run grades under the current policy and freezes nothing: the discipline applies to replays, where thresholds are chosen.
+
 ## Tuning without re-running inference
 
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
@@ -135,7 +144,7 @@ Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated
 2. Edit `[policy]` (or the question and guidance wording in `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file. Not `impact_levels` or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
 3. `signalman eval cases.jsonl --replay runs/<model> --config candidate.toml` and compare decision agreement.
 4. Pin `typesafe.model` to the version recorded against, in the same file as the thresholds.
-5. Keep a held-out set once there are enough cases: mark some `"split": "held-out"`, choose thresholds with `--split development`, then grade `--split held-out` once with the chosen policy. A threshold tuned on the cases it is reported on is a number about those cases, not about the next alert.
+5. Keep a held-out set once there are enough cases: mark some `"split": "held-out"`, choose thresholds with `--split development`, freeze the choice with `--freeze-policy`, then grade `--split held-out` once; it is graded under the frozen policy and no other ([above](#freezing-the-policy)). A threshold tuned on the cases it is reported on is a number about those cases, not about the next alert.
 
 Pick thresholds from the `conf|right` and `conf|wrong` columns per question: the automatic-routing threshold should sit above most wrong confidences, the human-triage threshold below most right ones. When the two means are close, no threshold will separate them and the fix is the question's wording or the state, not the number.
 

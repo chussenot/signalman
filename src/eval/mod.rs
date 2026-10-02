@@ -265,10 +265,62 @@ pub struct Evidence {
     /// are graded under: the numbers say how the policy reads old answers,
     /// not how the model answers the current questions.
     pub stale: bool,
+    /// [`policy_fingerprint`] of the policy the decisions were made under.
+    pub policy_fingerprint: String,
+    /// Fingerprint of the policy frozen beside the recordings
+    /// ([`POLICY_FILE`]), when there is one; `None` for a live run or a
+    /// directory where nothing was frozen. Equal to `policy_fingerprint`
+    /// when the report was graded under the frozen policy.
+    pub frozen_policy: Option<String>,
     /// Cases per split.
     pub splits: BTreeMap<String, usize>,
     /// Cases per provenance method.
     pub provenance: BTreeMap<String, usize>,
+}
+
+/// The file, beside the recordings, that holds the policy chosen on the
+/// development cases. Written by [`freeze_policy`] from a development
+/// replay; a held-out replay refuses to grade without it or under any
+/// other policy ([`held_out_gate`]).
+pub const POLICY_FILE: &str = "policy.json";
+
+/// The policy a development replay settled on, with what it was chosen on.
+/// Freezing it is what makes a later held-out number a number about the
+/// next alert rather than about the cases it was tuned on: the held-out
+/// replay can only ever be graded under this policy, so the choice cannot
+/// be revised after seeing the held-out result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrozenPolicy {
+    /// When it was frozen, RFC 3339.
+    pub frozen_at: String,
+    /// The policy itself, so the file is readable and usable on its own.
+    pub policy: Policy,
+    /// [`policy_fingerprint`] of it; what a held-out replay compares.
+    pub policy_fingerprint: String,
+    /// [`questions_fingerprint`] in force when it was chosen.
+    pub questions_fingerprint: String,
+    /// Whether the development replay it was chosen on was stale.
+    pub stale: bool,
+    /// The development result it was chosen on.
+    pub chosen_on: ChosenOn,
+}
+
+/// The development figures a policy was frozen on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChosenOn {
+    /// Development cases graded.
+    pub cases: usize,
+    /// Of which labelled with an expected action.
+    pub labelled: usize,
+    /// Decision agreement on them.
+    pub agreement: Option<f64>,
+    /// Its 95% interval.
+    pub agreement_interval95: Option<(f64, f64)>,
+}
+
+/// Fingerprint of a policy: every threshold, under sorted keys.
+pub fn policy_fingerprint(policy: &Policy) -> String {
+    judgment::eval::fingerprint(&serde_json::to_value(policy).unwrap_or(serde_json::Value::Null))
 }
 
 /// Fingerprint of everything that shapes a request apart from the alert:
@@ -386,6 +438,37 @@ pub enum Error {
         recorded: String,
         /// The current fingerprint.
         current: String,
+    },
+    /// A held-out replay with no frozen policy beside the recordings.
+    #[error(
+        "no frozen policy under {dir}: the held-out cases are graded only under a policy chosen on the development cases; replay those with --split development --freeze-policy first"
+    )]
+    NoFrozenPolicy {
+        /// The directory.
+        dir: String,
+    },
+    /// A held-out replay under a policy other than the frozen one.
+    #[error(
+        "the policy under {dir} was frozen {frozen_at} with fingerprint {frozen}, the current configuration has {current}: a held-out replay is graded only under the frozen policy; replay the development cases with --freeze-policy to choose again, and know that the held-out cases were seen"
+    )]
+    PolicyNotFrozen {
+        /// The directory.
+        dir: String,
+        /// When the policy was frozen.
+        frozen_at: String,
+        /// The frozen fingerprint.
+        frozen: String,
+        /// The current fingerprint.
+        current: String,
+    },
+    /// Freezing from a replay that graded cases outside the development
+    /// split, which would freeze a policy chosen on the held-out ones.
+    #[error(
+        "a policy is frozen from a replay of the development cases only (--split development), this one graded: {splits}"
+    )]
+    FreezeNeedsDevelopment {
+        /// The splits graded, comma-separated.
+        splits: String,
     },
     /// Reading or writing a recording.
     #[error(transparent)]
@@ -541,6 +624,8 @@ pub async fn run(
             questions_fingerprint: fingerprint,
             recorded_fingerprint: None,
             stale: false,
+            policy_fingerprint: policy_fingerprint(setup.policy),
+            frozen_policy: None,
             splits,
             provenance,
         },
@@ -558,6 +643,12 @@ pub async fn run(
 /// unless `stale_ok`, in which case it grades them and the report's
 /// [`Evidence::stale`] says so. A directory without a manifest, recorded
 /// before manifests existed, is graded with `recorded_fingerprint` unknown.
+///
+/// The replay grades under `setup.policy` whatever is frozen beside the
+/// recordings; [`Evidence::frozen_policy`] says whether that was the frozen
+/// one. Refusing a held-out replay under another policy is
+/// [`held_out_gate`], which the caller runs first when the cases are the
+/// held-out split.
 pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>, stale_ok: bool) -> Result<Report> {
     let fingerprint = questions_fingerprint(setup.texts, setup.candidates);
     let manifest = read_manifest(dir)?;
@@ -595,6 +686,7 @@ pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>, stale_ok: bool) -> 
         )?);
     }
     let (splits, provenance) = count_cases(cases);
+    let frozen = read_frozen_policy(dir)?;
     Ok(report(
         graded,
         failed,
@@ -604,28 +696,96 @@ pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>, stale_ok: bool) -> 
             questions_fingerprint: fingerprint,
             recorded_fingerprint: manifest.map(|m| m.questions_fingerprint),
             stale,
+            policy_fingerprint: policy_fingerprint(setup.policy),
+            frozen_policy: frozen.map(|f| f.policy_fingerprint),
             splits,
             provenance,
         },
     ))
 }
 
+/// Freeze the policy a development replay was graded under, as
+/// `<dir>/`[`POLICY_FILE`], recording the development figures it was
+/// chosen on. `report` must come from a replay of the development cases
+/// only ([`Error::FreezeNeedsDevelopment`] otherwise): a policy chosen with
+/// the held-out cases in view is not one the held-out replay can vouch
+/// for. Freezing again replaces the file; the held-out cases have then
+/// been seen once per freeze, which the report's `frozen_at` dates.
+pub fn freeze_policy(dir: &Path, policy: &Policy, report: &Report) -> Result<FrozenPolicy> {
+    let e = &report.evidence;
+    if e.splits.keys().any(|k| k != Split::Development.key()) {
+        return Err(Error::FreezeNeedsDevelopment {
+            splits: e.splits.keys().cloned().collect::<Vec<_>>().join(", "),
+        });
+    }
+    let frozen = FrozenPolicy {
+        frozen_at: jiff::Timestamp::now().to_string(),
+        policy: policy.clone(),
+        policy_fingerprint: policy_fingerprint(policy),
+        questions_fingerprint: e.questions_fingerprint.clone(),
+        stale: e.stale,
+        chosen_on: ChosenOn {
+            cases: report.cases,
+            labelled: report.decision.labelled,
+            agreement: report.decision.accuracy,
+            agreement_interval95: report.decision.accuracy_interval95,
+        },
+    };
+    write_json(&dir.join(POLICY_FILE), &frozen)?;
+    Ok(frozen)
+}
+
+/// The policy frozen under `dir`, if any.
+pub fn read_frozen_policy(dir: &Path) -> Result<Option<FrozenPolicy>> {
+    read_json(&dir.join(POLICY_FILE))
+}
+
+/// What a held-out replay of `dir` must pass before grading: a policy is
+/// frozen there and `policy` is that policy. Returns the frozen record so
+/// the caller can say when and on what it was chosen.
+pub fn held_out_gate(dir: &Path, policy: &Policy) -> Result<FrozenPolicy> {
+    let Some(frozen) = read_frozen_policy(dir)? else {
+        return Err(Error::NoFrozenPolicy {
+            dir: dir.display().to_string(),
+        });
+    };
+    let current = policy_fingerprint(policy);
+    if frozen.policy_fingerprint != current {
+        return Err(Error::PolicyNotFrozen {
+            dir: dir.display().to_string(),
+            frozen_at: frozen.frozen_at,
+            frozen: frozen.policy_fingerprint,
+            current,
+        });
+    }
+    Ok(frozen)
+}
+
 fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<()> {
-    let path = dir.join(MANIFEST_FILE);
-    let mut text = serde_json::to_string_pretty(manifest).map_err(|source| Error::Json {
+    write_json(&dir.join(MANIFEST_FILE), manifest)
+}
+
+fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
+    read_json(&dir.join(MANIFEST_FILE))
+}
+
+/// Write `value` as pretty JSON with a final newline, so the file diffs
+/// line by line when committed.
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let mut text = serde_json::to_string_pretty(value).map_err(|source| Error::Json {
         context: path.display().to_string(),
         source,
     })?;
     text.push('\n');
-    std::fs::write(&path, text).map_err(|source| Error::Io {
+    std::fs::write(path, text).map_err(|source| Error::Io {
         path: path.display().to_string(),
         source,
     })
 }
 
-fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
-    let path = dir.join(MANIFEST_FILE);
-    let text = match std::fs::read_to_string(&path) {
+/// Read `path` as JSON; a file that is not there is `None`.
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => {
@@ -911,6 +1071,16 @@ impl Report {
                     "  STALE: recorded under {r}; these answers were given to other questions"
                 ),
                 _ => String::new(),
+            }
+        );
+        let _ = writeln!(
+            s,
+            "policy    {}{}",
+            e.policy_fingerprint,
+            match &e.frozen_policy {
+                Some(f) if *f == e.policy_fingerprint => "  (frozen)".to_owned(),
+                Some(f) => format!("  not the frozen one ({f}); a held-out replay would refuse it"),
+                None => String::new(),
             }
         );
         let _ = writeln!(
