@@ -350,6 +350,8 @@ pub struct TextsFile {
     pub duplicate_none: Option<String>,
     /// Caused-by-change question.
     pub change_question: Option<String>,
+    /// The state-as-data rule appended to every instruction; `""` disables it.
+    pub state_guard: Option<String>,
 }
 
 impl TextsFile {
@@ -370,7 +372,8 @@ impl TextsFile {
             actionable_no,
             duplicate_question,
             duplicate_none,
-            change_question
+            change_question,
+            state_guard
         );
         base
     }
@@ -1136,6 +1139,7 @@ mod tests {
             page_at = "outage"
             [triage.text]
             actionable_question = "Must someone act on `alert` now?"
+            state_guard = ""
             [[triage.teams]]
             key = "sre"
             label = "SRE"
@@ -1168,6 +1172,8 @@ mod tests {
             c.triage.text.owner_question,
             Texts::default().owner_question
         );
+        // The one text field an empty value is allowed for: it is the off switch.
+        assert!(c.triage.text.state_guard.is_empty());
         assert_eq!(c.triage.teams.len(), 1);
         assert_eq!(c.triage.fallback_candidates().len(), 2);
     }
