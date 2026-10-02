@@ -2,7 +2,7 @@
 title: Configuration
 description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-02
 tags: [configuration, kubernetes]
 ---
 
@@ -131,7 +131,7 @@ Routing thresholds; absent keys keep their defaults. Every probability is valida
 
 ### `[triage]`, file only
 
-`[triage.text]` overrides the wording of any question: `owner_question`, `owner_guidance`, `owner_catalog_guidance`, `impact_question`, `impact_related_context`, `impact_levels` (exactly four, lowest first), `actionable_question`, `actionable_yes`, `actionable_no`, `duplicate_question`, `duplicate_none`, `change_question`. The set of questions and their types are not configurable; [Triage](triage.md#what-is-configurable) explains why.
+`[triage.text]` overrides the wording of any question: `owner_question`, `owner_guidance`, `owner_catalog_guidance`, `impact_question`, `impact_related_context`, `impact_levels` (exactly four, lowest first), `actionable_question`, `actionable_yes`, `actionable_no`, `duplicate_question`, `duplicate_none`, `change_question`, and `state_guard`, the rule every instruction ends with ([Triage](triage.md#which-questions-are-asked)). Every field must be non-empty except `state_guard`, where an empty or blank string switches the rule off. Changing any of them changes the question fingerprint a recorded evaluation run is replayed against ([Evaluation](evaluation.md#what-a-recording-answers)). The set of questions and their types are not configurable; [Triage](triage.md#what-is-configurable) explains why.
 
 `[[triage.teams]]` entries (`key`, `label`, `description`) replace the built-in fallback owner list used when no catalog is configured or nothing in it matched. `none_of_these` is appended automatically and may not be defined.
 

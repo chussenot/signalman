@@ -2,7 +2,7 @@
 title: Documentation
 description: Map of the signalman documentation, what each page is for, and the conventions the pages follow.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-02
 tags: [index]
 ---
 
@@ -31,6 +31,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | Whether the judgment crate works against Laya, and what the benchmark measured | [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) |
 | What the open Jev reproductions and the Decision Index mean for provider choice, self-hosting, question design and thresholds | [Open System One models](research/open-system-one-models.md) |
 | What the other System One clients and the official SDKs do that judgment does not, and which of it to adopt | [System One client libraries](research/system-one-client-libraries.md) |
+| What a catalogue of 249 typed decisions over the same wire does differently, and what signalman took from it: the state-as-data rule, evaluation provenance, splits, fingerprints and intervals | [Decision recipes](research/decision-recipes.md) |
 | Which variable to set | [Configuration](configuration.md) |
 | How to contribute | [Development](development.md) |
 | What is unverified or missing | [Roadmap](roadmap.md) |
