@@ -8,6 +8,14 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Added
 
+- `eval::metrics::wilson_interval` and `QuestionMetrics::accuracy_interval95`:
+  a 95% Wilson interval beside every accuracy, because a ratio on three
+  labelled cases and one on three hundred read the same without it. A
+  consumer that builds `QuestionMetrics` by struct literal gains a field.
+- `eval::fingerprint(&Value)`: the canonical FNV-1a hash that keys a
+  recording, over any JSON value, so a harness can name the question texts
+  or option sets a run was recorded under and refuse to grade old answers
+  under new questions.
 - `RetryPolicy::max_body_bytes` (default 8 MiB) caps what the shared retry
   loop buffers of a response body: a `Content-Length` over it fails before a
   byte is read, a body without one is read until it passes the cap. The

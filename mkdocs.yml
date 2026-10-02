@@ -20,6 +20,8 @@ nav:
   - Research:
       - Open System One models: research/open-system-one-models.md
       - System One client libraries: research/system-one-client-libraries.md
+      - Decision recipes: research/decision-recipes.md
+      - Rust macros: research/rust-macros.md
   - Triage: triage.md
   - Evaluation harness: evaluation.md
   - incident.io integration: incidentio.md

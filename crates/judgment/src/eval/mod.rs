@@ -120,6 +120,21 @@ pub fn read_recording(dir: &Path, case: &str) -> Result<Recording> {
     })
 }
 
+/// The `z` of a 95% interval, the one the reports print.
+pub const Z_95: f64 = 1.96;
+
+/// A stable fingerprint of any JSON value: the same FNV-1a hash over the
+/// same canonical form that keys a [`Recording`], so a harness can name the
+/// question texts, the option sets or the policy a run was recorded under
+/// and refuse to grade old answers under new questions. Object keys are
+/// sorted and whitespace is dropped, so two serialisations of one value
+/// agree; two values that differ in any content do not.
+pub fn fingerprint(value: &Value) -> String {
+    let mut canonical = String::new();
+    write_canonical(&mut canonical, value);
+    format!("{:016x}", fnv1a64(canonical.as_bytes()))
+}
+
 /// A stable content hash of a request: the same state and questions give
 /// the same hash whatever order their keys were inserted in and whatever
 /// model alias was asked for.
@@ -145,12 +160,19 @@ pub fn request_hash(state: &Value, questions: &Questions) -> String {
             .collect(),
         ),
     );
+    format!("{:016x}", fnv1a64(canonical.as_bytes()))
+}
+
+/// FNV-1a over bytes: fixed, dependency-free and stable across Rust
+/// releases, unlike `DefaultHasher`, so a recording keyed today is found
+/// tomorrow.
+fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in canonical.bytes() {
-        hash ^= u64::from(byte);
+    for byte in bytes {
+        hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
-    format!("{hash:016x}")
+    hash
 }
 
 /// JSON with object keys sorted at every level, so two equal values render
@@ -327,6 +349,10 @@ pub struct QuestionMetrics {
     pub correct: usize,
     /// `correct / labelled`.
     pub accuracy: Option<f64>,
+    /// 95% Wilson interval around `accuracy`, `(low, high)`; see
+    /// [`metrics::wilson_interval`] for why an interval is reported beside
+    /// the ratio. Independent observations are assumed.
+    pub accuracy_interval95: Option<(f64, f64)>,
     /// Mean multi-class Brier score (0 perfect, 2 worst).
     pub brier: Option<f64>,
     /// Expected calibration error of the prediction confidence.
@@ -385,6 +411,7 @@ impl QuestionMetrics {
         }
         if m.labelled > 0 {
             m.accuracy = Some(m.correct as f64 / m.labelled as f64);
+            m.accuracy_interval95 = metrics::wilson_interval(m.correct, m.labelled, Z_95);
         }
         m.brier = metrics::mean(&brier);
         m.ece = (!calib.is_empty()).then(|| metrics::expected_calibration_error(&calib, ece_bins));
@@ -423,6 +450,40 @@ mod tests {
     use super::*;
     use crate::answer::{Confidence, Probability, Usage};
     use serde_json::json;
+
+    #[test]
+    fn fingerprint_is_canonical_and_shares_the_recording_hash() {
+        let one = json!({ "x": 1, "y": { "b": 2, "a": 1 } });
+        let two = json!({ "y": { "a": 1, "b": 2 }, "x": 1 });
+        assert_eq!(fingerprint(&one), fingerprint(&two));
+        assert_ne!(fingerprint(&one), fingerprint(&json!({ "x": 2 })));
+        assert_eq!(fingerprint(&one).len(), 16);
+        // The same bytes hash the same way whichever entry point is used.
+        let mut q = Questions::new();
+        q.noul("a", "Is `x` set?", None).unwrap();
+        let questions = serde_json::to_value(&q).unwrap();
+        assert_eq!(
+            request_hash(&one, &q),
+            fingerprint(&json!({ "questions": questions, "state": one }))
+        );
+    }
+
+    #[test]
+    fn summarise_reports_a_wilson_interval_around_accuracy() {
+        let js: Vec<Judgment> = (0..3)
+            .map(|_| Judgment::noul(0.9, Some(true), true))
+            .collect();
+        let m = QuestionMetrics::summarise(&js, ECE_BINS);
+        assert_eq!(m.accuracy, Some(1.0));
+        let (low, high) = m.accuracy_interval95.unwrap();
+        // 3 of 3: the ratio is 1.0 but the interval is wide and inside [0, 1].
+        assert!((0.43..0.44).contains(&low), "{low}");
+        assert!((high - 1.0).abs() < 1e-12, "{high}");
+        assert_eq!(
+            QuestionMetrics::summarise(&[], ECE_BINS).accuracy_interval95,
+            None
+        );
+    }
 
     #[test]
     fn request_hash_ignores_key_order_and_sees_content() {

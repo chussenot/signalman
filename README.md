@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-02
 tags: [overview]
 ---
 
@@ -70,6 +70,8 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [judgment against Laya typed-decisions](docs/judgment-laya-typed-decisions.md) | The crate against a second implementation of the wire: the tests, the bug they caught, the benchmark numbers |
 | [Open System One models](docs/research/open-system-one-models.md) | Research note: the open Jev reproductions, the Decision Index, Laya, and the decisions that follow for signalman and judgment |
 | [System One client libraries](docs/research/system-one-client-libraries.md) | Research note: the other Rust clients and the official SDKs against judgment, and the ranked changes to make |
+| [Decision recipes](docs/research/decision-recipes.md) | Research note: how jev-recipes manages 249 typed decisions and evaluates them, and what signalman adopted (the state-as-data rule, provenance, splits, fingerprints, intervals) |
+| [Rust macros](docs/research/rust-macros.md) | Research note: every repetition in the workspace a macro could remove, the two worth adding, the one worth deleting, and the larger ones better solved without one |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
@@ -90,6 +92,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 - [Laya](https://github.com/NandhaKishorM/laya) (Convai Innovations, Apache 2.0): the open-weights System One model this project ran, with its [model](https://huggingface.co/convaiinnovations/laya) and [typed-decisions](https://huggingface.co/convaiinnovations/laya-typed-decisions) checkpoints on Hugging Face.
 - [Jev Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index): the community leaderboard and news tracker for open reproductions of Jev; read for [Open System One models](docs/research/open-system-one-models.md).
 - [typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions): the benchmark the crate's replay example runs.
+- [jev-recipes](https://github.com/agencyenterprise/jev-recipes) (AE Studio, MIT): a catalogue of typed decisions over the same wire, with the evaluation discipline [Decision recipes](docs/research/decision-recipes.md) borrows.
 
 ## License
 

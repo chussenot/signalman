@@ -43,6 +43,7 @@ use std::time::Instant;
 
 use judgment::SystemOne;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::answer::Response;
 use crate::triage::{
@@ -64,6 +65,94 @@ pub struct Case {
     /// What a responder said the right answers were.
     #[serde(default)]
     pub expected: Expected,
+    /// Which set the case belongs to; `development` unless the file says
+    /// otherwise. Thresholds are tuned on the development set and the
+    /// held-out set is graded once with the chosen policy, so a number
+    /// reported on it was not fitted to it.
+    #[serde(default)]
+    pub split: Split,
+    /// Where the labels came from, so a report can say what its accuracy is
+    /// an accuracy against. Absent is reported as `unspecified`, not hidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
+    /// Why the labels are what they are, for the next person to read the
+    /// case. Free text, never sent to the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+}
+
+/// The set a case belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Split {
+    /// Used to choose thresholds and wording.
+    #[default]
+    Development,
+    /// Graded once with a policy chosen elsewhere.
+    HeldOut,
+}
+
+impl Split {
+    /// The name used in files and on the command line.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Development => "development",
+            Self::HeldOut => "held-out",
+        }
+    }
+}
+
+impl std::str::FromStr for Split {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "development" => Ok(Self::Development),
+            "held-out" => Ok(Self::HeldOut),
+            other => Err(format!(
+                "unknown split {other:?}: use development or held-out"
+            )),
+        }
+    }
+}
+
+/// How a case's labels were produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    /// The method.
+    pub method: Method,
+    /// Who or what, in a sentence: the on-call rotation that reviewed the
+    /// week, the script that generated the variants, the incident the
+    /// outcome was read from.
+    pub source: String,
+}
+
+/// The ways a label comes to exist, from strongest to weakest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Method {
+    /// What happened: the incident the alert was attached to, the team
+    /// that resolved it, the page that was or was not needed.
+    ObservedOutcome,
+    /// A person who would have handled the alert said what was right.
+    HumanLabelled,
+    /// Written by the harness's authors or generated, without independent
+    /// review; the cases shipped in `examples/eval` are this.
+    AuthorSynthetic,
+    /// Not recorded.
+    Unspecified,
+}
+
+impl Method {
+    /// The name used in files and reports.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::ObservedOutcome => "observed-outcome",
+            Self::HumanLabelled => "human-labelled",
+            Self::AuthorSynthetic => "author-synthetic",
+            Self::Unspecified => "unspecified",
+        }
+    }
 }
 
 /// Ground truth for a case. Every field optional; unlabelled judgments are
@@ -117,6 +206,8 @@ pub struct DecisionMetrics {
     pub correct: usize,
     /// `correct / labelled`.
     pub accuracy: Option<f64>,
+    /// 95% Wilson interval around `accuracy`, `(low, high)`.
+    pub accuracy_interval95: Option<(f64, f64)>,
     /// `expected -> reached -> count`.
     pub confusion: BTreeMap<String, BTreeMap<String, usize>>,
 }
@@ -126,6 +217,141 @@ pub struct DecisionMetrics {
 /// is not `.json`, so nothing that reads a directory of recordings (a
 /// [`judgment::backend::Replay`], say) takes it for one.
 pub const FAILED_FILE: &str = "failed.jsonl";
+
+/// The file, beside the recordings, that says what a recorded run was: when,
+/// which model was asked, and the fingerprint of the question texts and
+/// owner candidates the answers were given to. A replay compares that
+/// fingerprint with the current one and refuses to grade old answers under
+/// new questions unless told the staleness is understood.
+pub const MANIFEST_FILE: &str = "run.json";
+
+/// What a recorded run was made with. Written by [`run`] under `--record`,
+/// read by [`replay`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Manifest {
+    /// When the run finished, RFC 3339.
+    pub recorded_at: String,
+    /// The model asked for; the answering model is on each recording.
+    pub model: String,
+    /// `signalman` version that recorded.
+    pub signalman_version: String,
+    /// [`questions_fingerprint`] of the texts and candidates in force.
+    pub questions_fingerprint: String,
+    /// [`cases_fingerprint`] of the case file as read.
+    pub cases_fingerprint: String,
+    /// Cases attempted.
+    pub cases: usize,
+    /// Cases per split.
+    pub splits: BTreeMap<String, usize>,
+    /// Cases per provenance method.
+    pub provenance: BTreeMap<String, usize>,
+}
+
+/// What a report's numbers are evidence of: live answers or a replay, under
+/// which questions, from cases of which origin.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Evidence {
+    /// `live` for a model call, `replay` for recorded answers.
+    pub mode: &'static str,
+    /// When the answers were recorded; the run itself for `live`.
+    pub recorded_at: Option<String>,
+    /// Fingerprint of the question texts and owner candidates the answers
+    /// were graded under.
+    pub questions_fingerprint: String,
+    /// Fingerprint the answers were recorded under, when the recording has
+    /// a manifest; `None` for a live run or an older recording.
+    pub recorded_fingerprint: Option<String>,
+    /// True when the answers were given to different questions than they
+    /// are graded under: the numbers say how the policy reads old answers,
+    /// not how the model answers the current questions.
+    pub stale: bool,
+    /// [`policy_fingerprint`] of the policy the decisions were made under.
+    pub policy_fingerprint: String,
+    /// Fingerprint of the policy frozen beside the recordings
+    /// ([`POLICY_FILE`]), when there is one; `None` for a live run or a
+    /// directory where nothing was frozen. Equal to `policy_fingerprint`
+    /// when the report was graded under the frozen policy.
+    pub frozen_policy: Option<String>,
+    /// Cases per split.
+    pub splits: BTreeMap<String, usize>,
+    /// Cases per provenance method.
+    pub provenance: BTreeMap<String, usize>,
+}
+
+/// The file, beside the recordings, that holds the policy chosen on the
+/// development cases. Written by [`freeze_policy`] from a development
+/// replay; a held-out replay refuses to grade without it or under any
+/// other policy ([`held_out_gate`]).
+pub const POLICY_FILE: &str = "policy.json";
+
+/// The policy a development replay settled on, with what it was chosen on.
+/// Freezing it is what makes a later held-out number a number about the
+/// next alert rather than about the cases it was tuned on: the held-out
+/// replay can only ever be graded under this policy, so the choice cannot
+/// be revised after seeing the held-out result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrozenPolicy {
+    /// When it was frozen, RFC 3339.
+    pub frozen_at: String,
+    /// The policy itself, so the file is readable and usable on its own.
+    pub policy: Policy,
+    /// [`policy_fingerprint`] of it; what a held-out replay compares.
+    pub policy_fingerprint: String,
+    /// [`questions_fingerprint`] in force when it was chosen.
+    pub questions_fingerprint: String,
+    /// Whether the development replay it was chosen on was stale.
+    pub stale: bool,
+    /// The development result it was chosen on.
+    pub chosen_on: ChosenOn,
+}
+
+/// The development figures a policy was frozen on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChosenOn {
+    /// Development cases graded.
+    pub cases: usize,
+    /// Of which labelled with an expected action.
+    pub labelled: usize,
+    /// Decision agreement on them.
+    pub agreement: Option<f64>,
+    /// Its 95% interval.
+    pub agreement_interval95: Option<(f64, f64)>,
+}
+
+/// Fingerprint of a policy: every threshold, under sorted keys.
+pub fn policy_fingerprint(policy: &Policy) -> String {
+    judgment::eval::fingerprint(&serde_json::to_value(policy).unwrap_or(serde_json::Value::Null))
+}
+
+/// Fingerprint of everything that shapes a request apart from the alert:
+/// the question texts and the owner candidates. Two runs with the same
+/// fingerprint asked the same questions; a replay under a different one
+/// reads answers to questions that were never asked.
+pub fn questions_fingerprint(texts: &Texts, candidates: &OwnerCandidates) -> String {
+    judgment::eval::fingerprint(&json!({
+        "texts": texts,
+        "candidates": candidates.iter().collect::<Vec<_>>(),
+    }))
+}
+
+/// Fingerprint of a case file's content: ids, alerts and labels.
+pub fn cases_fingerprint(cases: &[Case]) -> String {
+    judgment::eval::fingerprint(&serde_json::to_value(cases).unwrap_or(serde_json::Value::Null))
+}
+
+fn count_cases(cases: &[Case]) -> (BTreeMap<String, usize>, BTreeMap<String, usize>) {
+    let mut splits = BTreeMap::new();
+    let mut provenance = BTreeMap::new();
+    for case in cases {
+        *splits.entry(case.split.key().to_owned()).or_default() += 1;
+        let method = case
+            .provenance
+            .as_ref()
+            .map_or(Method::Unspecified, |p| p.method);
+        *provenance.entry(method.key().to_owned()).or_default() += 1;
+    }
+    (splits, provenance)
+}
 
 /// A case a live run could not grade: the model's answer did not fit the
 /// questions it was sent ([`judgment::Error::is_unfit`]), so the client
@@ -157,6 +383,8 @@ pub struct Report {
     pub input_tokens: u64,
     /// Total output tokens.
     pub output_tokens: u64,
+    /// What the numbers are evidence of.
+    pub evidence: Evidence,
     /// Every graded case, for drill-down.
     pub graded: Vec<Graded>,
     /// Cases a live run could not grade because the answer did not fit the
@@ -194,6 +422,54 @@ pub enum Error {
     /// Replay found no recording for a case.
     #[error("no recording for case {0} (expected {1})")]
     MissingRecording(String, String),
+    /// The recording was made under other question texts or owner
+    /// candidates than the current configuration. Grading it would report
+    /// how the policy reads answers to questions that are no longer asked;
+    /// record again, or pass `--stale-ok` to see that number anyway.
+    #[error(
+        "recording under {dir} was made {recorded_at} with question fingerprint {recorded}, the current configuration has {current}: the answers were given to other questions; record again, or replay with --stale-ok to grade them anyway"
+    )]
+    StaleRecording {
+        /// The directory.
+        dir: String,
+        /// When it was recorded.
+        recorded_at: String,
+        /// Its fingerprint.
+        recorded: String,
+        /// The current fingerprint.
+        current: String,
+    },
+    /// A held-out replay with no frozen policy beside the recordings.
+    #[error(
+        "no frozen policy under {dir}: the held-out cases are graded only under a policy chosen on the development cases; replay those with --split development --freeze-policy first"
+    )]
+    NoFrozenPolicy {
+        /// The directory.
+        dir: String,
+    },
+    /// A held-out replay under a policy other than the frozen one.
+    #[error(
+        "the policy under {dir} was frozen {frozen_at} with fingerprint {frozen}, the current configuration has {current}: a held-out replay is graded only under the frozen policy; replay the development cases with --freeze-policy to choose again, and know that the held-out cases were seen"
+    )]
+    PolicyNotFrozen {
+        /// The directory.
+        dir: String,
+        /// When the policy was frozen.
+        frozen_at: String,
+        /// The frozen fingerprint.
+        frozen: String,
+        /// The current fingerprint.
+        current: String,
+    },
+    /// Freezing from a replay that graded cases outside the development
+    /// split, which would freeze a policy chosen on the held-out ones.
+    #[error(
+        "a policy is frozen from a replay of the development cases only (--split development), this one graded: {splits}"
+    )]
+    FreezeNeedsDevelopment {
+        /// The splits graded, comma-separated.
+        splits: String,
+    },
     /// Reading or writing a recording.
     #[error(transparent)]
     Recording(judgment::eval::Error),
@@ -320,17 +596,73 @@ pub async fn run(
             elapsed_ms,
         )?);
     }
+    let fingerprint = questions_fingerprint(setup.texts, setup.candidates);
+    let recorded_at = jiff::Timestamp::now().to_string();
+    let (splits, provenance) = count_cases(cases);
     if let Some(dir) = record {
         write_failed(dir, &failed)?;
+        write_manifest(
+            dir,
+            &Manifest {
+                recorded_at: recorded_at.clone(),
+                model: model.to_owned(),
+                signalman_version: env!("CARGO_PKG_VERSION").to_owned(),
+                questions_fingerprint: fingerprint.clone(),
+                cases_fingerprint: cases_fingerprint(cases),
+                cases: cases.len(),
+                splits: splits.clone(),
+                provenance: provenance.clone(),
+            },
+        )?;
     }
-    Ok(report(graded, failed))
+    Ok(report(
+        graded,
+        failed,
+        Evidence {
+            mode: "live",
+            recorded_at: Some(recorded_at),
+            questions_fingerprint: fingerprint,
+            recorded_fingerprint: None,
+            stale: false,
+            policy_fingerprint: policy_fingerprint(setup.policy),
+            frozen_policy: None,
+            splits,
+            provenance,
+        },
+    ))
 }
 
 /// Grade recorded responses under the current setup without calling the
 /// model. Every case needs `<dir>/<id>.json`, or an entry in
 /// `<dir>/`[`FAILED_FILE`], which puts it in [`Report::failed`] as the
 /// recorded run did.
-pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>) -> Result<Report> {
+///
+/// When `<dir>/`[`MANIFEST_FILE`] records a different question fingerprint
+/// than the current texts and candidates give, the answers were given to
+/// other questions and the replay fails with [`Error::StaleRecording`],
+/// unless `stale_ok`, in which case it grades them and the report's
+/// [`Evidence::stale`] says so. A directory without a manifest, recorded
+/// before manifests existed, is graded with `recorded_fingerprint` unknown.
+///
+/// The replay grades under `setup.policy` whatever is frozen beside the
+/// recordings; [`Evidence::frozen_policy`] says whether that was the frozen
+/// one. Refusing a held-out replay under another policy is
+/// [`held_out_gate`], which the caller runs first when the cases are the
+/// held-out split.
+pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>, stale_ok: bool) -> Result<Report> {
+    let fingerprint = questions_fingerprint(setup.texts, setup.candidates);
+    let manifest = read_manifest(dir)?;
+    let stale = manifest
+        .as_ref()
+        .is_some_and(|m| m.questions_fingerprint != fingerprint);
+    if let (true, false, Some(m)) = (stale, stale_ok, manifest.as_ref()) {
+        return Err(Error::StaleRecording {
+            dir: dir.display().to_string(),
+            recorded_at: m.recorded_at.clone(),
+            recorded: m.questions_fingerprint.clone(),
+            current: fingerprint,
+        });
+    }
     let recorded_failures = read_failed(dir)?;
     let mut graded = Vec::with_capacity(cases.len());
     let mut failed = Vec::new();
@@ -353,7 +685,122 @@ pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>) -> Result<Report> {
             rec.elapsed_ms,
         )?);
     }
-    Ok(report(graded, failed))
+    let (splits, provenance) = count_cases(cases);
+    let frozen = read_frozen_policy(dir)?;
+    Ok(report(
+        graded,
+        failed,
+        Evidence {
+            mode: "replay",
+            recorded_at: manifest.as_ref().map(|m| m.recorded_at.clone()),
+            questions_fingerprint: fingerprint,
+            recorded_fingerprint: manifest.map(|m| m.questions_fingerprint),
+            stale,
+            policy_fingerprint: policy_fingerprint(setup.policy),
+            frozen_policy: frozen.map(|f| f.policy_fingerprint),
+            splits,
+            provenance,
+        },
+    ))
+}
+
+/// Freeze the policy a development replay was graded under, as
+/// `<dir>/`[`POLICY_FILE`], recording the development figures it was
+/// chosen on. `report` must come from a replay of the development cases
+/// only ([`Error::FreezeNeedsDevelopment`] otherwise): a policy chosen with
+/// the held-out cases in view is not one the held-out replay can vouch
+/// for. Freezing again replaces the file; the held-out cases have then
+/// been seen once per freeze, which the report's `frozen_at` dates.
+pub fn freeze_policy(dir: &Path, policy: &Policy, report: &Report) -> Result<FrozenPolicy> {
+    let e = &report.evidence;
+    if e.splits.keys().any(|k| k != Split::Development.key()) {
+        return Err(Error::FreezeNeedsDevelopment {
+            splits: e.splits.keys().cloned().collect::<Vec<_>>().join(", "),
+        });
+    }
+    let frozen = FrozenPolicy {
+        frozen_at: jiff::Timestamp::now().to_string(),
+        policy: policy.clone(),
+        policy_fingerprint: policy_fingerprint(policy),
+        questions_fingerprint: e.questions_fingerprint.clone(),
+        stale: e.stale,
+        chosen_on: ChosenOn {
+            cases: report.cases,
+            labelled: report.decision.labelled,
+            agreement: report.decision.accuracy,
+            agreement_interval95: report.decision.accuracy_interval95,
+        },
+    };
+    write_json(&dir.join(POLICY_FILE), &frozen)?;
+    Ok(frozen)
+}
+
+/// The policy frozen under `dir`, if any.
+pub fn read_frozen_policy(dir: &Path) -> Result<Option<FrozenPolicy>> {
+    read_json(&dir.join(POLICY_FILE))
+}
+
+/// What a held-out replay of `dir` must pass before grading: a policy is
+/// frozen there and `policy` is that policy. Returns the frozen record so
+/// the caller can say when and on what it was chosen.
+pub fn held_out_gate(dir: &Path, policy: &Policy) -> Result<FrozenPolicy> {
+    let Some(frozen) = read_frozen_policy(dir)? else {
+        return Err(Error::NoFrozenPolicy {
+            dir: dir.display().to_string(),
+        });
+    };
+    let current = policy_fingerprint(policy);
+    if frozen.policy_fingerprint != current {
+        return Err(Error::PolicyNotFrozen {
+            dir: dir.display().to_string(),
+            frozen_at: frozen.frozen_at,
+            frozen: frozen.policy_fingerprint,
+            current,
+        });
+    }
+    Ok(frozen)
+}
+
+fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<()> {
+    write_json(&dir.join(MANIFEST_FILE), manifest)
+}
+
+fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
+    read_json(&dir.join(MANIFEST_FILE))
+}
+
+/// Write `value` as pretty JSON with a final newline, so the file diffs
+/// line by line when committed.
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let mut text = serde_json::to_string_pretty(value).map_err(|source| Error::Json {
+        context: path.display().to_string(),
+        source,
+    })?;
+    text.push('\n');
+    std::fs::write(path, text).map_err(|source| Error::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+/// Read `path` as JSON; a file that is not there is `None`.
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Io {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|source| Error::Json {
+            context: path.display().to_string(),
+            source,
+        })
 }
 
 /// Remove `path`; a file that is not there is already removed.
@@ -529,7 +976,7 @@ fn judgments(expected: &Expected, a: &TriageAnswers) -> BTreeMap<String, Judgmen
 
 /// Aggregate graded cases, beside the cases that could not be graded.
 #[allow(clippy::cast_precision_loss)] // counts and milliseconds, far below 2^52
-pub fn report(graded: Vec<Graded>, failed: Vec<FailedCase>) -> Report {
+pub fn report(graded: Vec<Graded>, failed: Vec<FailedCase>, evidence: Evidence) -> Report {
     let mut by_question: BTreeMap<String, Vec<&Judgment>> = BTreeMap::new();
     let mut decision = DecisionMetrics::default();
     let mut latencies = Vec::with_capacity(graded.len());
@@ -563,6 +1010,8 @@ pub fn report(graded: Vec<Graded>, failed: Vec<FailedCase>) -> Report {
         .collect();
     if decision.labelled > 0 {
         decision.accuracy = Some(decision.correct as f64 / decision.labelled as f64);
+        decision.accuracy_interval95 =
+            metrics::wilson_interval(decision.correct, decision.labelled, judgment::eval::Z_95);
     }
     Report {
         cases: graded.len(),
@@ -572,6 +1021,7 @@ pub fn report(graded: Vec<Graded>, failed: Vec<FailedCase>) -> Report {
         latency: Latency::of(&latencies),
         input_tokens,
         output_tokens,
+        evidence,
         graded,
         failed,
     }
@@ -590,18 +1040,62 @@ impl Report {
             self.cases,
             self.models.iter().cloned().collect::<Vec<_>>().join(", ")
         );
+        let interval = |v: Option<(f64, f64)>| {
+            v.map_or("         -".to_owned(), |(l, h)| format!("{l:.2}..{h:.2}"))
+        };
         let _ = writeln!(
             s,
-            "decision  labelled {}  agreement {}",
+            "decision  labelled {}  agreement {}  95% {}",
             self.decision.labelled,
-            fmt(self.decision.accuracy)
+            fmt(self.decision.accuracy),
+            interval(self.decision.accuracy_interval95)
+        );
+        let e = &self.evidence;
+        let counts = |m: &BTreeMap<String, usize>| {
+            m.iter()
+                .map(|(k, n)| format!("{k} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let _ = writeln!(
+            s,
+            "evidence  {}{}  questions {}{}",
+            e.mode,
+            e.recorded_at
+                .as_deref()
+                .map_or(String::new(), |at| format!(" recorded {at}")),
+            e.questions_fingerprint,
+            match (&e.recorded_fingerprint, e.stale) {
+                (None, _) if e.mode == "replay" => "  (recording has no manifest)".to_owned(),
+                (Some(r), true) => format!(
+                    "  STALE: recorded under {r}; these answers were given to other questions"
+                ),
+                _ => String::new(),
+            }
+        );
+        let _ = writeln!(
+            s,
+            "policy    {}{}",
+            e.policy_fingerprint,
+            match &e.frozen_policy {
+                Some(f) if *f == e.policy_fingerprint => "  (frozen)".to_owned(),
+                Some(f) => format!("  not the frozen one ({f}); a held-out replay would refuse it"),
+                None => String::new(),
+            }
+        );
+        let _ = writeln!(
+            s,
+            "origin    split {}   labels {}",
+            counts(&e.splits),
+            counts(&e.provenance)
         );
         let _ = writeln!(s);
         let _ = writeln!(
             s,
-            "{:<18} {:>3} {:>5} {:>6} {:>5} {:>10} {:>10}",
-            "question", "n", "acc", "brier", "ece", "conf|right", "conf|wrong"
+            "{:<18} {:>3} {:>5} {:>10} {:>6} {:>5} {:>10} {:>10}",
+            "question", "n", "acc", "acc 95%", "brier", "ece", "conf|right", "conf|wrong"
         );
+
         for qid in [
             "owner",
             "impact",
@@ -614,10 +1108,11 @@ impl Report {
             };
             let _ = writeln!(
                 s,
-                "{:<18} {:>3} {:>5} {:>6} {:>5} {:>10} {:>10}",
+                "{:<18} {:>3} {:>5} {:>10} {:>6} {:>5} {:>10} {:>10}",
                 qid,
                 m.labelled,
                 fmt(m.accuracy),
+                interval(m.accuracy_interval95),
                 fmt(m.brier),
                 fmt(m.ece),
                 fmt(m.confidence_when_right),

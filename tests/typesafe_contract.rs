@@ -335,7 +335,12 @@ fn the_committed_jev_run_is_a_system_one_response() {
     let mut count = 0;
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "json") {
+        // The run manifest sits beside the recordings and is not one.
+        if path.extension().is_none_or(|e| e != "json")
+            || path
+                .file_name()
+                .is_some_and(|n| n == signalman::eval::MANIFEST_FILE)
+        {
             continue;
         }
         let what = path.display().to_string();

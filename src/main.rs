@@ -153,6 +153,25 @@ struct EvalArgs {
     /// those needs a new recording.
     #[arg(long, value_name = "DIR")]
     replay: Option<PathBuf>,
+    /// Grade a replay whose recording was made under other question
+    /// texts or owner candidates than the current configuration. The
+    /// report then says how the policy reads those old answers, not how the
+    /// model answers the current questions; without this flag such a replay
+    /// fails and says to record again.
+    #[arg(long, requires = "replay")]
+    stale_ok: bool,
+    /// Only the cases of this split: `development` (the default label of a
+    /// case) or `held-out`. Choose thresholds on the development split, then
+    /// grade the held-out split once: a held-out replay is graded only under
+    /// the policy frozen beside the recordings.
+    #[arg(long, value_name = "SPLIT")]
+    split: Option<eval::Split>,
+    /// Freeze the current [policy] as DIR/policy.json, the one a held-out
+    /// replay of DIR is graded under. Only from a replay of the development
+    /// split, so the frozen policy was chosen without the held-out cases in
+    /// view. Freezing again replaces it.
+    #[arg(long, requires = "replay", requires = "split")]
+    freeze_policy: bool,
     /// Emit the full report as JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -676,7 +695,18 @@ fn triage_outcome(input: TriageOutcome<'_>) -> Outcome {
 }
 
 async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
-    let cases = eval::read_cases(&args.cases)?;
+    let mut cases = eval::read_cases(&args.cases)?;
+    if let Some(split) = args.split {
+        cases.retain(|c| c.split == split);
+        if cases.is_empty() {
+            return Err(format!(
+                "no case in {} has split {}",
+                args.cases.display(),
+                split.key()
+            )
+            .into());
+        }
+    }
     let candidates = cfg.triage.fallback_candidates();
     let setup = eval::Setup {
         texts: &cfg.triage.text,
@@ -684,7 +714,17 @@ async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
         policy: &cfg.policy,
     };
     let report = if let Some(dir) = &args.replay {
-        eval::replay(dir, &cases, &setup)?
+        if args.split == Some(eval::Split::HeldOut) {
+            eval::held_out_gate(dir, &cfg.policy)?;
+        }
+        let report = eval::replay(dir, &cases, &setup, args.stale_ok)?;
+        if args.freeze_policy {
+            if args.split != Some(eval::Split::Development) {
+                return Err("--freeze-policy needs --split development".into());
+            }
+            eval::freeze_policy(dir, &cfg.policy, &report)?;
+        }
+        report
     } else {
         let client = typesafe_client(cfg)?;
         eval::run(
@@ -713,6 +753,15 @@ async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
                     dir.join(eval::FAILED_FILE).display()
                 );
             }
+        }
+        if args.freeze_policy
+            && let Some(dir) = &args.replay
+        {
+            println!(
+                "\nfroze policy {} under {}: the held-out replay is graded under it",
+                report.evidence.policy_fingerprint,
+                dir.join(eval::POLICY_FILE).display()
+            );
         }
     }
     Ok(())
