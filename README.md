@@ -71,6 +71,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Open System One models](docs/research/open-system-one-models.md) | Research note: the open Jev reproductions, the Decision Index, Laya, and the decisions that follow for signalman and judgment |
 | [System One client libraries](docs/research/system-one-client-libraries.md) | Research note: the other Rust clients and the official SDKs against judgment, and the ranked changes to make |
 | [Decision recipes](docs/research/decision-recipes.md) | Research note: how jev-recipes manages 249 typed decisions and evaluates them, and what signalman adopted (the state-as-data rule, provenance, splits, fingerprints, intervals) |
+| [Rust macros](docs/research/rust-macros.md) | Research note: every repetition in the workspace a macro could remove, the two worth adding, the one worth deleting, and the larger ones better solved without one |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |
 | [Evaluation harness](docs/evaluation.md) | Replay labelled alerts, grade judgments and decisions, tune without re-running inference |
 | [incident.io integration](docs/incidentio.md) | Webhook flow, tags, alert routes, forwarding |
