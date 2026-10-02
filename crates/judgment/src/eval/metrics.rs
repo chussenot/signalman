@@ -54,6 +54,29 @@ pub fn expected_calibration_error(pairs: &[(f64, bool)], bins: usize) -> f64 {
         .sum()
 }
 
+/// Wilson score interval for a proportion `correct / n` at the given `z`
+/// (1.96 for 95%), as `(low, high)` in `[0, 1]`; `None` when `n` is 0.
+///
+/// A plain accuracy of 1.00 on three cases and 1.00 on three hundred are
+/// different claims, and a report that prints only the ratio invites the
+/// reader to treat them alike. The Wilson interval is chosen over the
+/// normal approximation because it stays inside `[0, 1]` and behaves at
+/// the extremes a small labelled set produces (0 of 3, 3 of 3), where the
+/// normal interval collapses to a point. It assumes independent
+/// observations; related variants of one alert make it optimistic.
+pub fn wilson_interval(correct: usize, n: usize, z: f64) -> Option<(f64, f64)> {
+    if n == 0 {
+        return None;
+    }
+    let n = n as f64;
+    let p = correct as f64 / n;
+    let z2 = z * z;
+    let denominator = 1.0 + z2 / n;
+    let centre = (p + z2 / (2.0 * n)) / denominator;
+    let half = z * ((p * (1.0 - p) / n) + z2 / (4.0 * n * n)).sqrt() / denominator;
+    Some(((centre - half).max(0.0), (centre + half).min(1.0)))
+}
+
 /// Arithmetic mean; `None` when empty.
 pub fn mean(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
@@ -113,5 +136,18 @@ mod tests {
         assert_eq!(percentile(&v, 0.0), Some(1.0));
         assert_eq!(percentile(&[], 0.5), None);
         assert_eq!(mean(&v), Some(3.0));
+    }
+
+    #[test]
+    fn wilson_stays_inside_the_unit_interval_at_the_extremes() {
+        assert_eq!(wilson_interval(0, 0, 1.96), None);
+        let (l, h) = wilson_interval(0, 3, 1.96).unwrap();
+        assert!(l.abs() < 1e-12, "{l}");
+        assert!((0.56..0.57).contains(&h), "{h}");
+        let (l, h) = wilson_interval(3, 3, 1.96).unwrap();
+        assert!((0.43..0.44).contains(&l), "{l}");
+        assert!((h - 1.0).abs() < 1e-12, "{h}");
+        let (l, h) = wilson_interval(50, 100, 1.96).unwrap();
+        assert!(l < 0.5 && 0.5 < h && h - l < 0.21, "{l} {h}");
     }
 }
