@@ -153,6 +153,18 @@ struct EvalArgs {
     /// those needs a new recording.
     #[arg(long, value_name = "DIR")]
     replay: Option<PathBuf>,
+    /// Grade a replay whose recording was made under other question
+    /// texts or owner candidates than the current configuration. The
+    /// report then says how the policy reads those old answers, not how the
+    /// model answers the current questions; without this flag such a replay
+    /// fails and says to record again.
+    #[arg(long, requires = "replay")]
+    stale_ok: bool,
+    /// Only the cases of this split: `development` (the default label of a
+    /// case) or `held-out`. Choose thresholds on the development split, then
+    /// grade the held-out split once.
+    #[arg(long, value_name = "SPLIT")]
+    split: Option<eval::Split>,
     /// Emit the full report as JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -676,7 +688,18 @@ fn triage_outcome(input: TriageOutcome<'_>) -> Outcome {
 }
 
 async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
-    let cases = eval::read_cases(&args.cases)?;
+    let mut cases = eval::read_cases(&args.cases)?;
+    if let Some(split) = args.split {
+        cases.retain(|c| c.split == split);
+        if cases.is_empty() {
+            return Err(format!(
+                "no case in {} has split {}",
+                args.cases.display(),
+                split.key()
+            )
+            .into());
+        }
+    }
     let candidates = cfg.triage.fallback_candidates();
     let setup = eval::Setup {
         texts: &cfg.triage.text,
@@ -684,7 +707,7 @@ async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
         policy: &cfg.policy,
     };
     let report = if let Some(dir) = &args.replay {
-        eval::replay(dir, &cases, &setup)?
+        eval::replay(dir, &cases, &setup, args.stale_ok)?
     } else {
         let client = typesafe_client(cfg)?;
         eval::run(
