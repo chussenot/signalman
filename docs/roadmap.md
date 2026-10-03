@@ -2,7 +2,7 @@
 title: Roadmap
 description: What has not been verified against live systems, what is missing, and how the gaps map to the beads backlog.
 status: current
-last_reviewed: 2026-09-26
+last_reviewed: 2026-10-03
 tags: [roadmap]
 ---
 
@@ -45,7 +45,7 @@ signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-sig
 
 ## CI
 
-GitHub Actions has never run in this repository: every job is refused at scheduling because of the account's billing state (`signalman-oqj`). The workflow uses GitHub-owned actions only and is expected to pass once billing is resolved.
+GitHub Actions runs on every push and pull request and has passed on every push to `main` since 2026-09-23 (run 46, the merge of pull request #21). The first twenty-two runs, from 2026-09-20 to 2026-09-23, were refused at scheduling by the account's billing state (`signalman-oqj`, closed), which is why the decision records of that week say CI had never run. The workflow uses GitHub-owned actions only: one job for the gate (`cargo fmt`, clippy, the no-default-features check, tests, rustdoc, the frontmatter and `llms.txt` checks), one for the pre-commit hooks, one that builds the container image and publishes it on a tag ([Development](development.md#quality-gates)).
 
 ## Smaller known gaps
 

@@ -2137,7 +2137,7 @@ Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the g
 
 ## Claude Code harness
 
-The harness exists because the same mistakes recurred across sessions: a setting added in six of its seven places, a documentation index left stale, a span forgotten on a new client method, a pull request argued with a CI that has never run. Each hook removes a class of mistake at the moment it would be made; each agent carries the checklist for one job so the main session does not have to hold it.
+The harness exists because the same mistakes recurred across sessions: a setting added in six of its seven places, a documentation index left stale, a span forgotten on a new client method, a pull request argued with a CI that was refused at scheduling. Each hook removes a class of mistake at the moment it would be made; each agent carries the checklist for one job so the main session does not have to hold it.
 
 `.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires four hooks:
 
@@ -2160,7 +2160,7 @@ Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report;
 | `docs-writer` | writes | README and `docs/`, explaining the problem solved and the trade-off taken, not only the mechanism |
 | `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, drift in the generated index |
 | `refactor-scout` | reports | dead public items, duplicated logic, stale comments and unused dependencies, as a ranked plan with evidence |
-| `pr-shepherd` | acts | opening a pull request in the repository's shape and telling the CI billing block apart from a real failure, with the one standing-down comment |
+| `pr-shepherd` | acts | opening a pull request in the repository's shape and reading its CI checks: the first failing step reproduced locally, and the one standing-down comment when a failure is not the change's (refused at scheduling, or red on `main` too) |
 
 A typical feature runs `test-writer` and `docs-writer` in parallel with the code, then `config-reviewer` and `observability-reviewer` on the diff, then `pr-shepherd`. A cleanup pass starts with `refactor-scout` and `docs-auditor` and feeds their reports to the main session and `docs-writer`.
 
@@ -2209,7 +2209,7 @@ signalman is a tool for agents, not an agent ([decision 0008](decisions/0008-sig
 
 ## CI
 
-GitHub Actions has never run in this repository: every job is refused at scheduling because of the account's billing state (`signalman-oqj`). The workflow uses GitHub-owned actions only and is expected to pass once billing is resolved.
+GitHub Actions runs on every push and pull request and has passed on every push to `main` since 2026-09-23 (run 46, the merge of pull request #21). The first twenty-two runs, from 2026-09-20 to 2026-09-23, were refused at scheduling by the account's billing state (`signalman-oqj`, closed), which is why the decision records of that week say CI had never run. The workflow uses GitHub-owned actions only: one job for the gate (`cargo fmt`, clippy, the no-default-features check, tests, rustdoc, the frontmatter and `llms.txt` checks), one for the pre-commit hooks, one that builds the container image and publishes it on a tag ([Development](development.md#quality-gates)).
 
 ## Smaller known gaps
 
@@ -3776,7 +3776,7 @@ Concretely:
 ### A separate repository, published from the start
 
 - Good, because discoverability and semver are real from day one, and the boundary cannot erode
-- Bad, because CI in this account has never run ([roadmap](../roadmap.md#ci)); a second repository doubles a blocked pipeline, the release process and the pull-request traffic for a team of one
+- Bad, because the pipeline was taken for blocked when this was written (it had in fact been passing since 2026-09-23, [roadmap](../roadmap.md#ci)); a second repository doubles the pipeline, the release process and the pull-request traffic for a team of one
 - Bad, because signalman's live verification and the harness would need to be duplicated or lost to the core, and the two repositories drift in Rust version, lint set and conventions
 - Bad, because the name must be chosen and published now, into a crowded namespace, before the API has a second consumer to settle it
 - Deferred, not rejected: publication from the workspace gives the discoverability without the second repository

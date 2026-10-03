@@ -105,7 +105,8 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   (tests in this repo's wiremock style), `docs-writer` (README and `docs/`,
   the why as well as the how), `docs-auditor` (docs vs code drift),
   `refactor-scout` (dead code and duplication, ranked), `pr-shepherd`
-  (open the PR, tell the CI billing block from a real failure). Delegate
+  (open the PR, read its CI checks, tell a failure that is not the
+  change's from one that is). Delegate
   the job; run the reviewers on a diff before opening a pull request.
 - Hooks in `.claude/hooks/`: Rust files are formatted after every edit;
   `docs/llms.txt` is regenerated after a docs page, the README or
