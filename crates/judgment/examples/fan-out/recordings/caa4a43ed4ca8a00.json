@@ -1,0 +1,65 @@
+{
+  "case": "caa4a43ed4ca8a00",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "bug_severity": {
+        "type": "score",
+        "score": 1.86,
+        "legend": {
+          "0": "Cosmetic; no impact to functionality",
+          "1": "Broken or degraded feature; workaround exists",
+          "2": "Blocking issue; no workaround exists"
+        },
+        "probabilities": {
+          "0": 0.02,
+          "1": 0.1,
+          "2": 0.88
+        },
+        "confidence": 0.79
+      },
+      "category": {
+        "type": "choice",
+        "choice": "billing",
+        "probabilities": {
+          "account": 0.0,
+          "billing": 1.0,
+          "bug_report": 0.0,
+          "feature_request": 0.0,
+          "other": 0.0
+        },
+        "confidence": 1.0
+      },
+      "frustration": {
+        "type": "score",
+        "score": 1.88,
+        "legend": {
+          "0": "Calm, matter-of-fact",
+          "1": "Frustrated but civil",
+          "2": "Very angry"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.12,
+          "2": 0.88
+        },
+        "confidence": 0.82
+      },
+      "has_reproducible_steps": {
+        "type": "noul",
+        "noul": 0.06
+      },
+      "refund_requested": {
+        "type": "noul",
+        "noul": 0.99
+      }
+    },
+    "usage": {
+      "input_tokens": 600,
+      "output_tokens": 124
+    },
+    "request_id": "req_01a1012616607899adbef4c7d592a5ad"
+  },
+  "elapsed_ms": 201,
+  "request_hash": "caa4a43ed4ca8a00"
+}

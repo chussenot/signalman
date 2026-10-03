@@ -1,0 +1,65 @@
+{
+  "case": "683ba888105d20d0",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "bug_severity": {
+        "type": "score",
+        "score": 0.01,
+        "legend": {
+          "0": "Cosmetic; no impact to functionality",
+          "1": "Broken or degraded feature; workaround exists",
+          "2": "Blocking issue; no workaround exists"
+        },
+        "probabilities": {
+          "0": 0.99,
+          "1": 0.01,
+          "2": 0.0
+        },
+        "confidence": 0.99
+      },
+      "category": {
+        "type": "choice",
+        "choice": "feature_request",
+        "probabilities": {
+          "account": 0.0,
+          "billing": 0.0,
+          "bug_report": 0.0,
+          "feature_request": 1.0,
+          "other": 0.0
+        },
+        "confidence": 1.0
+      },
+      "frustration": {
+        "type": "score",
+        "score": 0.0,
+        "legend": {
+          "0": "Calm, matter-of-fact",
+          "1": "Frustrated but civil",
+          "2": "Very angry"
+        },
+        "probabilities": {
+          "0": 1.0,
+          "1": 0.0,
+          "2": 0.0
+        },
+        "confidence": 1.0
+      },
+      "has_reproducible_steps": {
+        "type": "noul",
+        "noul": 0.02
+      },
+      "refund_requested": {
+        "type": "noul",
+        "noul": 0.01
+      }
+    },
+    "usage": {
+      "input_tokens": 593,
+      "output_tokens": 125
+    },
+    "request_id": "req_01a1012615ac7d3bbbac8ac7001fd278"
+  },
+  "elapsed_ms": 167,
+  "request_hash": "683ba888105d20d0"
+}

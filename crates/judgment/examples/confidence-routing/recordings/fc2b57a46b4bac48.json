@@ -1,0 +1,25 @@
+{
+  "case": "fc2b57a46b4bac48",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "intent": {
+        "type": "choice",
+        "choice": "approve_transfer",
+        "probabilities": {
+          "approve_transfer": 0.86,
+          "check_balance": 0.05,
+          "other": 0.09
+        },
+        "confidence": 0.79
+      }
+    },
+    "usage": {
+      "input_tokens": 410,
+      "output_tokens": 41
+    },
+    "request_id": "req_01a1013251b470a9bf4b40079eb4d466"
+  },
+  "elapsed_ms": 148,
+  "request_hash": "fc2b57a46b4bac48"
+}

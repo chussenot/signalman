@@ -117,46 +117,65 @@ async fn a_recorder_writes_what_a_replay_answers_offline() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every `examples/*/recordings` directory with how many recordings each
+/// must hold: the benchmark sample's 40 Laya answers, and the pattern
+/// examples' Jev answers, one per input. An example committed without its
+/// recordings, or with a stale extra file, fails here.
+fn recording_dirs() -> Vec<(std::path::PathBuf, usize)> {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    [
+        ("typed-decisions", 40),
+        ("fan-out", 4),
+        ("confidence-routing", 7),
+        ("composite-scoring", 3),
+        ("intent-routing", 7),
+    ]
+    .into_iter()
+    .map(|(example, count)| (examples.join(example).join("recordings"), count))
+    .collect()
+}
+
 #[test]
 fn the_committed_recordings_decode_and_rewrite_byte_for_byte() {
-    // The 40 Laya responses the benchmark example replays. The Recorder
-    // wrote the decoded Response, so none of Laya's extras are in them. The
-    // tolerant decoder must read them as the strict one did, and writing one
-    // back must give the same bytes, so a recording read and written again
-    // does not change.
-    let recordings =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/typed-decisions/recordings");
+    // The 40 Laya responses the benchmark example replays, and the Jev
+    // responses the pattern examples replay. The Recorder wrote the decoded
+    // Response, so none of Laya's extras are in them. The tolerant decoder
+    // must read them as the strict one did, and writing one back must give
+    // the same bytes, so a recording read and written again does not
+    // change.
     let out = std::env::temp_dir().join(format!(
         "judgment-the_committed_recordings_decode_and_rewrite_byte_for_byte-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&out);
-    let mut seen = 0;
-    for entry in std::fs::read_dir(&recordings).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap();
-        let recording: Recording = serde_json::from_str(&text).unwrap();
-        let name = path.display();
-        assert!(
-            recording.response.extra.is_empty(),
-            "{name}: {:?}",
-            recording.response.extra
-        );
-        for (id, answer) in &recording.response.answers {
+    for (recordings, expected) in recording_dirs() {
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&recordings).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let recording: Recording = serde_json::from_str(&text).unwrap();
+            let name = path.display();
             assert!(
-                !matches!(answer, Answer::Unknown(_)),
-                "{name}: {id} is {answer:?}"
+                recording.response.extra.is_empty(),
+                "{name}: {:?}",
+                recording.response.extra
             );
+            for (id, answer) in &recording.response.answers {
+                assert!(
+                    !matches!(answer, Answer::Unknown(_)),
+                    "{name}: {id} is {answer:?}"
+                );
+            }
+            let written = write_recording(&out, &recording).unwrap();
+            assert_eq!(std::fs::read_to_string(&written).unwrap(), text, "{name}");
+            seen += 1;
         }
-        let written = write_recording(&out, &recording).unwrap();
-        assert_eq!(std::fs::read_to_string(&written).unwrap(), text, "{name}");
-        seen += 1;
+        assert_eq!(seen, expected, "{}", recordings.display());
+        assert_eq!(Replay::open(&recordings).unwrap().len(), expected);
     }
-    assert_eq!(seen, 40);
-    assert_eq!(Replay::open(&recordings).unwrap().len(), 40);
     let _ = std::fs::remove_dir_all(&out);
 }
 

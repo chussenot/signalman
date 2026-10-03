@@ -72,5 +72,31 @@ required-features = ["http"]
 name = "typed_decisions"
 required-features = ["http"]
 
+# One example per TypeSafe pattern (README, "Patterns"). Each replays the
+# recordings committed beside it by default and talks to a server with
+# --live or --record, so each needs the client. `test = true` makes
+# `cargo test` run the test inside each one, which replays the recordings
+# and checks the decisions, so a question changed without re-recording fails
+# the gate rather than the next reader.
+[[example]]
+name = "fan_out"
+required-features = ["http"]
+test = true
+
+[[example]]
+name = "confidence_routing"
+required-features = ["http"]
+test = true
+
+[[example]]
+name = "composite_scoring"
+required-features = ["http"]
+test = true
+
+[[example]]
+name = "intent_routing"
+required-features = ["http"]
+test = true
+
 [lints]
 workspace = true

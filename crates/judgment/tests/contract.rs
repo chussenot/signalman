@@ -1004,34 +1004,50 @@ async fn every_fake_response_is_a_system_one_response() {
     );
 }
 
+/// Every `examples/*/recordings` directory: the benchmark sample's Laya
+/// answers and the four pattern examples' Jev answers. Five, so an example
+/// committed without its recordings fails here.
+fn recording_dirs() -> Vec<std::path::PathBuf> {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut dirs: Vec<_> = std::fs::read_dir(&examples)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("recordings"))
+        .filter(|dir| dir.is_dir())
+        .collect();
+    dirs.sort();
+    assert_eq!(dirs.len(), 5, "{dirs:?}");
+    dirs
+}
+
 #[test]
 fn every_committed_recording_is_a_system_one_response() {
     let schema = response_schema();
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/typed-decisions/recordings");
-    let mut count = 0;
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
+    for dir in recording_dirs() {
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let what = path.file_name().unwrap().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let raw: Value = serde_json::from_str(&text).unwrap();
+            assert_conforms(&schema, &raw["response"], &format!("{what} as committed"));
+            let recording: Recording = serde_json::from_str(&text).unwrap();
+            assert!(
+                recording.response.extra.is_empty(),
+                "{what}: {:?}",
+                recording.response.extra
+            );
+            assert_conforms(
+                &schema,
+                &serde_json::to_value(&recording.response).unwrap(),
+                &format!("{what} decoded and re-serialised"),
+            );
+            count += 1;
         }
-        let what = path.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let raw: Value = serde_json::from_str(&text).unwrap();
-        assert_conforms(&schema, &raw["response"], &format!("{what} as committed"));
-        let recording: Recording = serde_json::from_str(&text).unwrap();
-        assert!(
-            recording.response.extra.is_empty(),
-            "{what}: {:?}",
-            recording.response.extra
-        );
-        assert_conforms(
-            &schema,
-            &serde_json::to_value(&recording.response).unwrap(),
-            &format!("{what} decoded and re-serialised"),
-        );
-        count += 1;
+        assert!(count > 0, "no recordings under {}", dir.display());
     }
-    assert!(count > 0, "no recordings under {}", dir.display());
 }
 
 #[test]

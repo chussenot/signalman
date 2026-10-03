@@ -1,0 +1,42 @@
+{
+  "case": "2101854ca602c3b3",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "complexity": {
+        "type": "score",
+        "score": 2.0,
+        "legend": {
+          "0": "Simple lookup or standard procedure",
+          "1": "Requires some judgment or multi-step process",
+          "2": "Unusual situation, edge case, or escalation needed"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 1.0
+        },
+        "confidence": 1.0
+      },
+      "intent": {
+        "type": "choice",
+        "choice": "complaint",
+        "probabilities": {
+          "complaint": 1.0,
+          "order_status": 0.0,
+          "other": 0.0,
+          "product_question": 0.0,
+          "return_exchange": 0.0
+        },
+        "confidence": 1.0
+      }
+    },
+    "usage": {
+      "input_tokens": 485,
+      "output_tokens": 72
+    },
+    "request_id": "req_01a1013261147b1b952122b649167ceb"
+  },
+  "elapsed_ms": 174,
+  "request_hash": "2101854ca602c3b3"
+}

@@ -116,6 +116,35 @@
 //! # Ok(()) }
 //! ```
 //!
+//! ## Patterns
+//!
+//! TypeSafe documents four shapes a System One call takes inside a larger
+//! program (<https://docs.typesafe.ai/patterns>). The crate's `examples/`
+//! directory holds one runnable example per shape, each replaying recorded
+//! answers of the hosted model by default and taking `--live` or `--record`
+//! to call it:
+//!
+//! * **Speculative fan-out** (`fan_out`): every question the decision tree
+//!   might need goes in one request, as typed [`Handle`]s on one
+//!   [`Questions`]; the branch that is taken reads its handles and the
+//!   others go unread. Answered in parallel, the extra questions cost input
+//!   tokens rather than latency.
+//! * **Confidence-gated routing** (`confidence_routing`): a [`Choice`]'s
+//!   [`Confidence`] is a second axis. A floor sends uncertainty to a person,
+//!   and each action sets its own bar by what a wrong one would cost.
+//!   [`Choice::confidence_from_probabilities`] shows the formula behind the
+//!   wire's value.
+//! * **Composite scoring** (`composite_scoring`): several atomic [`Score`]s,
+//!   normalised and combined with weights the code owns. The weights change
+//!   over recorded answers, [`Recorder`] then [`Replay`], with no new
+//!   inference.
+//! * **Intent routing** (`intent_routing`): a [`Choice`] and a [`Score`] in
+//!   one request put a cheap classifier in front of expensive handlers, a
+//!   [`Confidence`] read off each gating what is automated.
+//!
+//! The README's "Patterns" section says how each example is run, tested and
+//! re-recorded, and what the pages say about thresholds and determinism.
+//!
 //! ## Modules
 //!
 //! * [`question`] builds requests; each question returns a typed [`Handle`].

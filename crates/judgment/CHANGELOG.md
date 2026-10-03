@@ -8,6 +8,13 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Added
 
+- One runnable example per TypeSafe pattern, written to the documentation
+  page's own scenario and thresholds: `fan_out`, `confidence_routing`,
+  `composite_scoring` and `intent_routing`. Each replays `jev-1.13.0`'s
+  recorded answers by default, calls the API with `--live` or `--record`,
+  and carries a test over its recordings that `cargo test` runs. A
+  "Patterns" section in the README and the crate docs says which types
+  carry each shape.
 - `Error::InvalidRequest::kind`: the server's machine-readable `error_type`
   when a 400 body carries one (`api_usage_error`, `max_tokens_exceeded`,
   observed on the hosted API 2026-10-03), and `Error::is_over_token_budget`
@@ -25,7 +32,7 @@ All notable changes to the `judgment` crate. The format follows
   choose it).
 - Live tests for the server's own limits, the stability of repeated calls
   (the decision holds; probabilities moved by up to 0.05 between identical
-  requests), the confidence formulas and the token budget
+  clear-cut requests and by 0.19 on an ambiguous one), the confidence formulas and the token budget
   (`tests/live.rs`); `fixtures/models.json` is the hosted API's list as
   served (two aliases, RFC 3339 release dates), no longer a guess from the
   schema.
