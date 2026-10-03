@@ -143,15 +143,16 @@ pub enum Error {
         /// TypeSafe's `x-typesafe-request-id`, when the response had one.
         request_id: Option<String>,
     },
-    /// The API refused the request body (HTTP 400 or 422). Not retried: a
-    /// retry cannot fix a body. Fix the question or the state the issues
-    /// point at.
+    /// The API refused the request body (HTTP 400, 413 or 422). Not
+    /// retried: a retry cannot fix a body. Fix the question or the state
+    /// the issues point at, or send less of it.
     ///
-    /// Both statuses mean the same thing to the caller: the API reference
-    /// documents a 422 for a body that fails validation, both official SDKs
-    /// have a bad-request error for a 400, and a compatible server such as
-    /// Laya's answers 400 for a body it cannot use. They share the variant,
-    /// and `status` tells them apart. `detail` is a
+    /// The three statuses mean the same thing to the caller: the API
+    /// reference documents a 422 for a body that fails validation, both
+    /// official SDKs have a bad-request error for a 400, and a compatible
+    /// server such as Laya's answers 400 for a body it cannot use and 413
+    /// for one past its own limits. They share the variant, and `status`
+    /// tells them apart. `detail` is a
     /// readable summary rather than the raw body: the server's own message
     /// when it sent one, otherwise the parsed issues joined as
     /// `path: msg; …`, otherwise the body itself, truncated. `issues` keeps
@@ -170,11 +171,19 @@ pub enum Error {
     /// request.` for an extra top-level field or an unknown question type,
     /// `Unknown model: …` for a model name (case-sensitive), and
     /// `max_tokens_exceeded` with no message for a state over the token
-    /// budget ([`Error::is_over_token_budget`]). The code is kept as `kind`,
+    /// budget ([`Error::is_request_too_large`]). The code is kept as `kind`,
     /// and when it is all the body says, it is the detail too.
+    ///
+    /// The hosted API has no 413; its refusal of a large request is that
+    /// 400. `laya-serve` (0.3.24) answers 413 with a `detail` sentence that
+    /// names the limit (`state too large (50600 > 50000 chars)`, `too many
+    /// choice options for 'c' (256 > 100)`): a state over 50,000
+    /// characters, more than 64 questions, more than 100 options or 32
+    /// levels on one question, more than 512 options in all, or a body over
+    /// 2 MiB. That 400 and every 413 are [`Error::is_request_too_large`].
     #[error("request rejected by the API ({status}): {detail}{}", request_id_suffix(.request_id.as_deref()))]
     InvalidRequest {
-        /// HTTP status: 400 or 422.
+        /// HTTP status: 400, 413 or 422.
         status: u16,
         /// The server's message, the issues joined, the code, or the body
         /// truncated, in that order of preference.
@@ -565,17 +574,27 @@ impl Error {
         )
     }
 
-    /// True when the API refused the request for its size: an
-    /// [`Error::InvalidRequest`] whose `kind` is `max_tokens_exceeded`, the
-    /// hosted API's 400 for a state, plus the longest question, over its
-    /// token budget (32,000 tokens of a 64,000-token request when this was
-    /// written; the models page has the current figures). It is the one
-    /// refused body a caller fixes by sending less state rather than by
-    /// fixing a question, so it has a name; the 400 carries no message
-    /// beside the code (observed 2026-10-03), and the known-issues page says
-    /// accuracy falls with unrelated state well before the budget does.
-    pub fn is_over_token_budget(&self) -> bool {
-        matches!(self, Self::InvalidRequest { kind: Some(kind), .. } if kind == "max_tokens_exceeded")
+    /// True when the server refused the request for its size: an
+    /// [`Error::InvalidRequest`] with status 413, or one whose `kind` is
+    /// `max_tokens_exceeded`. The second is the hosted API's 400 for a
+    /// state, plus the longest question, over its token budget (32,000
+    /// tokens of a 64,000-token request when this was written; the models
+    /// page has the current figures); it carries no message beside the code
+    /// (observed 2026-10-03). The first is a compatible server's refusal of
+    /// a body past one of its own limits, which `laya-serve` names in the
+    /// `detail` (state length, question and option counts, body bytes). It
+    /// is the one refused body a caller fixes by sending less, state first,
+    /// rather than by fixing a question, so it has a name; the known-issues
+    /// page says accuracy falls with unrelated state well before the budget
+    /// does.
+    pub fn is_request_too_large(&self) -> bool {
+        match self {
+            Self::InvalidRequest { status: 413, .. } => true,
+            Self::InvalidRequest {
+                kind: Some(kind), ..
+            } => kind == "max_tokens_exceeded",
+            _ => false,
+        }
     }
 }
 

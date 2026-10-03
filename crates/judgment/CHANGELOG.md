@@ -17,10 +17,13 @@ All notable changes to the `judgment` crate. The format follows
   carry each shape.
 - `Error::InvalidRequest::kind`: the server's machine-readable `error_type`
   when a 400 body carries one (`api_usage_error`, `max_tokens_exceeded`,
-  observed on the hosted API 2026-10-03), and `Error::is_over_token_budget`
-  for the one 400 whose remedy is a smaller state. A 400 whose body has an
-  `error_type` and no message now reads that code as its detail instead of
-  the raw body.
+  observed on the hosted API 2026-10-03), and `Error::is_request_too_large`
+  for the refusals whose remedy is a smaller request: that 400 when its code
+  is `max_tokens_exceeded`, and a 413, which `laya-serve` answers for a body
+  past one of its own limits (0.3.24: a state over 50,000 characters, more
+  than 64 questions, 100 options or 32 levels, a body over 2 MiB). A 400
+  whose body has an `error_type` and no message now reads that code as its
+  detail instead of the raw body.
 - `Choice::confidence_from_probabilities`, `Score::expected_value` and
   `Score::confidence_from_probabilities`: the formulas TypeSafe documents,
   computed from the wire's probabilities. On the hosted API they agree with
@@ -35,7 +38,11 @@ All notable changes to the `judgment` crate. The format follows
   clear-cut requests and by 0.19 on an ambiguous one), the confidence formulas and the token budget
   (`tests/live.rs`); `fixtures/models.json` is the hosted API's list as
   served (two aliases, RFC 3339 release dates), no longer a guess from the
-  schema.
+  schema. All fifteen pass against `laya-serve` 0.3.24 as well, with its
+  full payload and with `LAYA_JEV_STRICT=1` behind a bearer key, and
+  against the shim now at `examples/laya/serve_laya.py` (moved from the
+  repository's `examples/`), on `laya` 0.3.24
+  (`docs/verification/laya-typed-decisions.md`).
 - `eval::metrics::wilson_interval` and `QuestionMetrics::accuracy_interval95`:
   a 95% Wilson interval beside every accuracy, because a ratio on three
   labelled cases and one on three hundred read the same without it. A
@@ -52,6 +59,18 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Changed
 
+- `Response::verify` accepts a structured Score level echoed as any string
+  that parses to the level sent, not only as its compact JSON. `laya-serve`
+  0.3.22 and later echo the JSON text they showed the model, with Python's
+  `", "` and `": "` separators (0.3.20 echoed the value, as the hosted API
+  does), and every structured level failed `verify` against them. Spacing
+  and key order no longer matter; a number written differently (`1.0` for
+  `1`) and a string level echoed as anything but itself still do.
+  `Score::levels` labels a level echoed as text with that text, and one
+  echoed as a value with its compact JSON, as before.
+- A 413 is `Error::InvalidRequest { status: 413, .. }`, with the server's
+  `detail` and no retry, where it was `Error::Http`; `laya-serve` answers it
+  for a body past one of its limits, and the hosted API never sends one.
 - `Error::InvalidRequest` has a new field, `kind`; a struct literal or a
   pattern that names every field needs `kind` or `..`.
 - `http::Exhausted` is an enum, `Transport { attempts, source }` beside the

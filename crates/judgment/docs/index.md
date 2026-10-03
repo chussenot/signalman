@@ -17,7 +17,7 @@ The [README](../README.md) says what the crate is for, what it guarantees and ho
 | How a question's handle ties it to its answer, how a response is checked, how the retry loop decides | [How judgment works](design.md) |
 | Which crate types carry speculative fan-out, confidence-gated routing, composite scoring and intent routing | [README, Patterns](../README.md#patterns) and the examples under `examples/` |
 | What the hosted TypeSafe API does with what the crate sends, and with what it refuses to send | [Against the hosted TypeSafe API](verification/hosted-typesafe.md) |
-| Whether the crate works against a second implementation of the wire, and what the benchmark measured | [Against Laya typed-decisions](verification/laya-typed-decisions.md) |
+| Whether the crate works against a second implementation of the wire, what the benchmark measured, and what each `laya-serve` release changed on the wire | [Against Laya typed-decisions](verification/laya-typed-decisions.md) |
 | What the other Rust clients and the official SDKs do, and which of it the crate adopted | [System One client libraries](research/system-one-client-libraries.md) |
 | Why an answer is read through a typed handle rather than a string key | [Decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md) |
 | What changed in each release | [CHANGELOG](../CHANGELOG.md) |
@@ -28,7 +28,7 @@ The [README](../README.md) says what the crate is for, what it guarantees and ho
 A mock encodes what the client author believed about the wire; only a real server can contradict that belief. Two records say what real servers did:
 
 - [Against the hosted TypeSafe API](verification/hosted-typesafe.md): the live tests (`tests/live.rs`) and about fifty probes past the builder's limits, against `jev-1.13.0`.
-- [Against Laya typed-decisions](verification/laya-typed-decisions.md): the same tests against an open-weights server, and the 400-case benchmark replayed through the crate.
+- [Against Laya typed-decisions](verification/laya-typed-decisions.md): the same tests against an open-weights server, `laya-serve` 0.3.20 and then 0.3.24, and the 400-case benchmark replayed through the crate.
 
 ## What is not here
 

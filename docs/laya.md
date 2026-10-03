@@ -2,7 +2,7 @@
 title: Laya as a model provider
 description: What Laya is, how signalman ran against it unchanged through a local System One-compatible shim, what the three example alerts measured on CPU, and why Jev stays the default until an evaluation on real alert history says otherwise.
 status: experiment
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-03
 tags: [typesafe, laya, model, evaluation]
 ---
 
@@ -10,17 +10,17 @@ tags: [typesafe, laya, model, evaluation]
 
 [Laya](https://huggingface.co/convaiinnovations/laya) ([source](https://github.com/NandhaKishorM/laya); Convai Innovations, Apache 2.0) is an open-weights System One decision model: a 421M-parameter ModernBERT-large encoder with a decision head that scores every option at its own mask token in one forward pass. It takes the same request shape as TypeSafe's API, a `state` plus `noul`, `choice` and `score` questions with `instructions` and `criteria`, and returns the same answer shape with probabilities and confidence. It never generates text. Three checkpoints ship in one repository: English (root), multilingual (`mmBERT-base`, 322M) and `typed-decisions`, the English model fine-tuned on a four-workflow typed-decisions benchmark.
 
-This page is an experiment, not a supported configuration. Jev's per-token cost, its latency and the fact that alert text leaves the network are real costs, and an open-weights model that speaks the same wire shape is the obvious way to remove them; the question is whether its judgments are good enough to route on. Nothing in the binary knows about Laya, the only artefact in the repository is a shim under `examples/`, and the measurement below is three synthetic alerts. It becomes `current` when the [evaluation harness](evaluation.md) has compared both models on labelled alert history and Laya, fine-tuned, matches Jev's accuracy and calibration per question; at that point self-hosting becomes a documented `typesafe.model` option rather than a page. Until then the page records what was tried so nobody repeats it.
+This page is an experiment, not a supported configuration. Jev's per-token cost, its latency and the fact that alert text leaves the network are real costs, and an open-weights model that speaks the same wire shape is the obvious way to remove them; the question is whether its judgments are good enough to route on. Nothing in the binary knows about Laya, the only artefact in the repository is a shim that lives with the judgment crate (`crates/judgment/examples/laya/serve_laya.py`; it would still be useful if signalman did not exist, which is the test [decision 0011](decisions/0011-documentation-lives-with-its-concern.md) applies), and the measurement below is three synthetic alerts. It becomes `current` when the [evaluation harness](evaluation.md) has compared both models on labelled alert history and Laya, fine-tuned, matches Jev's accuracy and calibration per question; at that point self-hosting becomes a documented `typesafe.model` option rather than a page. Until then the page records what was tried so nobody repeats it.
 
 ## It runs, and signalman needs no code change
 
-The [configuration layer](configuration.md) already makes the model endpoint a setting. `examples/laya/serve_laya.py` is a short HTTP shim that loads a checkpoint with the `laya` package and serves `POST /v1/systemone` and `GET /v1/models`:
+The [configuration layer](configuration.md) already makes the model endpoint a setting. `crates/judgment/examples/laya/serve_laya.py` is a short HTTP shim that loads a checkpoint with the `laya` package and serves `POST /v1/systemone` and `GET /v1/models`:
 
 ```sh
 python -m venv .venv
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA build
 .venv/bin/pip install laya
-USE_TF=0 .venv/bin/python examples/laya/serve_laya.py                          # port 8099
+USE_TF=0 .venv/bin/python crates/judgment/examples/laya/serve_laya.py          # port 8099
 
 TYPESAFE_BASE_URL=http://127.0.0.1:8099 TYPESAFE_API_KEY=unused \
   signalman triage examples/alerts/crashloop.json
@@ -50,6 +50,6 @@ None of this contradicts the model card, which states that the base checkpoints 
 
 Laya can stand in for Jev at the wire level today, and it cannot stand in for Jev at the judgment level today. The path to a real answer runs through the [evaluation harness](roadmap.md#triage-quality-signalman-ufg): replay labelled historical alerts through both models, compare accuracy, calibration and decision agreement per question, fine-tune Laya on the training split with the published notebook, refit its temperatures on our data, and then decide with numbers whether self-hosting (a GPU, tens of milliseconds, no per-token cost, alert text never leaving the network) beats the API. Tracked as `signalman-ufg.5`.
 
-Until then Jev remains the default `typesafe.model`, and the only Laya artefact in the repository is the shim.
+Until then Jev remains the default `typesafe.model`, and the only Laya artefact in the repository is the shim, kept with the crate.
 
-Since this page was written the typed client became the `judgment` crate and Laya grew its own server, `laya-serve`, so the shim is no longer the only way to run it. [judgment against Laya typed-decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/laya-typed-decisions.md) records the crate's compatibility run against that server and the `typed-decisions` checkpoint on the benchmark it was fine-tuned for, with the ignored live tests and the replay example that produced the numbers.
+Since this page was written the typed client became the `judgment` crate and Laya grew its own server, `laya-serve`, so the shim is no longer the only way to run it; it moved to the crate's examples on 2026-10-03 with the rest of what is the crate's, and stays because `laya-serve` (0.3.24 included) does not serve `GET /v1/models`, which signalman's `models` command calls. [judgment against Laya typed-decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/laya-typed-decisions.md) records the crate's compatibility run against that server and the `typed-decisions` checkpoint on the benchmark it was fine-tuned for, with the ignored live tests and the replay example that produced the numbers.

@@ -2,21 +2,31 @@
 
 Laya (https://huggingface.co/convaiinnovations/laya, Apache 2.0) answers the
 same typed questions as TypeSafe's System One API, in one forward pass, from
-open weights. This shim exposes it on the two endpoints signalman calls, so
-the binary runs unchanged with ``typesafe.base_url`` pointed here:
+open weights. This shim exposes one checkpoint on the two endpoints the
+judgment crate calls, ``POST /v1/systemone`` and ``GET /v1/models``, so the
+crate's live tests and examples, and signalman with ``typesafe.base_url``
+pointed here, run unchanged. From the crate directory (``crates/judgment``):
 
     python -m venv .venv && .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
     .venv/bin/pip install laya
     USE_TF=0 .venv/bin/python examples/laya/serve_laya.py            # English checkpoint, port 8099
     LAYA_SUBFOLDER=typed-decisions LAYA_PORT=8100 .venv/bin/python examples/laya/serve_laya.py
 
-    TYPESAFE_BASE_URL=http://127.0.0.1:8099 TYPESAFE_API_KEY=unused signalman triage examples/alerts/crashloop.json
+    JUDGMENT_LIVE_BASE_URL=http://127.0.0.1:8100 cargo test -p judgment --test live -- --ignored --nocapture
 
-Endpoints: ``POST /v1/systemone`` ({state, model?, questions} -> {model,
-answers, usage}) and ``GET /v1/models``. The bearer token is accepted and
-ignored. Not a product: no auth, no TLS, one process, no batching across
-requests. See docs/laya.md for what was measured and why Jev stays the
-default.
+Laya ships its own server, ``laya-serve`` (``pip install "laya[serve]"``),
+which is what docs/verification/laya-typed-decisions.md runs the crate
+against; prefer it. This shim stays for the one path laya-serve does not
+serve, ``GET /v1/models``, so a model listing has something to list, and as
+the smallest reference of the wire. The checkpoint is chosen when the shim
+starts and the request's ``model`` field is ignored; the response names it
+``laya:<subfolder>``. The bearer token is accepted and ignored. A request
+Laya raises on is a 400 with ``{"error": {"message", "type"}}``, which the
+crate reads as ``Error::InvalidRequest`` and does not retry. Structured
+Score levels come back in the legend as the JSON text ``laya`` 0.3.22 and
+later render them with, as from laya-serve. Not a product: no auth, no TLS,
+one process, no batching across requests. What signalman measured through
+it, and why Jev stays the default, is in the repository's docs/laya.md.
 """
 import json
 import os

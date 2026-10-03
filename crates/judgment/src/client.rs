@@ -81,15 +81,16 @@
 //! options`), with no attempt made or counted. After, the final response is
 //! classified by status into [`Error`], grouped by what fixes it:
 //!
-//! * 400 and 422 are [`Error::InvalidRequest`], with `status` telling them
-//!   apart. Its `detail` is the server's message (read from `error`,
+//! * 400, 413 and 422 are [`Error::InvalidRequest`], with `status` telling
+//!   them apart. Its `detail` is the server's message (read from `error`,
 //!   `error.message`, `message`, `detail` or `detail.message`, in the Python
 //!   SDK's order), otherwise the validation issues as `path: msg`, otherwise
 //!   the body's code, otherwise the body, truncated; `issues` keeps the
 //!   fields a validation body names as [`ValidationIssue`]s, and `kind` the
 //!   code a 400 of the hosted API carries as `detail.error_type`
 //!   (`api_usage_error`, or `max_tokens_exceeded` with no message at all,
-//!   which [`Error::is_over_token_budget`] names).
+//!   which [`Error::is_request_too_large`] names, as it names the 413 a
+//!   compatible server answers for a body past its own limits).
 //! * 401 is [`Error::Unauthorized`]; 403 is [`Error::PermissionDenied`],
 //!   with the server's message, because a new key does not fix a 403.
 //! * 429 is [`Error::RateLimited`], with the last response's wait; 529 is
@@ -268,7 +269,7 @@
 //! release date. It is in the published OpenAPI document (0.2.0), and both
 //! official SDKs call it `models.list()`; only the HTTP API reference page,
 //! which covers the evaluation endpoint, leaves it out. A compatible server
-//! may not serve it (laya-serve 0.3.20 does not), and then the call is
+//! may not serve it (laya-serve does not, 0.3.24 included), and then the call is
 //! [`Error::Http`] with status 404. It stays because a readiness probe and a
 //! model listing need it; nothing else in the crate depends on it.
 
@@ -965,7 +966,7 @@ fn classify(
     request_id: Option<String>,
 ) -> Error {
     match status.as_u16() {
-        code @ (400 | 422) => {
+        code @ (400 | 413 | 422) => {
             let body = error_detail(&body);
             Error::InvalidRequest {
                 status: code,

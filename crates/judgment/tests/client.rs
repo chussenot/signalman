@@ -1741,7 +1741,7 @@ async fn a_400_with_a_code_and_no_message_keeps_the_code_as_kind() {
         ),
         "{err:?}"
     );
-    assert!(err.is_over_token_budget());
+    assert!(err.is_request_too_large());
     assert_eq!(
         err.to_string(),
         "request rejected by the API (400): max_tokens_exceeded"
@@ -1770,7 +1770,47 @@ async fn a_400_with_a_code_and_no_message_keeps_the_code_as_kind() {
         ),
         "{err:?}"
     );
-    assert!(!err.is_over_token_budget());
+    assert!(!err.is_request_too_large());
+}
+
+#[tokio::test]
+async fn a_413_is_an_invalid_request_that_is_too_large_and_is_not_retried() {
+    // What laya-serve (0.3.24) answers for a body past one of its own
+    // limits (observed 2026-10-03): a 413 with a `detail` sentence naming
+    // the limit. The hosted API has no 413. The remedy is the one the
+    // hosted API's `max_tokens_exceeded` has, send less, so it is the same
+    // variant and the same predicate, and the default policy does not
+    // retry it.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(413)
+                .set_body_json(json!({ "detail": "state too large (50600 > 50000 chars)" })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = Questions::new();
+    q.noul("urgent", "Does `message` convey urgency?", None)
+        .unwrap();
+    let err = client(&server, RetryPolicy::default())
+        .system_one(&json!({ "message": "hi" }), &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::InvalidRequest { status: 413, detail, issues, kind: None, .. }
+                if detail == "state too large (50600 > 50000 chars)" && issues.is_empty()
+        ),
+        "{err:?}"
+    );
+    assert!(err.is_request_too_large());
+    assert_eq!(
+        err.to_string(),
+        "request rejected by the API (413): state too large (50600 > 50000 chars)"
+    );
 }
 
 #[tokio::test]
@@ -1806,5 +1846,5 @@ async fn a_403_for_a_request_without_a_key_reads_the_server_s_message() {
         ),
         "{err:?}"
     );
-    assert!(!err.is_over_token_budget());
+    assert!(!err.is_request_too_large());
 }
