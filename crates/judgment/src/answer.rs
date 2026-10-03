@@ -138,15 +138,21 @@
 //! refused, not read as 3.
 //!
 //! A structured level (an object or an array) may be echoed as itself or as
-//! the string of its compact JSON, which is what [`Score::levels`] labels it
-//! with. Only Laya's verbatim echo has been observed; the HTTP API reference
+//! a string that parses back to it. Both forms have been seen: the hosted
+//! API echoes the value (2026-10-03), and `laya-serve` from 0.3.22 echoes
+//! the JSON text it showed the model, with Python's `", "` and `": "`
+//! separators (0.3.20 and 0.3.21 echoed the value). The HTTP API reference
 //! types the legend as a map of strings while the OpenAPI document and the
-//! Python SDK allow any value, so the hosted API may stringify a structured
-//! level. A number that is written differently inside a structured level
-//! (`1.0` for `1`) still fails; the ignored live test
-//! `a_structured_score_level_is_echoed` prints what a server echoes, so the
-//! rule can be tightened once it has been seen. A string level must come back
-//! as that exact string.
+//! Python SDK allow a string, an object or an array, so neither form
+//! contradicts the contract. The comparison is on the parsed value, so
+//! spacing and key order do not matter; a number written differently
+//! inside a structured level (`1.0` for `1`) is a different JSON value and
+//! still fails. A string level must come back as that exact string, and is
+//! never parsed: a string that reads like JSON is still a string, and
+//! parsing it would let a structured echo pass for it. Whichever way a
+//! structured level was echoed, [`Score::levels`] labels it with its
+//! compact JSON. The ignored live test `a_structured_score_level_is_echoed`
+//! prints what a server echoes.
 //!
 //! This goes beyond both official SDKs, which check the shape of each answer
 //! and not whether it answers the question it is filed under. The cost is a
@@ -766,13 +772,22 @@ fn is_level_key(key: &str, n: usize) -> bool {
 
 /// Whether a legend entry echoes the level the question sent. A string
 /// level must come back as that string. A structured level may come back as
-/// the same JSON value or as the string of its compact JSON, the label
-/// [`Score::levels`] gives it (module docs, `# What Response::verify
-/// checks`).
+/// the same JSON value or as a string that parses to it (module docs,
+/// `# What Response::verify checks`): the hosted API echoes the value,
+/// `laya-serve` 0.3.22 and later the JSON text it showed the model, and
+/// comparing parsed values takes both without caring how a server spaces
+/// or orders what it writes.
 fn legend_matches(echoed: &Value, sent: &Value) -> bool {
     match sent {
         Value::String(_) => echoed == sent,
-        other => echoed == other || matches!(echoed, Value::String(s) if *s == level_label(other)),
+        structured => {
+            echoed == structured
+                || matches!(
+                    echoed,
+                    Value::String(text)
+                        if serde_json::from_str::<Value>(text).is_ok_and(|parsed| parsed == *structured)
+                )
+        }
     }
 }
 
@@ -915,10 +930,15 @@ pub struct Score {
     /// Probability-weighted position, `0.0 ..= levels.len() - 1`.
     pub value: f64,
     /// Level descriptions, lowest first, as echoed by the API. A level sent
-    /// as a string is that string; a structured level (an object with
-    /// `what` and `examples`, say) is rendered as compact JSON, so a label
-    /// is always available for a log line or a note without the caller
-    /// re-deriving it from the question.
+    /// as a string is that string. A structured level (an object with
+    /// `what` and `examples`, say) is its compact JSON whichever way the
+    /// server echoed it, as the value (the hosted API) or as JSON text
+    /// (`laya-serve` 0.3.22 and later), so a label is always available for
+    /// a log line or a note without the caller re-deriving it from the
+    /// question, and reads the same from every server. The one string
+    /// level a label does not keep verbatim is one whose own text is a JSON
+    /// object or array: it is re-spaced like a structured level, in the
+    /// label only.
     pub levels: Vec<String>,
     /// Probability per level, same order as `levels`.
     pub probabilities: Vec<Probability>,
@@ -999,10 +1019,20 @@ impl Score {
     }
 }
 
-/// The text of a legend entry: a string as is, anything else as compact JSON.
+/// The text of a legend entry: a string as is, anything else as compact
+/// JSON. A string that is itself the JSON text of an object or an array is
+/// taken for a structured level echoed as text (`laya-serve` 0.3.22 and
+/// later) and re-rendered compact, so a label does not depend on which
+/// server answered and carries none of the server's spacing or escapes; a
+/// string level whose own text is such JSON is re-spaced the same way, in
+/// its label only, while [`Response::verify`] still holds it to its exact
+/// text.
 fn level_label(level: &Value) -> String {
     match level {
-        Value::String(text) => text.clone(),
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(parsed @ (Value::Object(_) | Value::Array(_))) => parsed.to_string(),
+            _ => text.clone(),
+        },
         other => other.to_string(),
     }
 }
@@ -1225,6 +1255,42 @@ mod tests {
         let s = r.get(&h).unwrap();
         assert_eq!(s.levels, vec![r#"{"examples":["a"],"what":"low"}"#, "high"]);
         assert_eq!(s.nearest_label(), r#"{"examples":["a"],"what":"low"}"#);
+    }
+
+    #[test]
+    fn a_structured_level_echoed_as_text_is_labelled_by_its_compact_json() {
+        // laya-serve 0.3.22 and later echo a structured level as the JSON
+        // text they showed the model, with Python's separators; it
+        // verifies, and the label is the compact JSON the value form gets,
+        // so a label reads the same from every server.
+        let mut q = Questions::new();
+        let h = q
+            .score(
+                "s",
+                "?",
+                vec![json!({"what": "low", "examples": ["a"]}), json!("high")],
+            )
+            .unwrap();
+        let r = response(&json!({
+            "s": { "type": "score", "score": 0.4,
+                   "legend": {"0": "{\"examples\": [\"a\"], \"what\": \"low\"}", "1": "high"},
+                   "probabilities": {"0": 0.6, "1": 0.4}, "confidence": 0.2 }
+        }));
+        r.verify(&q).unwrap();
+        let s = r.get(&h).unwrap();
+        assert_eq!(s.levels, vec![r#"{"examples":["a"],"what":"low"}"#, "high"]);
+        assert_eq!(s.nearest_label(), r#"{"examples":["a"],"what":"low"}"#);
+        // A string level whose own text is a JSON object is held to that
+        // exact text by `verify` and re-spaced in its label only.
+        let mut q = Questions::new();
+        let h = q.score("s", "?", [r#"{ "what": "low" }"#, "high"]).unwrap();
+        let r = response(&json!({
+            "s": { "type": "score", "score": 0.4,
+                   "legend": {"0": "{ \"what\": \"low\" }", "1": "high"},
+                   "probabilities": {"0": 0.6, "1": 0.4}, "confidence": 0.2 }
+        }));
+        r.verify(&q).unwrap();
+        assert_eq!(r.get(&h).unwrap().levels[0], r#"{"what":"low"}"#);
     }
 
     #[test]
@@ -1927,7 +1993,7 @@ mod tests {
     }
 
     #[test]
-    fn a_structured_level_may_be_echoed_as_itself_or_its_compact_json() {
+    fn a_structured_level_may_be_echoed_as_itself_or_as_its_json_text() {
         let level = json!({ "what": "low", "examples": ["a typo"] });
         let mut q = Questions::new();
         q.score("s", "?", vec![level.clone(), json!("high")])
@@ -1939,23 +2005,92 @@ mod tests {
                 &json!({ "0": 0.6, "1": 0.4 }),
             ) }))
         };
+        // The value itself: the hosted API, laya-serve to 0.3.21.
         answer(level.clone()).verify(&q).unwrap();
+        // Its compact JSON, the crate's own label.
         answer(json!(r#"{"examples":["a typo"],"what":"low"}"#))
             .verify(&q)
             .unwrap();
-        let err = answer(json!("low")).verify(&q).unwrap_err();
+        // The text `json.dumps` writes with Python's default separators, in
+        // the order the server received the keys: laya-serve 0.3.22 and
+        // later.
+        answer(json!(r#"{"what": "low", "examples": ["a typo"]}"#))
+            .verify(&q)
+            .unwrap();
+        // Any other spacing: the comparison is on the parsed value.
+        answer(json!(
+            "{ \"examples\" : [ \"a typo\" ] ,\n \"what\" : \"low\" }"
+        ))
+        .verify(&q)
+        .unwrap();
+        // Text that parses to another value, text that does not parse, and
+        // the text of one field are not the level.
+        for echo in [
+            json!(r#"{"what": "low", "examples": ["a typo", "another"]}"#),
+            json!(r#"{"what": "low""#),
+            json!("low"),
+        ] {
+            let err = answer(echo.clone()).verify(&q).unwrap_err();
+            assert_eq!(
+                reason(&err),
+                "legend level 0 is not the level the question sent",
+                "{echo}"
+            );
+        }
+        // An array level, both ways; a number level as text is the same
+        // number only when it is written the same way.
+        let mut q = Questions::new();
+        q.score(
+            "s",
+            "?",
+            vec![json!(["degraded", "some users cannot pay"]), json!(1)],
+        )
+        .unwrap();
+        let answer = |first: Value, second: Value| {
+            response(&json!({ "s": score_answer(
+                0.4,
+                &json!({ "0": first, "1": second }),
+                &json!({ "0": 0.6, "1": 0.4 }),
+            ) }))
+        };
+        answer(json!(["degraded", "some users cannot pay"]), json!(1))
+            .verify(&q)
+            .unwrap();
+        answer(
+            json!(r#"["degraded", "some users cannot pay"]"#),
+            json!("1"),
+        )
+        .verify(&q)
+        .unwrap();
+        let err = answer(
+            json!(r#"["degraded", "some users cannot pay"]"#),
+            json!("1.0"),
+        )
+        .verify(&q)
+        .unwrap_err();
         assert_eq!(
             reason(&err),
-            "legend level 0 is not the level the question sent"
+            "legend level 1 is not the level the question sent"
         );
-        // A string level is not matched against a structured echo.
+        // A string level is not matched against a structured echo, nor
+        // against other text that parses to the same value.
         let mut q = Questions::new();
         q.score("s", "?", [r#"{"what":"low"}"#, "high"]).unwrap();
-        let err = answer(json!({ "what": "low" })).verify(&q).unwrap_err();
-        assert_eq!(
-            reason(&err),
-            "legend level 0 is not the level the question sent"
-        );
+        let answer = |echo: Value| {
+            response(&json!({ "s": score_answer(
+                0.4,
+                &json!({ "0": echo, "1": "high" }),
+                &json!({ "0": 0.6, "1": 0.4 }),
+            ) }))
+        };
+        for echo in [json!({ "what": "low" }), json!(r#"{"what": "low"}"#)] {
+            let err = answer(echo.clone()).verify(&q).unwrap_err();
+            assert_eq!(
+                reason(&err),
+                "legend level 0 is not the level the question sent",
+                "{echo}"
+            );
+        }
     }
 
     #[test]

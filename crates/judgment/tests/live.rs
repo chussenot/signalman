@@ -161,8 +161,11 @@ async fn the_three_primitives_round_trip_through_typed_handles() {
 #[tokio::test]
 #[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
 async fn a_structured_score_level_comes_back_decoded() {
-    // The API allows a level described as an object; a server echoes the
-    // object in the legend, which a legend typed as strings would refuse.
+    // The API allows a level described as an object. A server echoes it in
+    // the legend as the object (the hosted API) or as its JSON text
+    // (laya-serve 0.3.22 and later); the first would fail a legend typed as
+    // strings, the second a comparison on the text, so the label is checked
+    // by what it parses to.
     let mut q = Questions::new();
     let severity = q
         .score(
@@ -181,8 +184,9 @@ async fn a_structured_score_level_comes_back_decoded() {
         .unwrap();
     let severity = response.get(&severity).unwrap();
     assert_eq!(severity.levels.len(), 3);
-    assert!(
-        severity.levels[0].contains("\"what\":\"cosmetic\""),
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&severity.levels[0]).unwrap(),
+        json!({ "what": "cosmetic", "examples": ["a typo in the invoice footer"] }),
         "a structured level is labelled by its JSON: {:?}",
         severity.levels
     );
@@ -192,10 +196,11 @@ async fn a_structured_score_level_comes_back_decoded() {
 #[tokio::test]
 #[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
 async fn a_structured_score_level_is_echoed() {
-    // `Response::verify` accepts a structured level echoed as itself or as
-    // its compact JSON; only the first has been observed (Laya). This sends
+    // `Response::verify` accepts a structured level echoed as itself (the
+    // hosted API, laya-serve to 0.3.21) or as a string that parses to it
+    // (laya-serve 0.3.22 and later, with Python's separators). This sends
     // one, prints the legend exactly as the server echoed it, and checks it
-    // passes, so the rule can be tightened to what a server really does.
+    // passes, so a third form shows up here before it fails a caller.
     // The body is fetched directly, not through the client, so the echo is
     // printed even when it does not verify.
     let mut q = Questions::new();
@@ -275,7 +280,7 @@ async fn a_choice_option_without_a_description_is_accepted() {
 async fn the_model_list_is_either_served_or_absent() {
     // `GET /v1/models` is in the OpenAPI document and both SDKs call it, but
     // the HTTP API reference page leaves it out and a compatible server may
-    // not serve it (laya-serve 0.3.20 does not). Either outcome is
+    // not serve it (laya-serve does not, 0.3.24 included). Either outcome is
     // acceptable; what is not is anything other than a clean success or a
     // clean 404.
     match client().list_models().await {
@@ -495,7 +500,10 @@ async fn the_server_s_limits_match_the_reference_page() {
     // each. The hosted API refuses what is above (a 400 with a sentence)
     // and answers what is below with probability 1, so the upper bounds are
     // the server's and the lower ones the crate's alone (the rustdoc of
-    // `question`, `# Limits are checked here`).
+    // `question`, `# Limits are checked here`). laya-serve's own upper
+    // limits are lower (100 options, as a 413) and it answers one option or
+    // one level too, so the outcomes are printed for any server and
+    // asserted on the hosted API only.
     let model = requested_model();
     let hosted = is_jev(&model);
     let state = json!({ "message": STATE_PAYOUTS });
@@ -717,12 +725,13 @@ async fn confidence_follows_the_documented_formulas_on_jev() {
 
 #[tokio::test]
 #[ignore = "needs a live server: JUDGMENT_LIVE_BASE_URL"]
-async fn a_state_over_the_token_budget_is_a_400_with_a_kind() {
+async fn a_state_over_the_budget_is_refused_as_too_large() {
     // About 40,000 tokens of state against a 32,000-token budget: the hosted
     // API answers 400 `{"detail": {"error_type": "max_tokens_exceeded"}}`,
-    // no message, which the client keeps as `kind` and names with
-    // `Error::is_over_token_budget`. The request is about 500 KB; nothing
-    // is billed for a refused body.
+    // no message, which the client keeps as `kind`; laya-serve answers 413
+    // `{"detail": "state too large (50600 > 50000 chars)"}` at its 50,000
+    // characters. Both are `Error::is_request_too_large`. The request is
+    // about 500 KB; nothing is billed for a refused body.
     let noise = vec!["lorem ipsum dolor sit amet consectetur adipiscing elit ".repeat(20); 450];
     let state = json!({ "message": STATE_PAYOUTS, "noise": noise });
     let mut q = Questions::new();
@@ -737,8 +746,8 @@ async fn a_state_over_the_token_budget_is_a_400_with_a_kind() {
                     matches!(&err, Error::InvalidRequest { status: 400, kind: Some(kind), .. } if kind == "max_tokens_exceeded"),
                     "{err:?}"
                 );
-                assert!(err.is_over_token_budget());
             }
+            assert!(err.is_request_too_large(), "{err:?}");
         }
         Ok(response) => {
             eprintln!("over budget: answered by {}", response.model);

@@ -95,7 +95,8 @@ crates/judgment/   the judgment crate (decision 0010): the typed client, reusabl
   tests/fixtures/  the vendored typesafe-openapi.json (written only by openapi_drift.rs) and models.json
   tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
   examples/        typed_decisions.rs replays the typed-decisions benchmark; fan_out.rs, confidence_routing.rs,
-                   composite_scoring.rs and intent_routing.rs are TypeSafe's four patterns; each <name>/recordings/ replays offline
+                   composite_scoring.rs and intent_routing.rs are TypeSafe's four patterns; each <name>/recordings/ replays offline;
+                   laya/serve_laya.py is a System One-compatible shim over the laya package, the one server with GET /v1/models
   docs/            the crate's own documentation set, with mkdocs.yml beside it (decision 0011); docs/llms*.txt generated
 src/               the signalman application, depending on judgment by path
   triage/          Alert state, owner candidates, questions, Decision policy
@@ -110,7 +111,7 @@ src/               the signalman application, depending on judgment by path
   telemetry.rs     OpenTelemetry: subscriber, OTLP export, every instrument
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers and model list, the committed schema); tests/typesafe_contract.rs checks signalman's TypeSafe requests and mocks against the vendored OpenAPI document
-examples/          sample alerts and a sample webhook delivery
+examples/          signalman's samples: alerts, change-feed payloads, a config file, evaluation cases and runs, a webhook delivery
 docs/              signalman's documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
 scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh, incidentio-create-key.sh
 .beads/            issue tracker data and git hooks

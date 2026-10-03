@@ -220,9 +220,13 @@ whether a server speaks the wire the way the mocks assume. Two things can:
   holds a 40-case sample and the script that exports the full split.
 
 Both were run against Laya's `typed-decisions` checkpoint through
-`laya-serve`; what they found, including the one decoding bug they caught,
-is in the signalman documentation page
-[judgment against Laya typed-decisions](docs/verification/laya-typed-decisions.md).
+`laya-serve` 0.3.20, and the live tests again through 0.3.24; what they
+found, including the decoding bug the first run caught and the legend
+comparison the second one loosened, is in
+[Against Laya typed-decisions](docs/verification/laya-typed-decisions.md).
+`examples/laya/serve_laya.py` is a System One-compatible shim over the
+`laya` package for when `laya-serve` is not wanted; it is the one Laya
+server that also answers `GET /v1/models`.
 
 ### Checking against the published contract
 
