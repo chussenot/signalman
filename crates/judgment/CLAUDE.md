@@ -69,8 +69,10 @@ workspace, whose root `CLAUDE.md` applies as well and whose gates run with
 `--workspace`. The files here that only make sense at a repository root
 (`.github/`, `mise.toml`, `.pre-commit-config.yaml`, `scripts/`, `.claude/`,
 `catalog-info.yaml`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`)
-are inert inside signalman and become the new repository's on the split.
-Keep them in step with signalman's until then.
+are inert inside signalman, except that prek runs the nested hook
+configuration as a workspace of its own, and become the new repository's on
+the split. Keep them in step with signalman's until then; the two docs
+scripts are byte-identical copies.
 
 ## Harness
 

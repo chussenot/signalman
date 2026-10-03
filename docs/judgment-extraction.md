@@ -14,7 +14,7 @@ Do the split from `main` after the pull request that added this page has merged:
 
 ## What is already prepared
 
-The directory `crates/judgment/` is laid out as the root of the future repository, so a split of that directory needs no file added by hand. Each item is inert while the directory sits inside signalman.
+The directory `crates/judgment/` is laid out as the root of the future repository, so a split of that directory needs no file added by hand. Each item is inert or harmless while the directory sits inside signalman; the table says which.
 
 | Item | Where | Why it is there |
 |---|---|---|
@@ -22,8 +22,8 @@ The directory `crates/judgment/` is laid out as the root of the future repositor
 | The document signalman used to read by path | `judgment::contract::OPENAPI_DOCUMENT`, feature `openapi` | `tests/typesafe_contract.rs` used to `include_str!` the crate's vendored OpenAPI document across the tree; it now reads it through the crate, so a git or registry dependency works |
 | CI | `crates/judgment/.github/workflows/ci.yml` | The crate's gate (fmt, clippy, the no-`http` build, tests, rustdoc, docs, `cargo package --list`) and the prek job. GitHub reads workflows at the repository root only, so it does nothing here |
 | Tasks and tools | `crates/judgment/mise.toml` | `mise run check`, `docs:llms`, `live:typesafe`, `live:laya` and the rest, for the crate alone. mise reads it only when the working directory is the crate |
-| Hooks | `crates/judgment/.pre-commit-config.yaml` | The same hooks as signalman's with crate paths. prek installs the root's configuration here |
-| Docs tooling | `crates/judgment/scripts/gen-llms-txt.sh`, `check-frontmatter.sh` | Copies of signalman's, the generator with the crate as its only default site |
+| Hooks | `crates/judgment/.pre-commit-config.yaml` | The same hooks as signalman's with crate paths. prek installs the root's configuration here, and from 0.5 also runs a nested configuration as a workspace of its own on `--all-files`, so signalman's CI exercises the crate's hooks before the split |
+| Docs tooling | `crates/judgment/scripts/gen-llms-txt.sh`, `check-frontmatter.sh` | Byte-identical copies of signalman's. The generator finds every `mkdocs.yml` under its root and derives each raw link from the site's place in the git repository, so the crate's copy writes the same `llms.txt` from inside signalman as the root's does, and the right one from the new repository once `repo_url` changes |
 | Claude Code harness | `crates/judgment/CLAUDE.md`, `.claude/` | The crate's instructions, six agents written for a library (`contract-reviewer`, `docs-writer`, `docs-auditor`, `test-writer`, `refactor-scout`, `pr-shepherd`), the three hooks and the settings. `.claude/` is read at a project root only; the nested `CLAUDE.md` is read when a session works in the directory, and is true in both places |
 | Toolchain and lint configuration | `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml` | Copies of signalman's (the clippy list cut to the crate's words); identical content, so the nested copies change nothing here |
 | Catalog entry | `crates/judgment/catalog-info.yaml` | The `judgment` Component with `techdocs-ref: dir:.` and the new repository's slug. Not registered from here; signalman's root file holds the Component until the split |
