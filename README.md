@@ -81,6 +81,7 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Operations](docs/operations.md) | Running, health and readiness, limits, failure modes |
 | [Observability](docs/observability.md) | Spans, metrics, OTLP export, what to alert on |
 | [Development](docs/development.md) | Tools, tasks, gates, layout, planning, agent harness |
+| [Extracting the judgment crate](docs/judgment-extraction.md) | How the crate leaves for its own repository with its history, and what each repository changes then |
 | [Roadmap](docs/roadmap.md) | Known gaps and the beads backlog |
 | [Decisions](docs/decisions/README.md) | Architecture decision records in MADR form |
 | [llms.txt](docs/llms.txt) | The documentation index for agents and models; [llms-full.txt](docs/llms-full.txt) is every page in one file |

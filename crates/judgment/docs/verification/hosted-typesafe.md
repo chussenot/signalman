@@ -10,7 +10,7 @@ tags: [judgment, typesafe, jev, compatibility, verification]
 
 The [judgment crate](../../README.md) is tested against mocks of TypeSafe's wire and the vendored OpenAPI document. A mock and a schema both encode what someone believed about the wire; only the server can contradict that belief. The [Laya run](laya-typed-decisions.md) checked the crate against a second implementation of System One, but no TypeSafe key was available then, so the hosted API itself had answered only once, through signalman's triage of the three example alerts (`signalman-b11.1`, 2026-09-23, recorded under `examples/eval/runs/jev-1.13.0`). That run proved signalman's own questions round-trip; it did not exercise the crate's edges: structured Score levels, null option descriptions, an unknown extra field, the model list, a wrong key.
 
-This page records the run that did. All ten tests in `crates/judgment/tests/live.rs`, the same file the Laya run used, passed against `https://api.typesafe.ai` with a real key on 2026-10-03; five more, written from the probes [below](#beyond-the-test-file), passed the same day, and `mise run live:typesafe` runs all fifteen.
+This page records the run that did. All ten tests in `tests/live.rs`, the same file the Laya run used, passed against `https://api.typesafe.ai` with a real key on 2026-10-03; five more, written from the probes [below](#beyond-the-test-file), passed the same day, and `mise run live:typesafe` runs all fifteen.
 
 ## What was tested, and with what
 
@@ -20,7 +20,7 @@ This page records the run that did. All ten tests in `crates/judgment/tests/live
 | Key | `TYPESAFE_API_KEY`, signalman's own account, from the environment |
 | Model requested | `jev-latest`, the crate's default; it resolved to `jev-1.13.0`, the version the 2026-09-23 run saw |
 | Crate | `judgment` at the commit this page was added in, built with its default `http` feature |
-| Tests | `crates/judgment/tests/live.rs`, all ten, with `--test-threads=1`; the bearer test pointed at the same server with the same key |
+| Tests | `tests/live.rs`, all ten, with `--test-threads=1`; the bearer test pointed at the same server with the same key |
 
 Total wall time was about four seconds for the nine tests that call the model: the hosted API answers in hundreds of milliseconds, against two seconds per case for Laya on CPU, so the crate's 10 s default timeout is the right default for it. The run spends a handful of model calls on the account.
 

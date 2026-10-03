@@ -97,6 +97,14 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const FIXTURE: &str = include_str!("fixtures/typesafe-openapi.json");
 
+/// What a consumer gets through the `openapi` feature is this file, byte for
+/// byte, so its checks and these run against one document.
+#[cfg(feature = "openapi")]
+#[test]
+fn the_exposed_document_is_the_fixture() {
+    assert_eq!(judgment::contract::OPENAPI_DOCUMENT, FIXTURE);
+}
+
 static SPEC: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(FIXTURE).expect("tests/fixtures/typesafe-openapi.json is JSON")
 });

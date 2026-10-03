@@ -27,7 +27,11 @@ The judgment crate documents itself in `crates/judgment/` (README and `docs/`).
   through `judgment::Observer`, which `src/telemetry.rs` implements and
   `Providers::init` installs globally; it emits `tracing` spans and no
   metrics of its own. Its `http` feature gates the client; the questions
-  and answers build without it. Gate and tests run with `--workspace`.
+  and answers build without it. Gate and tests run with `--workspace`. The
+  crate is moving to its own repository (decision 0012;
+  `docs/judgment-extraction.md` is the runbook): its directory already
+  carries its own manifest values and repository files, inert here; keep
+  them in step with the root's until the split.
 - incident.io contract: OpenAPI v3 at https://api.incident.io/v1/openapiV3.json
   and https://docs.incident.io/llms.txt. Never create incidents directly
   (decision `signalman-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).

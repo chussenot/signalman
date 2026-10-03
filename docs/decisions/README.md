@@ -25,6 +25,7 @@ Numbers are one sequence for the repository, and a record lives with the code it
 | [0009](0009-readiness-depends-on-the-upstreams.md) | Readiness depends on the upstreams | accepted | `signalman-m28.3` |
 | [0010](0010-extract-the-judgment-core-into-a-crate.md) | Extract the judgment core into a reusable crate | accepted | `signalman-cuo` |
 | [0011](0011-documentation-lives-with-its-concern.md) | Documentation lives with its concern | accepted | `signalman-mhb` |
+| [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) | The judgment crate moves to its own repository | accepted | `signalman-bdl` |
 
 ## Status notes
 
@@ -35,6 +36,7 @@ Records are not edited after acceptance, so a fact that has moved since a record
 - 0010 puts the `Observer` on the client builder. The builder takes one (`ClientBuilder::observer`), but the retry loop the record keeps in the crate is a free function that the incident.io and Backstage clients call with no builder in reach, so failed attempts are reported through a process-wide observer instead: `judgment::observer::set_global`, installed once by `Providers::init` before any client exists. A client with no observer of its own reports usage to the global one too.
 - 0010 names the crate's documentation as its README and rustdoc, with `docs/typesafe-client.md` beside them. Since [0011](0011-documentation-lives-with-its-concern.md) the crate also has its own documentation set, `crates/judgment/docs/`, and `typesafe-client.md` covers only how signalman uses the crate.
 - 0010, 0003's neighbours in signalman's records and the pages citing 0003 had their links to it repointed when it moved to the crate (0011); no other line of an accepted record changed.
+- 0010 keeps the crate a workspace member "until a second consumer exists". [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) moves it to its own repository before that, for its history and its releases; signalman becomes the consumer that tests the API 0010 wanted a second consumer for.
 - 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record

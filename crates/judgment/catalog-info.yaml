@@ -1,0 +1,33 @@
+# Backstage catalog entry for the judgment crate in its own repository
+# (decision 0012 in signalman's records). Inert while the crate is a member
+# of the signalman workspace: that repository's root catalog-info.yaml holds
+# the `judgment` Component until the split, and drops it then.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: judgment
+  title: judgment
+  description: >-
+    Rust crate for typed, calibrated judgments from TypeSafe System One
+    models (Jev) and compatible backends: typed questions and answers, the
+    HTTP client with SDK-default retries, record and replay, evaluation.
+  tags:
+    - rust
+    - library
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: chussenot/judgment
+  links:
+    - url: https://github.com/chussenot/judgment
+      title: Repository
+      icon: github
+    - url: https://docs.typesafe.ai
+      title: TypeSafe docs
+      icon: docs
+spec:
+  type: library
+  lifecycle: experimental
+  # Replace with the group that maintains the crate in your catalog.
+  owner: group:default/platform-engineering
+  dependsOn:
+    - resource:default/typesafe-api

@@ -1,0 +1,75 @@
+name: CI
+
+# The judgment crate's own gate, the same steps as `mise run check`. Only
+# GitHub-owned actions are used (actions/checkout, actions/cache); the
+# toolchain comes from rust-toolchain.toml via rustup, and prek is installed
+# with pipx, so the workflow runs under a repository policy that forbids
+# third-party actions. Inside the signalman workspace this file is inert
+# (GitHub reads workflows at the repository root only); it is the crate's CI
+# once the crate stands alone (decision 0012).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test, doc, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup component add rustfmt clippy
+          cargo --version
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features
+      # The crate must build without its `http` feature, for a project that
+      # brings its own transport; its tests are checked too.
+      - run: cargo check --no-default-features --all-targets
+      - run: cargo test --all-features
+      - run: cargo doc --no-deps --document-private-items --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: scripts/check-frontmatter.sh docs
+      - run: scripts/gen-llms-txt.sh --check
+      # What a publish would ship, so tooling creeping into the package is seen.
+      - run: cargo package --list --allow-dirty
+
+  hooks:
+    name: pre-commit hooks (prek)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prek
+        run: |
+          pipx install prek
+          prek --version
+
+      # The cargo hooks already run in the check job.
+      - name: Run hooks on all files
+        run: prek run --all-files --hook-stage pre-commit
+        env:
+          SKIP: cargo-fmt,cargo-clippy

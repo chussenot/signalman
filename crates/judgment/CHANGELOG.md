@@ -8,6 +8,11 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Added
 
+- `contract::OPENAPI_DOCUMENT`, behind the new `openapi` feature (off by
+  default): the vendored TypeSafe OpenAPI document as text, for an
+  application that validates its own traffic against the contract the crate
+  is tested against. signalman reads it this way instead of by a path into
+  the crate's tree.
 - One runnable example per TypeSafe pattern, written to the documentation
   page's own scenario and thresholds: `fan_out`, `confidence_routing`,
   `composite_scoring` and `intent_routing`. Each replays `jev-1.13.0`'s
@@ -59,6 +64,12 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Changed
 
+- The manifest declares its own edition, Rust version, licence, dependency
+  versions and lints instead of inheriting the signalman workspace's, and
+  the crate directory carries the files a repository root needs (CI, mise
+  tasks, hooks, agents, catalog entry), in preparation for the move to its
+  own repository (signalman's decision 0012). Nothing changes for a
+  consumer.
 - `Response::verify` accepts a structured Score level echoed as any string
   that parses to the level sent, not only as its compact JSON. `laya-serve`
   0.3.22 and later echo the JSON text they showed the model, with Python's

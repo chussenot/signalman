@@ -13,11 +13,11 @@
 //! # docs/verification/laya-typed-decisions.md), recording every answer
 //! TYPESAFE_BASE_URL=http://127.0.0.1:8000 TYPESAFE_MODEL=typed-decisions TYPESAFE_API_KEY=unused \
 //!   cargo run -p judgment --example typed_decisions -- \
-//!     crates/judgment/examples/typed-decisions/sample.jsonl --record /tmp/laya-run
+//!     examples/typed-decisions/sample.jsonl --record /tmp/laya-run
 //!
 //! # offline, from the recordings, no server and no key
 //! cargo run -p judgment --example typed_decisions -- \
-//!   crates/judgment/examples/typed-decisions/sample.jsonl --replay /tmp/laya-run
+//!   examples/typed-decisions/sample.jsonl --replay /tmp/laya-run
 //! ```
 //!
 //! `--limit N` stops after N cases; `--json` prints the report as JSON.

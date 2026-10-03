@@ -232,9 +232,11 @@ server that also answers `GET /v1/models`.
 
 TypeSafe publishes an OpenAPI document for the System One API at
 <https://api.typesafe.ai/openapi.json>. A copy is vendored at
-`tests/fixtures/typesafe-openapi.json` (OpenAPI 3.1.0, API version 0.2.0),
-and `tests/contract.rs` validates against it, as JSON Schema 2020-12,
-offline and in every `cargo test`:
+`tests/fixtures/typesafe-openapi.json` (OpenAPI 3.1.0, API version 0.2.0;
+an application that validates its own traffic against the same document
+reads it as `judgment::contract::OPENAPI_DOCUMENT` with the `openapi`
+feature), and `tests/contract.rs` validates against it, as JSON Schema
+2020-12, offline and in every `cargo test`:
 
 - every request shape the builders produce (each primitive, string, object,
   array and null instructions, one-sided and structured Noul criteria,

@@ -1,0 +1,6 @@
+# Words clippy's doc_markdown lint would otherwise want in backticks: the ones
+# this crate's rustdoc uses, a subset of the signalman root's list plus the
+# crate's own variable names. Clippy looks for clippy.toml from the package's
+# manifest directory upwards, so this file applies to the crate inside the
+# workspace as well as alone (decision 0012).
+doc-valid-idents = ["TypeSafe", "Jev", "OpenAPI", "TechDocs", "PostgreSQL", "TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "TYPESAFE_MODEL", "TYPESAFE_DEFAULT_MODEL", "JUDGMENT_LIVE_BASE_URL", "JUDGMENT_LIVE_API_KEY", "JUDGMENT_LIVE_MODEL", "JUDGMENT_LIVE_AUTH_BASE_URL", "JUDGMENT_LIVE_AUTH_API_KEY", "JUDGMENT_OPENAPI_WRITE", ".."]
