@@ -1,0 +1,25 @@
+{
+  "case": "1b27accc3e67559f",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "intent": {
+        "type": "choice",
+        "choice": "approve_transfer",
+        "probabilities": {
+          "approve_transfer": 1.0,
+          "check_balance": 0.0,
+          "other": 0.0
+        },
+        "confidence": 1.0
+      }
+    },
+    "usage": {
+      "input_tokens": 408,
+      "output_tokens": 41
+    },
+    "request_id": "req_01a10132511d71b38863d94fb3cbd40e"
+  },
+  "elapsed_ms": 153,
+  "request_hash": "1b27accc3e67559f"
+}

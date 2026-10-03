@@ -1,0 +1,91 @@
+{
+  "case": "7fac658045277902",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "generalist": {
+        "type": "score",
+        "score": 3.89,
+        "legend": {
+          "0": "Only one domain or role mentioned",
+          "1": "Some variety but within a narrow field",
+          "2": "Worked across a few different areas or tech stacks",
+          "3": "Regularly moved between domains, wore many hats",
+          "4": "Track record of ramping up in unfamiliar areas and delivering"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 0.11,
+          "4": 0.89
+        },
+        "confidence": 0.91
+      },
+      "python_depth": {
+        "type": "score",
+        "score": 1.9,
+        "legend": {
+          "0": "No Python experience mentioned",
+          "1": "Mentioned but no detail",
+          "2": "Used in projects, some specifics",
+          "3": "Primary language, multiple projects",
+          "4": "Deep expertise: architecture, performance, libraries"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.1,
+          "2": 0.9,
+          "3": 0.0,
+          "4": 0.0
+        },
+        "confidence": 0.92
+      },
+      "system_design": {
+        "type": "score",
+        "score": 1.89,
+        "legend": {
+          "0": "No architecture work mentioned",
+          "1": "Contributed to design discussions",
+          "2": "Designed components of a larger system",
+          "3": "Owned architecture of a significant system",
+          "4": "Designed systems at scale across multiple domains"
+        },
+        "probabilities": {
+          "0": 0.13,
+          "1": 0.07,
+          "2": 0.58,
+          "3": 0.22,
+          "4": 0.0
+        },
+        "confidence": 0.54
+      },
+      "team_leadership": {
+        "type": "score",
+        "score": 1.99,
+        "legend": {
+          "0": "No management experience mentioned",
+          "1": "Informal mentorship or tech lead role",
+          "2": "Led a small team or project",
+          "3": "Managed a team with direct reports",
+          "4": "Managed multiple teams or an engineering org"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 1.0,
+          "3": 0.0,
+          "4": 0.0
+        },
+        "confidence": 0.99
+      }
+    },
+    "usage": {
+      "input_tokens": 708,
+      "output_tokens": 62
+    },
+    "request_id": "req_01a101262fcc786280bafd74ef284191"
+  },
+  "elapsed_ms": 288,
+  "request_hash": "7fac658045277902"
+}

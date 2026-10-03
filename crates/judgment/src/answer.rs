@@ -836,8 +836,10 @@ impl<K: Eq + Hash> Choice<K> {
     /// 0.01: the server computes it from unrounded probabilities and sends
     /// both rounded to two decimals (observed against `jev-1.13.0`,
     /// 2026-10-03, `tests/live.rs`). The same request sent again can come
-    /// back with other probabilities, by up to 0.05 in that run, so neither
-    /// value is a constant of the question; the decision was. A compatible server may define
+    /// back with other probabilities: by up to 0.05 on a clear-cut input in
+    /// that run, and by up to 0.19 (0.28 in confidence) over six repeats of
+    /// an ambiguous one, so neither value is a constant of the question. The
+    /// chosen option was, in every repeat. A compatible server may define
     /// confidence otherwise (Laya reports one minus the normalised entropy),
     /// which is what comparing the two tells a caller. [`Response::verify`]
     /// does not check it: the formula is documentation, not the schema.

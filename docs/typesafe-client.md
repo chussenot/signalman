@@ -2,7 +2,7 @@
 title: TypeSafe client
 description: The typed TypeSafe client is the judgment crate; this page says why it is a separate crate, how signalman uses it, and where its own documentation lives.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-03
 tags: [typesafe, library, judgment]
 ---
 
@@ -14,6 +14,7 @@ Where to read about the crate itself:
 
 - `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
 - `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
+- The README's "Patterns" section maps TypeSafe's four [patterns](https://docs.typesafe.ai/patterns) (speculative fan-out, confidence-gated routing, composite scoring, intent routing) onto the crate's types, with one runnable example each under `crates/judgment/examples/`. The examples replay recorded answers of the hosted model by default and call it with `--live`; signalman's own triage is the fan-out shape with a confidence gate on top ([Triage](triage.md)).
 - The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements, with the [OpenAPI document](https://api.typesafe.ai/openapi.json) TypeSafe publishes beside it. That document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json` and contract-tested: `crates/judgment/tests/contract.rs` checks every request shape the builders produce, every `Fake` response and every committed recording against it, and pins where the crate is deliberately stricter or looser (the reference page's 255-option and 10-level limits, which the schema does not state, among them); `tests/typesafe_contract.rs` checks signalman's own triage requests and TypeSafe mocks. An ignored drift test, `crates/judgment/tests/openapi_drift.rs`, compares the copy with the live document and is the only way to refresh it. The crate README's "Checking against the published contract" lists every pinned difference and why. There is no official Rust SDK; the crate's retries take the official SDKs' retry count, backoff and retried statuses, and the rustdoc of `RetryPolicy` states where they deliberately differ (the total budget and the server-wait cap among them).
 
 This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
