@@ -172,7 +172,7 @@ sequenceDiagram
 
 ## Registering signalman
 
-`catalog-info.yaml` declares signalman as a `Component` of type `service` with TechDocs built from `docs/` by `mkdocs.yml`, plus two `Resource` entities, incident.io and the TypeSafe API, that it `dependsOn`. Register the file's URL or let the GitHub discovery provider find it. Replace the placeholder owner `group:default/platform-engineering` with the group that runs it. Mermaid diagrams in these pages need the TechDocs Mermaid addon to render in Backstage ([Development](development.md#techdocs)).
+`catalog-info.yaml` declares signalman as a `Component` of type `service` with TechDocs built from `docs/` by `mkdocs.yml`, plus two `Resource` entities, incident.io and the TypeSafe API, that it `dependsOn`. Register the file's URL or let the GitHub discovery provider find it. Replace the placeholder owner `group:default/platform-engineering` with the group that runs it. Mermaid diagrams in these pages need the TechDocs Mermaid addon to render in Backstage ([Development](development.md#documentation)).
 
 ## Related plugins
 

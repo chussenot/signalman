@@ -1,6 +1,6 @@
 ---
 title: Development
-description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, TechDocs rendering, and the Claude Code harness for contributors.
+description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, the two documentation sets and where a page goes, and the Claude Code harness for contributors.
 status: current
 last_reviewed: 2026-10-03
 tags: [development, tooling]
@@ -28,8 +28,8 @@ mise tasks          # everything below
 | `check:minimal` | `cargo check -p judgment --no-default-features --all-targets`: the judgment crate and its tests without the `http` feature |
 | `test` | `cargo test --all-features` |
 | `doc` | `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS=-D warnings` |
-| `docs:check` | frontmatter on `README.md` and `docs/**`; `docs/llms.txt` and `docs/llms-full.txt` match the nav and frontmatter |
-| `docs:llms` | regenerate `docs/llms.txt` and `docs/llms-full.txt` from `mkdocs.yml` and page frontmatter |
+| `docs:check` | frontmatter on `README.md`, `docs/**` and `crates/judgment/docs/**`; each documentation set's `llms.txt` and `llms-full.txt` match its nav and frontmatter |
+| `docs:llms` | regenerate `llms.txt` and `llms-full.txt` for both documentation sets from their `mkdocs.yml` and page frontmatter |
 | `schema` | regenerate `docs/schema/outcome.v1.json` from the wire types in `src/outcome.rs` |
 | `precommit` | `prek run --all-files` |
 | `build` | release build |
@@ -47,13 +47,13 @@ Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warn
 
 The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). Package fields, dependency versions and the lint set live in the root manifest and are inherited, so the two crates are held to the same bar and cannot drift in Rust version or lints; every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and `mise run check` and CI run it as `check:minimal`. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
 
-The exceptions to "tests never reach the network" are two targets whose tests are all `#[ignore]`, so the gate builds them and never runs them. `crates/judgment/tests/live.rs` runs by hand with `cargo test -p judgment --test live -- --ignored` against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) and [judgment against the hosted TypeSafe API](judgment-typesafe-live.md) are the records of two such runs; `mise run live:typesafe` repeats the second with the key from `.env`, and is never part of `check`. The crate's `typed_decisions` example is the same idea at benchmark scale. `crates/judgment/tests/openapi_drift.rs` is the second: one ignored test that needs only the network (no key, no server of your own), described below.
+The exceptions to "tests never reach the network" are two targets whose tests are all `#[ignore]`, so the gate builds them and never runs them. `crates/judgment/tests/live.rs` runs by hand with `cargo test -p judgment --test live -- --ignored` against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/laya-typed-decisions.md) and [judgment against the hosted TypeSafe API](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/hosted-typesafe.md) are the records of two such runs; `mise run live:typesafe` repeats the second with the key from `.env`, and is never part of `check`. The crate's `typed_decisions` example is the same idea at benchmark scale. `crates/judgment/tests/openapi_drift.rs` is the second: one ignored test that needs only the network (no key, no server of your own), described below.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
 
 The TypeSafe OpenAPI document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json`, a copy of <https://api.typesafe.ai/openapi.json>, and it is never hand-edited. `crates/judgment/tests/contract.rs` validates against it every request shape the crate's builders produce (with the method, path, content type and bearer scheme the document names, and against a closed copy of the request components, since the published schema closes no object and would take a misspelt optional field as an extra key), every `Fake` response and every committed recording, and pins each place the crate and the schema disagree at its own path, except an answer of a kind the document does not name, which the discriminator-mapping check catches instead; `tests/typesafe_contract.rs` does the same for signalman's own traffic: the triage request for every example alert, the shared TypeSafe mocks in `tests/common/` and the committed Jev run. Both run offline in the default gate. The copy goes stale only when TypeSafe publishes a new document, and `cargo test -p judgment --test openapi_drift -- --ignored` says so, naming the paths and schemas that differ. `JUDGMENT_OPENAPI_WRITE=1 cargo test -p judgment --test openapi_drift -- --ignored` refreshes it, written canonically (sorted keys, final newline, which `contract.rs` checks) so the diff is only the contract's change. Review a refresh by rerunning `cargo test -p judgment --test contract`: a pinned gap the new document closes fails at its own path, and every request, Fake and recording is checked against the new schemas.
 
-`docs/llms.txt` and `docs/llms-full.txt` ([llmstxt.org](https://llmstxt.org)) are generated the same way, by `scripts/gen-llms-txt.sh` from the `mkdocs.yml` nav and each page's frontmatter: one line per page with its title and description, in nav order, top-level pages first and each nav group as its own section, linking the raw Markdown on the default branch; the full file concatenates the pages. A page opts out of both with `llms: false` in its frontmatter, which only the decision-record template does. `docs:check` regenerates both into a temporary directory and fails when the committed files differ, so a new page, a changed description or a nav edit cannot leave the index stale; a page under `docs/` that the nav does not list fails the check too. `mise run docs:llms` rewrites them. The script is POSIX `sh` and `awk`, like `check-frontmatter.sh`, so it needs nothing `mise install` does not already provide.
+Each documentation set's `llms.txt` and `llms-full.txt` are generated the same way, from its nav and page frontmatter ([Documentation](#documentation)).
 
 ## Git hooks
 
@@ -94,7 +94,9 @@ crates/judgment/   the judgment crate (decision 0010): the typed client, reusabl
   tests/openapi_drift.rs ignored: the vendored OpenAPI document against the live one (network only)
   tests/fixtures/  the vendored typesafe-openapi.json (written only by openapi_drift.rs) and models.json
   tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
-  examples/        typed_decisions.rs replays the typed-decisions benchmark; typed-decisions/ holds a sample and the export script
+  examples/        typed_decisions.rs replays the typed-decisions benchmark; fan_out.rs, confidence_routing.rs,
+                   composite_scoring.rs and intent_routing.rs are TypeSafe's four patterns; each <name>/recordings/ replays offline
+  docs/            the crate's own documentation set, with mkdocs.yml beside it (decision 0011); docs/llms*.txt generated
 src/               the signalman application, depending on judgment by path
   triage/          Alert state, owner candidates, questions, Decision policy
   eval/            evaluation harness: cases, grading, metrics, record and replay
@@ -109,11 +111,11 @@ src/               the signalman application, depending on judgment by path
   main.rs          CLI
 tests/             wiremock integration tests and end-to-end webhook runs; tests/common/ holds the shared fixtures (clients, the al-1 scene, the TypeSafe answers and model list, the committed schema); tests/typesafe_contract.rs checks signalman's TypeSafe requests and mocks against the vendored OpenAPI document
 examples/          sample alerts and a sample webhook delivery
-docs/              this documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
+docs/              signalman's documentation (TechDocs source); docs/schema/ and docs/llms*.txt are generated
 scripts/           check-frontmatter.sh, gen-llms-txt.sh, setup-hooks.sh, incidentio-create-key.sh
 .beads/            issue tracker data and git hooks
 .claude/           agents, hooks, settings for Claude Code
-catalog-info.yaml  Backstage registration; mkdocs.yml builds docs/ as TechDocs
+catalog-info.yaml  Backstage registration of signalman and the judgment crate; each mkdocs.yml builds its docs/ as TechDocs
 ```
 
 ## Planning with beads
@@ -122,9 +124,27 @@ Issues live in a local Dolt database under `.beads/`, managed with `bd`. `bd rea
 
 Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the git remote. The environment that seeded the backlog could not push that ref, so `.beads/issues.jsonl` holds a snapshot. Import it once with `bd import .beads/issues.jsonl`, push with `bd dolt push`, then treat Dolt as the source of truth and drop the file.
 
-## TechDocs
+## Documentation
 
-`mkdocs.yml` builds `docs/` as TechDocs for the `signalman` component declared in `catalog-info.yaml`. Page frontmatter is read as mkdocs page meta. Mermaid blocks are declared as a superfences custom fence so they survive the build; rendering them in Backstage requires the `backstage-plugin-techdocs-addon-mermaid` frontend addon. GitHub renders the same blocks without any setup.
+The repository holds two documentation sets, one per concern ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md)). A page belongs to the `judgment` crate when it would still be true, and still be needed, if signalman did not exist; otherwise it is signalman's. A page that informs both stays with signalman and says what it means for the crate in a section of its own.
+
+| | signalman | the `judgment` crate |
+|---|---|---|
+| Front door | `README.md` | `crates/judgment/README.md` (no frontmatter: crates.io renders it) |
+| Pages | `docs/` | `crates/judgment/docs/` |
+| Nav | `mkdocs.yml` | `crates/judgment/mkdocs.yml` |
+| Map of the pages | `docs/index.md` | `crates/judgment/docs/index.md` |
+| Decision records | `docs/decisions/` | `crates/judgment/docs/decisions/` |
+| `llms.txt` preamble | `docs/llms-intro.txt` | `crates/judgment/docs/llms-intro.txt` |
+| TechDocs component | `signalman` | `judgment` |
+
+Decision records share one numbering sequence across both sets and live with the code they govern; signalman's index keeps a row for each crate record, so the sequence has no hole.
+
+Links inside a set are relative. Links from one set to the other are absolute GitHub URLs on the default branch, the only form that resolves on GitHub, in a TechDocs build and in a packaged crate; the cost is that such a link points at what is merged, so a renamed page breaks it until the docs auditor's link check finds it. Paths written in the crate's sources and pages are relative to the crate (`docs/design.md`, `tests/live.rs`), because the crate is packaged without the workspace.
+
+Every page in both sets starts with YAML frontmatter (`title`, `description`, `status`, `last_reviewed`, `tags`), checked by `scripts/check-frontmatter.sh`. `scripts/gen-llms-txt.sh` writes each set's `llms.txt` and `llms-full.txt` ([llmstxt.org](https://llmstxt.org)) from its nav and that frontmatter: the set's README summary, the preamble in its `llms-intro.txt` (where `@RAW@` stands for the raw URL of the set's directory), then one line per page with its title and description in nav order, top-level pages first and each nav group as its own section, linking the raw Markdown on the default branch; the full file concatenates the pages. A page opts out of both with `llms: false` in its frontmatter, which only the decision-record template does. `docs:check` regenerates both sets into a temporary directory and fails when a committed file differs, so a new page, a changed description or a nav edit cannot leave an index stale; a page under either `docs/` that its nav does not list fails the check too. `mise run docs:llms` rewrites them. The scripts are POSIX `sh` and `awk`, so they need nothing `mise install` does not already provide.
+
+Each `mkdocs.yml` builds its set as TechDocs for the component that `catalog-info.yaml` declares with it. Page frontmatter is read as mkdocs page meta. Mermaid blocks are declared as a superfences custom fence so they survive the build; rendering them in Backstage requires the `backstage-plugin-techdocs-addon-mermaid` frontend addon. GitHub renders the same blocks without any setup.
 
 ## Claude Code harness
 
@@ -137,7 +157,7 @@ The harness exists because the same mistakes recurred across sessions: a setting
 | `SessionStart` | `bd prime --hook-json` | injects the beads workflow |
 | `PreToolUse` on Bash | `.claude/hooks/guard-bash.sh` | denies pushes to `main`, the interactive `bd edit`, committing `.env`, `cargo publish`; matches command positions only and ignores here-doc bodies |
 | `PostToolUse` on Edit/Write | `.claude/hooks/rustfmt-on-edit.sh` | formats a Rust file right after it is written, so diffs carry no formatting noise |
-| `PostToolUse` on Edit/Write | `.claude/hooks/llms-on-docs-edit.sh` | regenerates `docs/llms.txt` and `docs/llms-full.txt` after a page, the README or `mkdocs.yml` is written, so the index cannot lag the frontmatter |
+| `PostToolUse` on Edit/Write | `.claude/hooks/llms-on-docs-edit.sh` | regenerates both documentation sets' `llms.txt` and `llms-full.txt` after a page, a README, an `llms-intro.txt` or a `mkdocs.yml` is written, so neither index can lag its frontmatter |
 
 Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report; writers edit. Delegate the job to the agent and keep the conclusion:
 
@@ -148,8 +168,8 @@ Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report;
 | `observability-reviewer` | reviews | spans, metrics and log fields on a change: names, no secrets in fields, instruments only in `src/telemetry.rs`, the docs table |
 | `question-designer` | proposes | questions, criteria and policy thresholds |
 | `test-writer` | writes | tests in this repository's style: wiremock per upstream, a real listener for transports, a negative case per gate, the footguns already paid for |
-| `docs-writer` | writes | README and `docs/`, explaining the problem solved and the trade-off taken, not only the mechanism |
-| `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, drift in the generated index |
+| `docs-writer` | writes | both documentation sets, each page in the set its concern belongs to (decision 0011), explaining the problem solved and the trade-off taken, not only the mechanism |
+| `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, a page in the wrong set, a broken link across sets, drift in either generated index |
 | `refactor-scout` | reports | dead public items, duplicated logic, stale comments and unused dependencies, as a ranked plan with evidence |
 | `pr-shepherd` | acts | opening a pull request in the repository's shape and reading its CI checks: the first failing step reproduced locally, and the one standing-down comment when a failure is not the change's (refused at scheduling, or red on `main` too) |
 

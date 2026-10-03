@@ -95,4 +95,4 @@ What this study does not recommend is a general move toward macros. The workspac
 
 - The survey of commit `724f2ef`, 2026-10-02, by file and line: `src/config.rs`, `src/triage/questions.rs`, `src/telemetry.rs`, `src/mcp.rs`, `src/outcome.rs`, `src/eval/mod.rs`, `src/incidentio/types.rs`, `src/changes/`, `tests/`, and `crates/judgment/src/{question,answer,backend,error}.rs` and `crates/judgment/tests/`.
 - [The Rust Reference on macros by example](https://doc.rust-lang.org/reference/macros-by-example.html) and [procedural macros](https://doc.rust-lang.org/reference/procedural-macros.html), for what each kind can and cannot see.
-- [Decision 0003](../decisions/0003-typed-handles-between-questions-and-answers.md) and [decision 0006](../decisions/0006-layered-configuration.md), which fix what must stay explicit.
+- [Decision 0003](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/0003-typed-handles-between-questions-and-answers.md) and [decision 0006](../decisions/0006-layered-configuration.md), which fix what must stay explicit.

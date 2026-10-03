@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-03
 tags: [overview]
 ---
 
@@ -66,10 +66,9 @@ Configuration is layered, lowest to highest: built-in default, TOML file, enviro
 | [Architecture](docs/architecture.md) | Components, the path of one alert, boundaries, failure containment |
 | [C4 model](docs/c4/context.md) | Context, containers and components as C4 diagrams; the container and component pages are reached from the context page |
 | [TypeSafe client](docs/typesafe-client.md) | The `judgment` crate: why it is separate, how signalman uses it |
+| [The judgment crate](https://github.com/chussenot/signalman/blob/main/crates/judgment/README.md) | The typed TypeSafe client as a library, with [its own documentation](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/index.md): how it works, the patterns, what real servers did with it |
 | [Laya as a model provider](docs/laya.md) | Running signalman against open weights, what it measured, why Jev stays the default |
-| [judgment against Laya typed-decisions](docs/judgment-laya-typed-decisions.md) | The crate against a second implementation of the wire: the tests, the bug they caught, the benchmark numbers |
 | [Open System One models](docs/research/open-system-one-models.md) | Research note: the open Jev reproductions, the Decision Index, Laya, and the decisions that follow for signalman and judgment |
-| [System One client libraries](docs/research/system-one-client-libraries.md) | Research note: the other Rust clients and the official SDKs against judgment, and the ranked changes to make |
 | [Decision recipes](docs/research/decision-recipes.md) | Research note: how jev-recipes manages 249 typed decisions and evaluates them, and what signalman adopted (the state-as-data rule, provenance, splits, fingerprints, intervals) |
 | [Rust macros](docs/research/rust-macros.md) | Research note: every repetition in the workspace a macro could remove, the two worth adding, the one worth deleting, and the larger ones better solved without one |
 | [Triage](docs/triage.md) | The questions, the policy, the outcome contract, how to tune it |

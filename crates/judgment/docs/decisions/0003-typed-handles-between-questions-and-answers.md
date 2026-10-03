@@ -64,4 +64,4 @@ Chosen option: "Typed handles". `Questions::noul`, `choice`, `score` and `dynami
 
 ## More information
 
-[TypeSafe client](../typesafe-client.md).
+[How judgment works](../design.md#typed-handles); how signalman reads its triage answers through the handles: [TypeSafe client](https://github.com/chussenot/signalman/blob/main/docs/typesafe-client.md).

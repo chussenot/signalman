@@ -1,6 +1,6 @@
 ---
 title: TypeSafe client
-description: The typed TypeSafe client is the judgment crate; this page says why it is a separate crate, how signalman uses it, and where its own documentation lives.
+description: Why signalman's TypeSafe client is the separate judgment crate, where the crate's own documentation lives, and how signalman configures it, observes it and builds its triage on it.
 status: current
 last_reviewed: 2026-10-03
 tags: [typesafe, library, judgment]
@@ -8,80 +8,33 @@ tags: [typesafe, library, judgment]
 
 # TypeSafe client
 
-A second project that wanted calibrated judgments from a TypeSafe System One model had to depend on the whole triager: axum, rmcp, two other API clients, OpenTelemetry and a configuration model shaped for one deployment. [Decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md) moved the typed client into its own crate, `judgment`, a member of this workspace at `crates/judgment/`, which signalman depends on by path and re-exports; it is published when a second consumer exists, not before.
+A second project that wanted calibrated judgments from a TypeSafe System One model had to depend on the whole triager: axum, rmcp, two other API clients, OpenTelemetry and a configuration model shaped for one deployment. [Decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md) moved the typed client into its own crate, `judgment`, a member of this workspace at `crates/judgment/`. signalman depends on it by path and re-exports it. It is published when a second consumer exists, not before.
 
-Where to read about the crate itself:
+This page covers what signalman does with the crate. The crate documents itself, in its own folder, because it is meant to be read and published without this application ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md)):
 
-- `crates/judgment/README.md` is the front door: what it guarantees, the walkthrough, how to depend on it by git.
-- `cargo doc -p judgment --open` is the reference; the rustdoc explains the why behind each type, each error and each default. There is no docs.rs page yet because the crate is not published.
-- The README's "Patterns" section maps TypeSafe's four [patterns](https://docs.typesafe.ai/patterns) (speculative fan-out, confidence-gated routing, composite scoring, intent routing) onto the crate's types, with one runnable example each under `crates/judgment/examples/`. The examples replay recorded answers of the hosted model by default and call it with `--live`; signalman's own triage is the fan-out shape with a confidence gate on top ([Triage](triage.md)).
-- The [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) is the wire contract the crate implements, with the [OpenAPI document](https://api.typesafe.ai/openapi.json) TypeSafe publishes beside it. That document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json` and contract-tested: `crates/judgment/tests/contract.rs` checks every request shape the builders produce, every `Fake` response and every committed recording against it, and pins where the crate is deliberately stricter or looser (the reference page's 255-option and 10-level limits, which the schema does not state, among them); `tests/typesafe_contract.rs` checks signalman's own triage requests and TypeSafe mocks. An ignored drift test, `crates/judgment/tests/openapi_drift.rs`, compares the copy with the live document and is the only way to refresh it. The crate README's "Checking against the published contract" lists every pinned difference and why. There is no official Rust SDK; the crate's retries take the official SDKs' retry count, backoff and retried statuses, and the rustdoc of `RetryPolicy` states where they deliberately differ (the total budget and the server-wait cap among them).
+| To learn | Read |
+|---|---|
+| What the crate guarantees, the walkthrough, how to depend on it | [the crate README](https://github.com/chussenot/signalman/blob/main/crates/judgment/README.md) |
+| How typed handles, the response check and the retry loop work | [How judgment works](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/design.md) |
+| Which crate types carry TypeSafe's four patterns, with a runnable example each | [the README's Patterns section](https://github.com/chussenot/signalman/blob/main/crates/judgment/README.md#patterns) |
+| What the crate does against the hosted API and against Laya | [Verification](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/index.md#verification) |
+| Every page, as an agent reads it | [the crate's llms.txt](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/llms.txt) |
+| Every type, error and default | the rustdoc: `cargo doc -p judgment --open` (no docs.rs page until the crate is published) |
 
-This page keeps two diagrams rustdoc cannot render, and says what signalman does with the crate.
-
-## Typed handles
-
-On the wire, questions and answers are two maps keyed by the same ids, and nothing ties a Noul question to a Noul answer. The crate closes that gap at compile time ([decision 0003](decisions/0003-typed-handles-between-questions-and-answers.md)): adding a question returns a handle that fixes the answer's type, and reading through the handle yields a Rust enum, a probability or a score, or an error naming what did not fit. The error table and the `options!` macro are documented in the crate's rustdoc.
-
-```mermaid
-sequenceDiagram
-    participant Code
-    participant Q as Questions
-    participant TS as TypeSafe API
-    participant R as Response
-    Code->>Q: choice::<Department>("department", instructions)
-    Q-->>Code: Handle<Choice<Department>>
-    Code->>Q: noul("is_urgent", instructions)
-    Q-->>Code: Handle<Noul>
-    Code->>TS: POST /v1/systemone {state, questions}
-    TS-->>R: {answers: {department: {type: choice, choice: "billing", ...}, is_urgent: {type: noul, noul: 0.95}}}
-    Code->>R: get(&department_handle)
-    R-->>Code: Choice<Department>{chosen: Billing, probabilities, confidence}
-    Code->>R: get(&urgent_handle)
-    R-->>Code: Noul{yes: 0.95}
-```
-
-A handle checks one answer when it is read; the whole response is checked before anyone reads it. The client holds every response against the questions it sent (`Response::verify`): an answer for every question, of the question's primitive, a Choice that names only options it was offered (its choice and every key of its distribution), and a Score whose legend is the levels sent and whose value is on their scale. A response that does not fit is an error naming the question and the option or level, carrying TypeSafe's request id when the server sent one (Laya sends none); it is not retried, since the call was billed, its token usage is still reported, and it is counted in `signalman.upstream.errors` as `status="unfit"` (a 2xx whose body does not decode is `decode`). The `Fake`, `Replay` and `Recorder` backends verify too, and signalman's `TriageQuestions::read` verifies again for a recording replayed by case id. For signalman this means an owner or an incident the model was never offered fails the triage instead of being read as the no-match option ([Triage](triage.md#which-questions-are-asked)); the official SDKs check the shape of each answer and stop there.
-
-## Retries
-
-A transient failure upstream must not fail a triage that a second attempt would have completed, and a persistent one must surface quickly enough that the alert falls back to a person. The loop below, in the crate's `http` module, sits between those two costs. The defaults are the official SDKs': two retries; 0.5 s doubling to 5 s, with a jitter that only ever shortens a wait; 408, 429, every 5xx and every transport failure retried; the server's wait (`retry-after-ms`, or `Retry-After` in seconds or as an HTTP date, measured against the response's `Date` header) honoured on any retried status up to 30 s; and no overall budget, which a caller may set. The reasons for each, and a table of where the crate matches the SDKs and where it deliberately differs, are in the rustdoc of `RetryPolicy`. `RetryPolicy::conservative()` retries only 408, 429 and a connection that was never made, for a caller who would rather fail a billed call than pay for it twice. signalman uses the defaults for all three upstreams and sets no budget; in `serve`, each triage's own deadline bounds it instead ([Operations](operations.md#backpressure)).
-
-```mermaid
-flowchart TD
-    S[send request] --> R{response?}
-    R -->|status| C{"in http_statuses?<br/>default 408, 429, 5xx"}
-    R -->|"transport error, or body cut short"| X{"transport level retries it?<br/>Any: yes; BeforeSend: only when<br/>the connection was never made; Never: no"}
-    C -->|no| DONE[return status and body to the client for classification]
-    C -->|yes| T{"attempt ≤ max_retries?"}
-    X -->|yes| T
-    X -->|no| FAIL[return last error or status]
-    T -->|no| FAIL
-    T -->|yes| W{"server's wait present<br/>and ≤ retry_after_max?"}
-    W -->|yes| D1["wait = the server's wait<br/>(retry-after-ms, seconds or a date)"]
-    W -->|no| D2["wait = backoff_initial × 2^(retry − 1), capped at backoff_max,<br/>minus a random share of at most backoff_jitter"]
-    D1 & D2 --> B{"budget set, and<br/>elapsed + wait ≥ budget?"}
-    B -->|yes| FAIL
-    B -->|no| SLEEP[sleep the wait] --> S
-```
-
-Errors are separated by what fixes them rather than by status code; the variants and their remedies are documented on the crate's `Error` type. The client follows no redirect, as the Python SDK follows none: a 3xx is `Error::Http` with that status, not retried. The API never redirects its two paths, so a 3xx means `typesafe.base_url` points somewhere else, and following it would send a gateway header, and on a 307 or 308 the caller's state, to wherever the redirect names.
-
-TypeSafe identifies a call by an `x-typesafe-request-id` response header, which both official SDKs expose: the one link from a failed call or a surprising answer to TypeSafe's own logs. The client keeps it in three places: `Error::request_id()` on every error that came from an HTTP response (a 2xx whose body does not decode included), a ` [request_id …]` suffix at the end of that error's message, so a log line that keeps only the message still has it, and the `request_id` field of the `typesafe.evaluate` and `typesafe.list_models` spans ([Observability](observability.md#spans)). A successful response carries it too, as `Response::request_id`. Quote it to TypeSafe support when a call fails or an answer looks wrong. It is the last attempt's id when the call was retried, there is none after a transport failure (no response came back, or its body could not be read), and it is optional everywhere: the published OpenAPI document lists no response headers, the [Laya](laya.md) server sends none, and the hosted API has not yet been seen sending one to this client.
+The wire contract is the [live TypeSafe documentation](https://docs.typesafe.ai/llms.txt) and the [OpenAPI document](https://api.typesafe.ai/openapi.json) beside it. The crate vendors that document and contract-tests every request it builds against it (`crates/judgment/tests/contract.rs`). signalman's own triage requests and TypeSafe mocks are checked against the same document by `tests/typesafe_contract.rs`.
 
 ## How signalman uses it
 
-- `signalman::Client` is a re-export of `judgment::Client`, the same type; the re-exports exist so nothing built against signalman breaks during the extraction and are dropped after one release.
-- The binary builds the client from `typesafe.base_url`, `typesafe.model` and `typesafe.timeout_seconds` ([Configuration](configuration.md)); the key comes from `TYPESAFE_API_KEY` and nowhere else. Any server that speaks the System One wire works, which is how [Laya](laya.md) was run with no code change.
-- signalman implements `judgment::Observer` in `src/telemetry.rs` and installs it as the process-wide observer in `Providers::init`, before the first client exists. That is why the crate's token usage and failed attempts appear as `signalman.typesafe.tokens` and `signalman.upstream.errors` ([Observability](observability.md#metrics)) while the crate names no instrument.
-- The incident.io and Backstage clients call `judgment::http::send_with_retries` with their own service label, so all three upstreams retry the same way and every failed attempt is counted once.
-- signalman sets no per-call options and no default headers: every call is `Client::system_one` (or `Client::evaluate`, in `signalman triage`, which can print the request it sends) with the configured timeout and the default retry policy, and the model is `typesafe.model`, the client's default. The crate's `Client::evaluate_with` takes a `CallOptions` for one call's timeout, retry policy, headers and extra body fields, and refuses, before anything is sent, a header or field the client sets itself (the key, the content type, the user agent, `x-typesafe-retry-count`, the headers HTTP owns such as `content-length` and `host`, and `state`, `model` and `questions`), where the official SDKs silently keep or overwrite it. The options do not cross the `SystemOne` trait: the client behind the trait uses its own settings, and `Fake`, `Recorder` and `Replay` take none. A recording is filed under a hash of the state and the questions, and an extra field can change the answer, so extras could only cross the trait by entering that hash; until a backend needs them, keeping them off leaves every existing recording valid.
-- The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and `Texts` makes the wording data that can be tuned without touching the handles ([Triage](triage.md)).
-- The [evaluation harness](evaluation.md) grades through `judgment::eval`: recordings, per-question grading and the calibration metrics are the crate's; the labels and the decision are signalman's.
+- `signalman::Client` is a re-export of `judgment::Client`, the same type. The re-exports exist so nothing built against signalman breaks during the extraction, and are dropped after one release.
+- The binary builds the client from `typesafe.base_url`, `typesafe.model` and `typesafe.timeout_seconds` ([Configuration](configuration.md)). The key comes from `TYPESAFE_API_KEY` and nowhere else. Any server that speaks the System One wire works, which is how [Laya](laya.md) was run with no code change.
+- signalman implements `judgment::Observer` in `src/telemetry.rs` and installs it as the process-wide observer in `Providers::init`, before the first client exists. That is why the crate's token usage and failed attempts appear as `signalman.typesafe.tokens` and `signalman.upstream.errors` ([Observability](observability.md#metrics)) while the crate names no instrument. A response that does not fit the questions it answers is counted there as `status="unfit"`, and one whose body does not decode as `decode`.
+- The incident.io and Backstage clients call `judgment::http::send_with_retries` with their own service label, so all three upstreams retry the same way and every failed attempt is counted once. signalman uses the default retry policy for all three and sets no overall budget; in `serve`, each triage's own deadline bounds it instead ([Operations](operations.md#backpressure)).
+- signalman sets no per-call options and no default headers. Every call is `Client::system_one` (or `Client::evaluate` in `signalman triage`, which can print the request it sends) with the configured timeout, the default retry policy and `typesafe.model` as the model.
+- The crate refuses a response that does not fit before signalman reads it, and `TriageQuestions::read` verifies again for a recording replayed by case id. So an owner or an incident the model was never offered fails the triage instead of being read as the no-match option ([Triage](triage.md#which-questions-are-asked)).
+- TypeSafe's request id reaches signalman's logs and spans through the crate: on every error message and on the `typesafe.evaluate` span ([Observability](observability.md#spans)). Quote it to TypeSafe support when a triage fails on the model call.
+- The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and `Texts` makes the wording data that can be tuned without touching the handles ([Triage](triage.md)). In the terms of TypeSafe's patterns it is a speculative fan-out with a confidence gate on top ([the crate's Patterns section](https://github.com/chussenot/signalman/blob/main/crates/judgment/README.md#patterns)).
+- The [evaluation harness](evaluation.md) grades through `judgment::eval`. Recordings, per-question grading and the calibration metrics are the crate's; the labels and the decision are signalman's.
 
-## What the crate does not do
+## What signalman does not use yet
 
-- No sync client: the API documents one evaluation endpoint (and a model listing) and every consumer so far is async.
-- No batching or streaming: the API documents one request shape, and no consumer has asked.
-- No metrics backend: a library that named instruments would force its telemetry stack on every consumer; the `Observer` trait hands the numbers to whoever owns the instruments.
-- No second backend in the product yet: the crate has a `SystemOne` trait with `Fake` and `Replay` implementations, but signalman's `Triager` holds a concrete `Client` rather than a `dyn SystemOne` until a second backend is needed there. The trait is the seam an official SDK or a local model would plug into.
+The crate has a `SystemOne` trait with `Fake`, `Recorder` and `Replay` behind it, but signalman's `Triager` holds a concrete `Client` rather than a `dyn SystemOne`. The trait is the seam an official SDK or a self-hosted model would plug into; it is not threaded through the triage until a second backend is needed in production. What the crate itself leaves out, and why, is on [How judgment works](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/design.md#what-the-crate-does-not-do).

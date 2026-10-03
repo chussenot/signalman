@@ -30,7 +30,7 @@
 //! file over them. The thresholds are the documentation page's; the page
 //! says to start conservative and tune on your own data, and identical
 //! requests to the hosted API can differ by a few hundredths of confidence
-//! (`docs/judgment-typesafe-live.md`), so a command whose confidence sits on
+//! (`docs/verification/hosted-typesafe.md`), so a command whose confidence sits on
 //! a threshold can land on either side of it from one run to the next.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]

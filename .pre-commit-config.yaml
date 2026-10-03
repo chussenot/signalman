@@ -48,13 +48,13 @@ repos:
         name: markdown frontmatter (title, description)
         entry: scripts/check-frontmatter.sh
         language: script
-        files: ^(README\.md|docs/.*\.md)$
+        files: ^(README\.md|docs/.*\.md|crates/judgment/docs/.*\.md)$
 
       - id: llms-txt
-        name: docs/llms.txt matches the nav and frontmatter
+        name: llms.txt of both documentation sets matches the nav and frontmatter
         entry: scripts/gen-llms-txt.sh --check
         language: script
-        files: ^(README\.md|docs/.*\.md|docs/llms.*\.txt|mkdocs\.yml|scripts/gen-llms-txt\.sh)$
+        files: ^(README\.md|docs/.*\.(md|txt)|mkdocs\.yml|crates/judgment/(README\.md|mkdocs\.yml|docs/.*\.(md|txt))|scripts/gen-llms-txt\.sh)$
         pass_filenames: false
 
       - id: no-dotenv

@@ -143,7 +143,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
-A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](decisions/0003-typed-handles-between-questions-and-answers.md).
+A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/0003-typed-handles-between-questions-and-answers.md).
 
 ## Failure containment
 

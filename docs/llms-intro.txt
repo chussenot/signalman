@@ -1,0 +1,10 @@
+This index is generated from the documentation nav (`mkdocs.yml`) and each page's frontmatter by `scripts/gen-llms-txt.sh`; the pages are the source of truth and every page carries `title`, `description`, `status` and `last_reviewed`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. TypeSafe has answered signalman's triage live (`jev-1.13.0`, the three example alerts, twice), and the Backstage catalog and incident.io's read endpoints have been called once; no write has reached a live incident.io alert, and neither TechDocs nor Notifications has been reached. Everything else is checked against wiremock and the published OpenAPI documents; the Roadmap says what is still unverified, and pages say so where it matters.
+
+The typed TypeSafe client is the `judgment` crate, which documents itself apart from these pages: its own index is listed below under Start here.
+
+## Start here
+
+- [README](@RAW@/README.md): why signalman exists, what it does and does not do, and the map of these pages
+- [Outcome contract, JSON Schema v1](@RAW@/docs/schema/outcome.v1.json): the document every triage emits, for scripts and agents; generated from the wire types, drift-tested
+- [Full documentation text](@RAW@/docs/llms-full.txt): every page below, concatenated in this order
+- [The judgment crate's index](@RAW@/crates/judgment/docs/llms.txt): the typed client signalman is built on: how it works, what it guarantees, what has been verified against real servers

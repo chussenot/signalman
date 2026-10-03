@@ -63,7 +63,7 @@ All notable changes to the `judgment` crate. The format follows
 ## [0.2.0] - 2026-09-25
 
 Hardens the wire and closes the gaps against the official TypeSafe SDKs that
-the [System One client survey](../../docs/research/system-one-client-libraries.md)
+the [System One client survey](docs/research/system-one-client-libraries.md)
 identified. TypeSafe has answered this client live once, under signalman's own
 account; everything else is checked against wiremock, the published OpenAPI
 document (0.2.0) and the SDK references.

@@ -1,14 +1,14 @@
 ---
-title: judgment against the hosted TypeSafe API
+title: Against the hosted TypeSafe API
 description: The judgment crate's live tests run against api.typesafe.ai with a real key, what each one showed about the hosted wire that the mocks and the Laya run could not, what probing past the builder's limits taught (three 400 shapes, the token budget, non-determinism at two decimals, the confidence formulas) and what the crate changed for it, and how to repeat the check with one task.
 status: current
 last_reviewed: 2026-10-03
 tags: [judgment, typesafe, jev, compatibility, verification]
 ---
 
-# judgment against the hosted TypeSafe API
+# Against the hosted TypeSafe API
 
-The [judgment crate](typesafe-client.md) is tested against mocks of TypeSafe's wire and the vendored OpenAPI document. A mock and a schema both encode what someone believed about the wire; only the server can contradict that belief. The [Laya run](judgment-laya-typed-decisions.md) checked the crate against a second implementation of System One, but no TypeSafe key was available then, so the hosted API itself had answered only once, through signalman's triage of the three example alerts (`signalman-b11.1`, 2026-09-23, recorded under `examples/eval/runs/jev-1.13.0`). That run proved signalman's own questions round-trip; it did not exercise the crate's edges: structured Score levels, null option descriptions, an unknown extra field, the model list, a wrong key.
+The [judgment crate](../../README.md) is tested against mocks of TypeSafe's wire and the vendored OpenAPI document. A mock and a schema both encode what someone believed about the wire; only the server can contradict that belief. The [Laya run](laya-typed-decisions.md) checked the crate against a second implementation of System One, but no TypeSafe key was available then, so the hosted API itself had answered only once, through signalman's triage of the three example alerts (`signalman-b11.1`, 2026-09-23, recorded under `examples/eval/runs/jev-1.13.0`). That run proved signalman's own questions round-trip; it did not exercise the crate's edges: structured Score levels, null option descriptions, an unknown extra field, the model list, a wrong key.
 
 This page records the run that did. All ten tests in `crates/judgment/tests/live.rs`, the same file the Laya run used, passed against `https://api.typesafe.ai` with a real key on 2026-10-03; five more, written from the probes [below](#beyond-the-test-file), passed the same day, and `mise run live:typesafe` runs all fifteen.
 
@@ -26,7 +26,7 @@ Total wall time was about four seconds for the nine tests that call the model: t
 
 ## What the hosted API does
 
-What each test asserts and why it exists is tabled on the [Laya page](judgment-laya-typed-decisions.md#the-tests); this is what the hosted API showed on each point, set against what Laya did where they differ.
+What each test asserts and why it exists is tabled on the [Laya page](laya-typed-decisions.md#the-tests); this is what the hosted API showed on each point, set against what Laya did where they differ.
 
 - **The three primitives round-trip through their typed handles.** The out-of-domain probe, a customer whose payouts have failed for three days, went to `Billing` with probability 0.91 and confidence 0.86, urgency 0.91, severity 1.99 on a three-level line (`blocked`). Laya's fine-tuned checkpoint sent the same message to `technical` at 0.45. The judgment is sensible as well as well-formed, which no mock can show.
 - **No undocumented top-level fields.** `Response::extra` was empty: the hosted response is exactly the documented shape. Laya adds `routing`.
@@ -71,7 +71,7 @@ The OpenAPI drift test ran the same day: the vendored document is the live one, 
 
 It establishes that the crate's wire matches the hosted API on every edge the live tests cover, with no change to the crate. Together with the 2026-09-23 triage run, it means both the crate's general surface and signalman's own questions have been answered by Jev at least once.
 
-It does not establish anything about thresholds or accuracy on alerts: that needs labelled history through the [evaluation harness](evaluation.md) (`signalman-ufg.6`). And `jev-latest` is an alias. When it moves past `jev-1.13.0`, the answers these tests and the committed run saw may change without any code changing; pin `typesafe.model` once the thresholds are tuned ([Configuration](configuration.md)), and repeat this run when the alias moves.
+It does not establish anything about thresholds or accuracy on alerts: that needs labelled history through the [evaluation harness](https://github.com/chussenot/signalman/blob/main/docs/evaluation.md) (`signalman-ufg.6`). And `jev-latest` is an alias. When it moves past `jev-1.13.0`, the answers these tests and the committed run saw may change without any code changing; pin `typesafe.model` once the thresholds are tuned ([Configuration](https://github.com/chussenot/signalman/blob/main/docs/configuration.md)), and repeat this run when the alias moves.
 
 ## Repeating the run
 
