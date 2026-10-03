@@ -208,8 +208,13 @@ at its own path, so a refreshed document that closes one fails loudly:
   `Serialize` state, so such a request reaches the server, which is expected
   to refuse it with a 422.
 - The builder refuses what the schema allows: 1 or 256 options, 1 or 11
-  levels. It follows the HTTP API reference page, which is stricter than the
-  schema, and nobody has observed what a server does past those limits.
+  levels, an empty question id, an empty option key. It follows the HTTP
+  API reference page, which is stricter than the schema. The hosted API
+  was probed past those limits on 2026-10-03: it refuses 256 options and
+  11 levels with a 400, refuses an empty question id with a 400, and
+  answers one option or one level with probability 1 and accepts an empty
+  option key, so the upper bounds are the server's and the lower ones
+  this crate's alone (the rustdoc of `question` says why).
 - The crate decodes differently: it refuses a probability or confidence
   outside `[0, 1]` and a negative token count, which the schema types as
   bare numbers, because a value no threshold can use is better an error;

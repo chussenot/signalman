@@ -67,12 +67,22 @@
 //! since a Choice of one option decides nothing. It is deliberately stricter
 //! than the schema, and it rejects a duplicate id too, before anything is
 //! sent: the error names the question, and no round trip, retry or token is
-//! spent finding out. What a server does past the reference page's limits
-//! (a 422, or an answer) has not been observed, so the stricter bound is the
-//! safe one. The cost is that the limits are duplicated here and must follow
-//! the API when it changes them; `tests/contract.rs` pins the difference
-//! from the schema in both directions, so a refreshed OpenAPI document that
-//! adds or moves a bound fails there.
+//! spent finding out. The hosted API was probed past these limits on
+//! 2026-10-03 (`tests/live.rs`, `the_server_s_limits_match_the_reference_page`):
+//! it refuses 256 options and 11 levels with a 400 whose `detail` is a
+//! sentence (`Too many choices. Must have at most 255 choices.`), refuses
+//! zero options with a 400 and zero levels with a 422, and answers a Choice
+//! of one option and a Score of one level, both with probability 1 and
+//! confidence 1. So the upper bounds here are the server's, and the lower
+//! ones are this crate's alone: a one-option Choice and a one-level Score
+//! are accepted upstream and decide nothing. An empty question id is
+//! refused here too, as the server refuses it (`Question key cannot be
+//! empty.`), and so is an empty option key, which the server accepts and
+//! can choose, leaving the caller an answer it cannot name. The cost is
+//! that the limits are duplicated here and must follow the API when it
+//! changes them; `tests/contract.rs` pins the difference from the schema in
+//! both directions, so a refreshed OpenAPI document that adds or moves a
+//! bound fails there.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -444,6 +454,14 @@ impl Questions {
     }
 
     fn insert<A>(&mut self, id: String, question: Question) -> Result<Handle<A>> {
+        // The hosted API refuses an empty key with a 400 (`Question key
+        // cannot be empty.`); refusing it here costs no round trip.
+        if id.is_empty() {
+            return Err(Error::InvalidQuestion {
+                id,
+                reason: "a question id cannot be empty".to_owned(),
+            });
+        }
         match self.map.entry(id.clone()) {
             Entry::Occupied(_) => Err(Error::DuplicateQuestionId(id)),
             Entry::Vacant(slot) => {
@@ -470,6 +488,15 @@ fn validate_choice(id: &str, criteria: &BTreeMap<String, Value>) -> Result<()> {
             reason: format!("a Choice allows at most {MAX_CHOICE_OPTIONS} options"),
         });
     }
+    // The hosted API accepts an empty key and gives it probability like any
+    // other, so it can come back as the `choice`: an answer no caller can
+    // name or act on.
+    if criteria.contains_key("") {
+        return Err(Error::InvalidQuestion {
+            id: id.to_owned(),
+            reason: "a Choice option key cannot be empty".to_owned(),
+        });
+    }
     Ok(())
 }
 
@@ -479,6 +506,34 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_empty_question_id_is_refused_before_sending() {
+        // The hosted API answers it with a 400 (`Question key cannot be
+        // empty.`); here it costs no round trip.
+        let mut q = Questions::new();
+        let err = q.noul("", "Is `m` a greeting?", None).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidQuestion { id, reason } if id.is_empty() && reason.contains("empty")),
+            "{err:?}"
+        );
+        assert!(q.is_empty(), "a refused question is not added");
+    }
+
+    #[test]
+    fn an_empty_option_key_is_refused_before_sending() {
+        // The hosted API accepts it and can choose it; a chosen empty string
+        // is an answer no caller can name.
+        let mut q = Questions::new();
+        let err = q
+            .dynamic_choice("c", "pick", [(String::new(), None), ("a".to_owned(), None)])
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidQuestion { id, reason } if id == "c" && reason.contains("option key")),
+            "{err:?}"
+        );
+        assert!(q.is_empty(), "a refused question is not added");
+    }
 
     options! {
         enum Colour {
