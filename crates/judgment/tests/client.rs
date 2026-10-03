@@ -802,8 +802,12 @@ async fn lists_models() {
         .await
         .unwrap();
     let names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
-    assert_eq!(names, ["jev-latest", "jev-1.13.0"]);
-    assert_eq!(models[1].release_date, "2026-09-15");
+    // The fixture is the hosted API's list as served on 2026-10-03: the two
+    // aliases, not the versioned name they resolve to, and a release date
+    // that is an RFC 3339 timestamp where the OpenAPI document says
+    // `YYYY-MM-DD`. The field is kept as a string for that reason.
+    assert_eq!(names, ["jev-latest", "jev-preview"]);
+    assert_eq!(models[1].release_date, "2026-09-10T18:39:06.057655+00:00");
 }
 
 /// `Client` is a `SystemOne`: the same request through the trait object.
@@ -1705,4 +1709,102 @@ async fn usage_is_reported_for_a_response_that_does_not_fit() {
     // The tokens were spent, so they are reported, once.
     assert_eq!(observer.usage.load(Ordering::SeqCst), 1);
     assert_eq!(observer.input_tokens.load(Ordering::SeqCst), 40);
+}
+
+#[tokio::test]
+async fn a_400_with_a_code_and_no_message_keeps_the_code_as_kind() {
+    // The hosted API's 400 for a state over the token budget, as it was
+    // sent on 2026-10-03: a code and nothing else (`tests/live.rs`,
+    // `a_state_over_the_token_budget_is_a_400_with_a_kind`).
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_json(json!({ "detail": { "error_type": "max_tokens_exceeded" } })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = Questions::new();
+    q.noul("urgent", "Does `message` convey urgency?", None)
+        .unwrap();
+    let err = client(&server, RetryPolicy::none())
+        .system_one(&json!({ "message": "hi" }), &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::InvalidRequest { status: 400, detail, issues, kind: Some(kind), .. }
+                if detail == "max_tokens_exceeded" && issues.is_empty() && kind == "max_tokens_exceeded"
+        ),
+        "{err:?}"
+    );
+    assert!(err.is_over_token_budget());
+    assert_eq!(
+        err.to_string(),
+        "request rejected by the API (400): max_tokens_exceeded"
+    );
+
+    // The same server's 400 with a message: the message is the detail and
+    // the code is kept beside it; it is not the token budget.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "detail": { "error_type": "api_usage_error", "message": "Unknown model: jev-0.0.0" }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = client(&server, RetryPolicy::none())
+        .system_one(&json!({ "message": "hi" }), &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::InvalidRequest { status: 400, detail, kind: Some(kind), .. }
+                if detail == "Unknown model: jev-0.0.0" && kind == "api_usage_error"
+        ),
+        "{err:?}"
+    );
+    assert!(!err.is_over_token_budget());
+}
+
+#[tokio::test]
+async fn a_403_for_a_request_without_a_key_reads_the_server_s_message() {
+    // What the hosted API answers when no `Authorization` header reaches
+    // it (observed 2026-10-03): a 403, not a 401, with a message that says
+    // so. The client always sends the key, so this is what a stripping
+    // proxy looks like from here.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "detail": {
+                "error_type": "authentication_error",
+                "message": "Must supply an API key! Check your request and try again."
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut q = Questions::new();
+    q.noul("urgent", "Does `message` convey urgency?", None)
+        .unwrap();
+    let err = client(&server, RetryPolicy::none())
+        .system_one(&json!({ "message": "hi" }), &q)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            Error::PermissionDenied { detail, .. }
+                if detail == "Must supply an API key! Check your request and try again."
+        ),
+        "{err:?}"
+    );
+    assert!(!err.is_over_token_budget());
 }

@@ -8,6 +8,27 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Added
 
+- `Error::InvalidRequest::kind`: the server's machine-readable `error_type`
+  when a 400 body carries one (`api_usage_error`, `max_tokens_exceeded`,
+  observed on the hosted API 2026-10-03), and `Error::is_over_token_budget`
+  for the one 400 whose remedy is a smaller state. A 400 whose body has an
+  `error_type` and no message now reads that code as its detail instead of
+  the raw body.
+- `Choice::confidence_from_probabilities`, `Score::expected_value` and
+  `Score::confidence_from_probabilities`: the formulas TypeSafe documents,
+  computed from the wire's probabilities. On the hosted API they agree with
+  the wire's `confidence` and `score` within rounding; against a server that
+  defines confidence otherwise (Laya) the difference is now a number a
+  caller can log.
+- The builder refuses an empty question id (the hosted API refuses it with a
+  400) and an empty Choice option key (the hosted API accepts it and can
+  choose it).
+- Live tests for the server's own limits, the stability of repeated calls
+  (the decision holds; probabilities moved by up to 0.05 between identical
+  requests), the confidence formulas and the token budget
+  (`tests/live.rs`); `fixtures/models.json` is the hosted API's list as
+  served (two aliases, RFC 3339 release dates), no longer a guess from the
+  schema.
 - `eval::metrics::wilson_interval` and `QuestionMetrics::accuracy_interval95`:
   a 95% Wilson interval beside every accuracy, because a ratio on three
   labelled cases and one on three hundred read the same without it. A
@@ -24,6 +45,8 @@ All notable changes to the `judgment` crate. The format follows
 
 ### Changed
 
+- `Error::InvalidRequest` has a new field, `kind`; a struct literal or a
+  pattern that names every field needs `kind` or `..`.
 - `http::Exhausted` is an enum, `Transport { attempts, source }` beside the
   new `TooLarge { attempts, limit }`; a caller that destructured the struct
   matches the first variant instead.

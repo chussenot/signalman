@@ -129,6 +129,13 @@ pub enum Error {
     /// differs: a new key does not help, the account's access does. Both
     /// official SDKs name this status `PermissionDenied` too. `detail` is the
     /// server's message, read from the body as for [`Error::InvalidRequest`].
+    ///
+    /// On the hosted API a 403 is also what a request with no
+    /// `Authorization` header, or one with another scheme than `Bearer`,
+    /// gets: `authentication_error`, `Must supply an API key! Check your
+    /// request and try again.` (observed 2026-10-03). This client always
+    /// sends the key, so from here that message means a proxy or middleware
+    /// between the client and the API stripped the header.
     #[error("permission denied (403): {detail}{}", request_id_suffix(.request_id.as_deref()))]
     PermissionDenied {
         /// The server's message, or the body truncated when it has none.
@@ -151,15 +158,35 @@ pub enum Error {
     /// the fields a validation body names, so code can point at the
     /// question at fault without parsing the message. The value echoed back
     /// under each issue's `input` is dropped, since it can be a piece of the
-    /// state.
+    /// state (for a missing field the hosted API echoes the whole request).
+    ///
+    /// The hosted API sends three body shapes (observed 2026-10-03). A 422
+    /// is the OpenAPI document's `detail` list, one issue per alternative
+    /// when a union-typed field gets a value of the wrong type. A 400 from
+    /// one of its own limits is `{"detail": "<sentence>"}` (`Too many
+    /// choices. Must have at most 255 choices.`), and a 400 from its request
+    /// handling is `{"detail": {"error_type": "<code>", "message": …}}`,
+    /// where the message may be missing: `api_usage_error` with `Invalid
+    /// request.` for an extra top-level field or an unknown question type,
+    /// `Unknown model: …` for a model name (case-sensitive), and
+    /// `max_tokens_exceeded` with no message for a state over the token
+    /// budget ([`Error::is_over_token_budget`]). The code is kept as `kind`,
+    /// and when it is all the body says, it is the detail too.
     #[error("request rejected by the API ({status}): {detail}{}", request_id_suffix(.request_id.as_deref()))]
     InvalidRequest {
         /// HTTP status: 400 or 422.
         status: u16,
-        /// The server's message, the issues joined, or the body truncated.
+        /// The server's message, the issues joined, the code, or the body
+        /// truncated, in that order of preference.
         detail: String,
         /// The validation issues the body listed; empty when it listed none.
         issues: Vec<ValidationIssue>,
+        /// The server's machine-readable code, when the body carried one:
+        /// the hosted API's `detail.error_type` on a 400 (`api_usage_error`,
+        /// `max_tokens_exceeded`), or a generic body's `error.type`. `None`
+        /// for a 422, whose issues carry their own `kind` each, and for a
+        /// body that is a sentence.
+        kind: Option<String>,
         /// TypeSafe's `x-typesafe-request-id`, when the response had one.
         request_id: Option<String>,
     },
@@ -537,6 +564,19 @@ impl Error {
                 | Self::InvalidAnswer { .. }
         )
     }
+
+    /// True when the API refused the request for its size: an
+    /// [`Error::InvalidRequest`] whose `kind` is `max_tokens_exceeded`, the
+    /// hosted API's 400 for a state, plus the longest question, over its
+    /// token budget (32,000 tokens of a 64,000-token request when this was
+    /// written; the models page has the current figures). It is the one
+    /// refused body a caller fixes by sending less state rather than by
+    /// fixing a question, so it has a name; the 400 carries no message
+    /// beside the code (observed 2026-10-03), and the known-issues page says
+    /// accuracy falls with unrelated state well before the budget does.
+    pub fn is_over_token_budget(&self) -> bool {
+        matches!(self, Self::InvalidRequest { kind: Some(kind), .. } if kind == "max_tokens_exceeded")
+    }
 }
 
 /// One invalid value a 400 or 422 body named: an entry of the `detail` list
@@ -667,6 +707,7 @@ mod tests {
                     status: 422,
                     detail: "bad".into(),
                     issues: Vec::new(),
+                    kind: None,
                     request_id: id(),
                 },
                 "request rejected by the API (422): bad",
@@ -676,6 +717,7 @@ mod tests {
                     status: 400,
                     detail: "model mismatch".into(),
                     issues: Vec::new(),
+                    kind: None,
                     request_id: id(),
                 },
                 "request rejected by the API (400): model mismatch",
