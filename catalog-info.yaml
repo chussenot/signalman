@@ -1,7 +1,9 @@
-# Backstage catalog entries for signalman and its judgment crate. Register
-# this file's URL in the catalog (or via the GitHub discovery provider) and the
-# service, the library, their TechDocs (docs/ and crates/judgment/docs/) and
-# their dependencies show up in the portal.
+# Backstage catalog entries for signalman. Register this file's URL in the
+# catalog (or via the GitHub discovery provider) and the service, its TechDocs
+# (docs/) and its dependencies show up in the portal. The judgment crate's
+# Component is registered from its own repository,
+# https://github.com/chussenot/judgment (decision 0012); the service depends
+# on it below.
 apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
@@ -36,36 +38,6 @@ spec:
     - resource:default/typesafe-api
   # Registered so alert routes and this service can be traced from one another.
   consumesApis: []
----
-# The typed TypeSafe client, a workspace member published apart from the
-# application (decision 0010), with its own documentation set (decision 0011)
-# built by crates/judgment/mkdocs.yml.
-apiVersion: backstage.io/v1alpha1
-kind: Component
-metadata:
-  name: judgment
-  title: judgment
-  description: >-
-    Rust crate for typed, calibrated judgments from TypeSafe System One
-    models (Jev) and compatible backends: typed questions and answers, the
-    HTTP client with SDK-default retries, record and replay, evaluation.
-  tags:
-    - rust
-    - library
-  annotations:
-    backstage.io/techdocs-ref: dir:./crates/judgment
-    github.com/project-slug: chussenot/signalman
-  links:
-    - url: https://github.com/chussenot/signalman/tree/main/crates/judgment
-      title: Source
-      icon: github
-spec:
-  type: library
-  lifecycle: experimental
-  # Replace with the group that operates signalman in your catalog.
-  owner: group:default/platform-engineering
-  dependsOn:
-    - resource:default/typesafe-api
 ---
 apiVersion: backstage.io/v1alpha1
 kind: Resource

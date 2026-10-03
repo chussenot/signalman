@@ -43,17 +43,17 @@ mise tasks          # everything below
 
 ## Quality gates
 
-Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the libraries carry: the crate-level walkthroughs in `src/lib.rs` and `crates/judgment/src/lib.rs` are `no_run`, so they compile against the public API on every test run without an API key; the `options!` example in `crates/judgment/src/question.rs` runs and asserts the generated enum's keys; and the `RetryPolicy` example in `crates/judgment/src/http.rs` builds a policy with a budget by struct update, which pins that the struct stays constructible that way. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only; a third job builds the container image with plain `docker` and publishes it to GHCR on a `v*` tag.
+Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key; the judgment crate's doc tests run in its repository. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only; a third job builds the container image with plain `docker` and publishes it to GHCR on a `v*` tag.
 
-The repository is a Cargo workspace: the root package is `signalman` and `crates/judgment` is its one member ([decision 0010](decisions/0010-extract-the-judgment-core-into-a-crate.md)). The crate declares its own package fields, dependency versions and lints rather than inheriting the root's, so it builds from a checkout of its directory alone ([decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md); [Extracting the judgment crate](judgment-extraction.md) is the runbook); until the split the two manifests are kept in step by hand, the lint set is the same list in both, and every gate runs with `--workspace` so the crate's tests and doc tests count. `cargo check -p judgment --no-default-features` must keep passing: the crate's questions, answers, recordings and metrics build without its `http` feature, for a project that brings its own transport, and `mise run check` and CI run it as `check:minimal`. `cargo package -p judgment --list` shows what a publish would ship, which is how to see that a file added to the crate is included before the first `cargo publish -p judgment`.
+The root package `signalman` is the one package in this repository since the `judgment` crate moved to its own ([decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md); [Extracting the judgment crate](judgment-extraction.md) records how). signalman takes the crate as a git dependency pinned to a revision, in `[dependencies]` and, with the `openapi` feature, in `[dev-dependencies]`; the two pins move together, deliberately, and until they move a change to the crate does not reach signalman's tests. The `[workspace]` table stays, so every gate still runs with `--workspace`.
 
-The exceptions to "tests never reach the network" are two targets whose tests are all `#[ignore]`, so the gate builds them and never runs them. `crates/judgment/tests/live.rs` runs by hand with `cargo test -p judgment --test live -- --ignored` against the server named in `JUDGMENT_LIVE_BASE_URL`. It exists because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/laya-typed-decisions.md) and [judgment against the hosted TypeSafe API](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/hosted-typesafe.md) are the records of two such runs; `mise run live:typesafe` repeats the second with the key from `.env`, and is never part of `check`. The crate's `typed_decisions` example is the same idea at benchmark scale. `crates/judgment/tests/openapi_drift.rs` is the second: one ignored test that needs only the network (no key, no server of your own), described below.
+The exceptions to "tests never reach the network" moved with the crate: its ignored live tests and its OpenAPI drift test run from its repository (`mise run live:typesafe` there, with the key from `.env`). They exist because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](https://github.com/chussenot/judgment/blob/main/docs/verification/laya-typed-decisions.md) and [judgment against the hosted TypeSafe API](https://github.com/chussenot/judgment/blob/main/docs/verification/hosted-typesafe.md) are the records of two such runs. Nothing in this repository's gate reaches the network.
 
 `docs/schema/outcome.v1.json` is generated, not hand-edited: `tests/outcome_contract.rs` fails when the committed file no longer matches the types, and its message says to run `mise run schema` and then classify the change as additive or breaking ([the outcome contract](triage.md#the-outcome-contract)). The same test file checks that the example in `docs/triage.md` is a document the schema accepts.
 
-The TypeSafe OpenAPI document is vendored at `crates/judgment/tests/fixtures/typesafe-openapi.json`, a copy of <https://api.typesafe.ai/openapi.json>, and it is never hand-edited. `crates/judgment/tests/contract.rs` validates against it every request shape the crate's builders produce (with the method, path, content type and bearer scheme the document names, and against a closed copy of the request components, since the published schema closes no object and would take a misspelt optional field as an extra key), every `Fake` response and every committed recording, and pins each place the crate and the schema disagree at its own path, except an answer of a kind the document does not name, which the discriminator-mapping check catches instead; `tests/typesafe_contract.rs` does the same for signalman's own traffic, reading the document through `judgment::contract::OPENAPI_DOCUMENT` (the crate's `openapi` feature, on in the dev-dependencies) rather than by a path into the crate's tree: the triage request for every example alert, the shared TypeSafe mocks in `tests/common/` and the committed Jev run. Both run offline in the default gate. The copy goes stale only when TypeSafe publishes a new document, and `cargo test -p judgment --test openapi_drift -- --ignored` says so, naming the paths and schemas that differ. `JUDGMENT_OPENAPI_WRITE=1 cargo test -p judgment --test openapi_drift -- --ignored` refreshes it, written canonically (sorted keys, final newline, which `contract.rs` checks) so the diff is only the contract's change. Review a refresh by rerunning `cargo test -p judgment --test contract`: a pinned gap the new document closes fails at its own path, and every request, Fake and recording is checked against the new schemas.
+The TypeSafe OpenAPI document is vendored in the judgment crate (its `tests/fixtures/typesafe-openapi.json`, a copy of <https://api.typesafe.ai/openapi.json>, refreshed only through its drift test and contract-tested there) and reaches this repository as `judgment::contract::OPENAPI_DOCUMENT`, the crate's `openapi` feature, on in the dev-dependencies. `tests/typesafe_contract.rs` validates signalman's own traffic against it, offline and in the default gate: the triage request for every example alert, the shared TypeSafe mocks in `tests/common/` and the committed Jev run. A new document is therefore a crate change first, then a pin bump here, and the bump is where a shape the new document refuses shows up.
 
-Each documentation set's `llms.txt` and `llms-full.txt` are generated the same way, from its nav and page frontmatter ([Documentation](#documentation)).
+The documentation's `llms.txt` and `llms-full.txt` are generated the same way, from the nav and page frontmatter ([Documentation](#documentation)).
 
 ## Git hooks
 
@@ -77,29 +77,6 @@ flowchart TD
 ## Layout
 
 ```
-crates/judgment/   the judgment crate (decision 0010): the typed client, reusable on its own
-  src/client.rs    TypeSafe HTTP client
-  src/http.rs      shared retry loop, backoff, the server's wait (the other clients use it too)
-  src/question.rs  Questions builder, Options trait, options! macro, Handle<A>
-  src/answer.rs    Answer wire shape, Probability/Confidence, typed views, Response::verify
-  src/error.rs     TypeSafe-side error enum
-  src/backend.rs   SystemOne: the trait; Client, Fake, Recorder and Replay implement it
-  src/eval/        recordings, one Judgment per answer and label, per-question metrics
-  src/observer.rs  the Observer seam: token usage and failed attempts, reported to the application
-  tests/client.rs  the client against a mock TypeSafe API; tests/backend.rs the other backends
-  tests/spans.rs   what the client records on its spans, through a capturing layer
-  tests/observer.rs what the client reports to the global observer; a target of its own
-                   because the global observer is set once per process
-  tests/contract.rs requests, Fakes and recordings against the vendored OpenAPI document
-  tests/openapi_drift.rs ignored: the vendored OpenAPI document against the live one (network only)
-  tests/fixtures/  the vendored typesafe-openapi.json (written only by openapi_drift.rs) and models.json
-  tests/live.rs    ignored tests against a real server, run by hand (JUDGMENT_LIVE_BASE_URL)
-  examples/        typed_decisions.rs replays the typed-decisions benchmark; fan_out.rs, confidence_routing.rs,
-                   composite_scoring.rs and intent_routing.rs are TypeSafe's four patterns; each <name>/recordings/ replays offline;
-                   laya/serve_laya.py is a System One-compatible shim over the laya package, the one server with GET /v1/models
-  docs/            the crate's own documentation set, with mkdocs.yml beside it (decision 0011); docs/llms*.txt generated
-  (root files)     CLAUDE.md, .claude/, .github/, mise.toml, .pre-commit-config.yaml, scripts/, catalog-info.yaml, LICENSE and the
-                   toolchain and lint configs: the crate's own repository scaffolding, inert here until the split (decision 0012)
 src/               the signalman application, depending on judgment by path
   triage/          Alert state, owner candidates, questions, Decision policy
   eval/            evaluation harness: cases, grading, metrics, record and replay
@@ -129,25 +106,21 @@ Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the g
 
 ## Documentation
 
-The repository holds two documentation sets, one per concern ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md)). A page belongs to the `judgment` crate when it would still be true, and still be needed, if signalman did not exist; otherwise it is signalman's. A page that informs both stays with signalman and says what it means for the crate in a section of its own.
+The documentation here is signalman's; the `judgment` crate's is in its own repository, [chussenot/judgment](https://github.com/chussenot/judgment) ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md) split the sets by concern, [decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md) the repositories). A page belongs to the crate when it would still be true, and still be needed, if signalman did not exist; it is then written there, in a pull request on that repository. A page that informs both stays here and says what it means for the crate in a section of its own.
 
-| | signalman | the `judgment` crate |
+| | signalman, here | the `judgment` crate, in its repository |
 |---|---|---|
-| Front door | `README.md` | `crates/judgment/README.md` (no frontmatter: crates.io renders it) |
-| Pages | `docs/` | `crates/judgment/docs/` |
-| Nav | `mkdocs.yml` | `crates/judgment/mkdocs.yml` |
-| Map of the pages | `docs/index.md` | `crates/judgment/docs/index.md` |
-| Decision records | `docs/decisions/` | `crates/judgment/docs/decisions/` |
-| `llms.txt` preamble | `docs/llms-intro.txt` | `crates/judgment/docs/llms-intro.txt` |
+| Front door | `README.md` | `README.md` (no frontmatter: crates.io renders it) |
+| Pages | `docs/` | `docs/` |
+| Nav | `mkdocs.yml` | `mkdocs.yml` |
+| Map of the pages | `docs/index.md` | `docs/index.md` |
+| Decision records | `docs/decisions/` | `docs/decisions/` |
+| `llms.txt` preamble | `docs/llms-intro.txt` | `docs/llms-intro.txt` |
 | TechDocs component | `signalman` | `judgment` |
 
-Decision records share one numbering sequence across both sets and live with the code they govern; signalman's index keeps a row for each crate record, so the sequence has no hole.
+Decision records share one numbering sequence across the two repositories and live with the code they govern; signalman's index keeps a row for each crate record, so the sequence has no hole.
 
-Links inside a set are relative. Links from one set to the other are absolute GitHub URLs on the default branch, the only form that resolves on GitHub, in a TechDocs build and in a packaged crate; the cost is that such a link points at what is merged, so a renamed page breaks it until the docs auditor's link check finds it. Paths written in the crate's sources and pages are relative to the crate (`docs/design.md`, `tests/live.rs`), because the crate is packaged without the workspace.
-
-Every page in both sets starts with YAML frontmatter (`title`, `description`, `status`, `last_reviewed`, `tags`), checked by `scripts/check-frontmatter.sh`. `scripts/gen-llms-txt.sh` writes each set's `llms.txt` and `llms-full.txt` ([llmstxt.org](https://llmstxt.org)) from its nav and that frontmatter: the set's README summary, the preamble in its `llms-intro.txt` (where `@RAW@` stands for the raw URL of the set's directory), then one line per page with its title and description in nav order, top-level pages first and each nav group as its own section, linking the raw Markdown on the default branch; the full file concatenates the pages. A page opts out of both with `llms: false` in its frontmatter, which only the decision-record template does. `docs:check` regenerates both sets into a temporary directory and fails when a committed file differs, so a new page, a changed description or a nav edit cannot leave an index stale; a page under either `docs/` that its nav does not list fails the check too. `mise run docs:llms` rewrites them. The scripts are POSIX `sh` and `awk`, so they need nothing `mise install` does not already provide.
-
-Each `mkdocs.yml` builds its set as TechDocs for the component that `catalog-info.yaml` declares with it. Page frontmatter is read as mkdocs page meta. Mermaid blocks are declared as a superfences custom fence so they survive the build; rendering them in Backstage requires the `backstage-plugin-techdocs-addon-mermaid` frontend addon. GitHub renders the same blocks without any setup.
+Links inside this set are relative. Links to the crate's pages are absolute GitHub URLs on its default branch, the only form that resolves on GitHub and in a TechDocs build; the cost is that such a link points at what is merged there, so a page renamed in the crate's repository breaks it until the docs auditor's link check finds it.
 
 ## Claude Code harness
 
@@ -171,8 +144,8 @@ Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report;
 | `observability-reviewer` | reviews | spans, metrics and log fields on a change: names, no secrets in fields, instruments only in `src/telemetry.rs`, the docs table |
 | `question-designer` | proposes | questions, criteria and policy thresholds |
 | `test-writer` | writes | tests in this repository's style: wiremock per upstream, a real listener for transports, a negative case per gate, the footguns already paid for |
-| `docs-writer` | writes | both documentation sets, each page in the set its concern belongs to (decision 0011), explaining the problem solved and the trade-off taken, not only the mechanism |
-| `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, a page in the wrong set, a broken link across sets, drift in either generated index |
+| `docs-writer` | writes | signalman's documentation, with what belongs to the crate sent to its repository (decision 0011), explaining the problem solved and the trade-off taken, not only the mechanism |
+| `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, a page that belongs in the crate's repository, a broken link into it, drift in the generated index |
 | `refactor-scout` | reports | dead public items, duplicated logic, stale comments and unused dependencies, as a ranked plan with evidence |
 | `pr-shepherd` | acts | opening a pull request in the repository's shape and reading its CI checks: the first failing step reproduced locally, and the one standing-down comment when a failure is not the change's (refused at scheduling, or red on `main` too) |
 

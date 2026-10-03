@@ -8,7 +8,7 @@ tags: [index]
 
 # Documentation
 
-The [README](../README.md) says why signalman exists. These pages say how it works and how to work on it. The `judgment` crate, the typed TypeSafe client signalman is built on, documents itself in [its own folder](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/index.md) ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md)).
+The [README](../README.md) says why signalman exists. These pages say how it works and how to work on it. The `judgment` crate, the typed TypeSafe client signalman is built on, documents itself in [its own repository](https://github.com/chussenot/judgment/blob/main/docs/index.md) ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md), [decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md)).
 
 ## By question
 
@@ -26,7 +26,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | How deploys and configuration changes reach the triage | [Change feed](changes.md) |
 | How an agent calls signalman's judgments | [MCP server](mcp.md) |
 | Why the typed client is the `judgment` crate, separate from the triager, and how signalman uses it | [TypeSafe client](typesafe-client.md) |
-| How the crate works, what it guarantees, what real servers did with it, how to use it in another project | the crate's own documentation: [README](https://github.com/chussenot/signalman/blob/main/crates/judgment/README.md), [index](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/index.md) |
+| How the crate works, what it guarantees, what real servers did with it, how to use it in another project | the crate's own documentation: [README](https://github.com/chussenot/judgment/blob/main/README.md), [index](https://github.com/chussenot/judgment/blob/main/docs/index.md) |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
 | How the crate moves to its own repository with its history, and what each repository changes then | [Extracting the judgment crate](judgment-extraction.md) |
 | What the open Jev reproductions and the Decision Index mean for provider choice, self-hosting, question design and thresholds | [Open System One models](research/open-system-one-models.md) |
@@ -44,6 +44,6 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 - `llms.txt` and `llms-full.txt` are generated from the `mkdocs.yml` nav and the frontmatter by `scripts/gen-llms-txt.sh` (`mise run docs:llms`), in nav order; a page opts out with `llms: false` (the decision template does). `mise run check` fails when they are stale. Never edit them by hand: change the page or the nav.
 - Diagrams are Mermaid, kept next to the prose they explain. GitHub renders them natively; TechDocs needs the Mermaid addon ([Development](development.md#documentation)).
 - Decision records follow [MADR](https://adr.github.io/madr/) ([Decisions](decisions/README.md)).
-- A page belongs here when it is about signalman. A page that would still be true, and still be needed, if signalman did not exist belongs to the `judgment` crate, under `crates/judgment/docs/` ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md)). A page that informs both, such as [Open System One models](research/open-system-one-models.md), stays here and says what it means for the crate in a section of its own.
+- A page belongs here when it is about signalman. A page that would still be true, and still be needed, if signalman did not exist belongs to the `judgment` crate, in [its repository](https://github.com/chussenot/judgment) ([decision 0011](decisions/0011-documentation-lives-with-its-concern.md), [decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md)). A page that informs both, such as [Open System One models](research/open-system-one-models.md), stays here and says what it means for the crate in a section of its own.
 - Links between pages here are relative. A link to the crate's documentation is an absolute GitHub URL, because it leaves this documentation set.
 - Pages describe the code as it is. A claim that depends on something unverified says so where the claim is made.

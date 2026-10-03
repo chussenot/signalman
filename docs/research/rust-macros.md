@@ -2,7 +2,7 @@
 title: Rust macros
 description: A study of where a declarative or procedural macro would remove repetition in signalman and the judgment crate, with the evidence for each candidate, what the macro would generate and what would stay hand-written, the cost of each, and a ranked recommendation; two small declarative macros are worth adding, one existing macro is worth deleting, and the largest repetition is better solved without a macro.
 status: current
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-03
 tags: [research, rust, maintainability, judgment]
 ---
 
@@ -20,7 +20,7 @@ The workspace leans on other people's macros and defines two of its own.
 | `#[tracing::instrument]` | client methods and the flow | 15 in `src/`, 2 in the crate |
 | rmcp `#[tool]`, `#[tool_router]`, `#[tool_handler]` | `src/mcp.rs` | 6 tools |
 | `json!` | tests and fixtures | 56 in `src/`, 231 in `tests/`, 227 in the crate |
-| `options!` (declarative, the crate's own) | `crates/judgment/src/question.rs` | defined once; used in six tests and three doc examples; **not used by signalman**, which builds its owner options at run time with `dynamic_choice` |
+| `options!` (declarative, the crate's own) | `src/question.rs` in the judgment crate | defined once; used in six tests and three doc examples; **not used by signalman**, which builds its owner options at run time with `dynamic_choice` |
 | `take!` (declarative, local) | `TextsFile::apply` in `src/config.rs` | one use, over 13 fields |
 
 The dependency tree already carries `syn`, `quote` and `proc-macro2` through serde, thiserror, clap, schemars, rmcp and tokio, so a procedural macro of our own would add a crate and a build step, not a new dependency. It would still add the thing proc macros cost most: an expansion the reader cannot see in the source file and that rust-analyzer shows only on request.
@@ -93,6 +93,6 @@ What this study does not recommend is a general move toward macros. The workspac
 
 ## Sources
 
-- The survey of commit `724f2ef`, 2026-10-02, by file and line: `src/config.rs`, `src/triage/questions.rs`, `src/telemetry.rs`, `src/mcp.rs`, `src/outcome.rs`, `src/eval/mod.rs`, `src/incidentio/types.rs`, `src/changes/`, `tests/`, and `crates/judgment/src/{question,answer,backend,error}.rs` and `crates/judgment/tests/`.
+- The survey of commit `724f2ef`, 2026-10-02, by file and line: `src/config.rs`, `src/triage/questions.rs`, `src/telemetry.rs`, `src/mcp.rs`, `src/outcome.rs`, `src/eval/mod.rs`, `src/incidentio/types.rs`, `src/changes/`, `tests/`, and, in the judgment crate (then `crates/judgment/`), `src/{question,answer,backend,error}.rs` and `tests/`.
 - [The Rust Reference on macros by example](https://doc.rust-lang.org/reference/macros-by-example.html) and [procedural macros](https://doc.rust-lang.org/reference/procedural-macros.html), for what each kind can and cannot see.
-- [Decision 0003](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/0003-typed-handles-between-questions-and-answers.md) and [decision 0006](../decisions/0006-layered-configuration.md), which fix what must stay explicit.
+- [Decision 0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md) and [decision 0006](../decisions/0006-layered-configuration.md), which fix what must stay explicit.

@@ -62,4 +62,4 @@ Not adopted, and why:
 
 - [jev-recipes](https://github.com/agencyenterprise/jev-recipes), commit `53e1743` (2026-09-30): `src/decisions.ts`, `evaluation/archive.ts`, `evaluation/report.ts`, `docs/evaluation.md`, `scripts/`, and the `recipes/` tree. Read 2026-10-02.
 - [TypeSafe documentation](https://docs.typesafe.ai/llms.txt): the state and building-guide pages, for what is and is not prescribed about instructions.
-- [Open System One models](open-system-one-models.md) and [System One client libraries](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/research/system-one-client-libraries.md): the two earlier research notes this one follows.
+- [Open System One models](open-system-one-models.md) and [System One client libraries](https://github.com/chussenot/judgment/blob/main/docs/research/system-one-client-libraries.md): the two earlier research notes this one follows.

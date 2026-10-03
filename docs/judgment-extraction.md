@@ -8,6 +8,8 @@ tags: [judgment, development, repository, decisions]
 
 # Extracting the judgment crate
 
+**Done on 2026-10-03.** The crate is at <https://github.com/chussenot/judgment>, split as described below, and signalman depends on it by git since the same day. The page stays as the record of how.
+
 [Decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md) moves the `judgment` crate out of this workspace into `chussenot/judgment`, with the history of `crates/judgment`. This page is the runbook: what is already in place, the split as rehearsed on 2026-10-03, the first commit in the new repository, and the pull request signalman makes once the crate is gone. It is written for a session that has not seen this repository before; every command runs from a shell with `git`, `cargo` and `mise`.
 
 Do the split from `main` after the pull request that added this page has merged: the preparation below is in that commit.

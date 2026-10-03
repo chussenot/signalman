@@ -2,7 +2,7 @@
 title: Open System One models
 description: What the open reproductions of TypeSafe's Jev, the Jev Decision Index leaderboard and the Laya project establish, and the engineering decisions for judgment and signalman that follow from it: provider portability, self-hosting economics, question design rules, calibration policy and evaluation method.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-03
 tags: [research, typesafe, jev, laya, judgment, evaluation, calibration]
 ---
 
@@ -14,7 +14,7 @@ Sources, read on 2026-09-25:
 
 - The [Jev Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index), a community leaderboard and news tracker maintained by multimodalart (apolinario), edition 0.2 of 2026-09-24: nearly fifty open reproductions plus Jev 1.13.0 on one frozen suite, with a [methodology](https://huggingface.co/spaces/multimodalart/jev-decision-index/blob/main/methodology.html) page and the [build scripts](https://github.com/apolinario/decision-index). Unofficial and not affiliated with TypeSafe.
 - The [Laya repository](https://github.com/NandhaKishorM/laya) (Convai Innovations, Apache 2.0), README at 0.3.20, its [documentation site](https://nandhakishorm.github.io/laya/) and the [typed-decisions dataset](https://huggingface.co/datasets/LocalLLaMA/typed-decisions).
-- This project's own runs: [Laya as a model provider](../laya.md) (2026-09-21, zero-shot on three alerts) and [judgment against Laya typed-decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/laya-typed-decisions.md) (2026-09-24, the crate against the fine-tuned checkpoint on its benchmark).
+- This project's own runs: [Laya as a model provider](../laya.md) (2026-09-21, zero-shot on three alerts) and [judgment against Laya typed-decisions](https://github.com/chussenot/judgment/blob/main/docs/verification/laya-typed-decisions.md) (2026-09-24, the crate against the fine-tuned checkpoint on its benchmark).
 
 Numbers from the first two are as published by their authors; nothing on this page was re-measured except where the third source says so. Confidence in each conclusion is stated where it is less than high.
 

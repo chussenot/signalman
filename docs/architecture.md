@@ -2,7 +2,7 @@
 title: Architecture
 description: The components of signalman, how an alert moves through them, what state each replica holds and why it is in memory, where the boundaries between catalog, model and code lie, and how failures are contained.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-03
 tags: [architecture]
 ---
 
@@ -81,11 +81,11 @@ flowchart LR
 | Triage types | `src/triage/mod.rs` | The alert, candidate and answer types that questions, policy and note share, and the built-in team list used when no catalog is configured |
 | Outcome contract | `src/outcome.rs` | One versioned JSON document per triage, so scripts, log pipelines and agents index fields instead of parsing prose; schema committed and drift-tested |
 | MCP server | `src/mcp.rs`, `src/mcp/http.rs` | Lets agents call the judgments the CLI already exposes: five read-only tools plus the gated `apply_qualification`, over one dry-run `Triager`, on stdio or Streamable HTTP behind a bearer token ([MCP](mcp.md)) |
-| Evaluation harness | `src/eval/`, `crates/judgment/src/eval/` | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model The measuring (recordings, per-question grading, accuracy, Brier, calibration error) is the judgment crate's; the labels, the question-to-label mapping and the decision are signalman's |
-| TypeSafe client | `crates/judgment/src/client.rs`, `crates/judgment/src/question.rs`, `crates/judgment/src/answer.rs`, `crates/judgment/src/error.rs` | The wire contract, typed handles and validated probabilities: wire strings become Rust types at one place |
+| Evaluation harness | `src/eval/`, and `judgment::eval` in the crate | Grades judgments and decisions against labelled alerts, and replays recorded responses so thresholds and wording are tuned without calling the model The measuring (recordings, per-question grading, accuracy, Brier, calibration error) is the judgment crate's; the labels, the question-to-label mapping and the decision are signalman's |
+| TypeSafe client | the `judgment` crate ([chussenot/judgment](https://github.com/chussenot/judgment)): its `src/client.rs`, `src/question.rs`, `src/answer.rs`, `src/error.rs` | The wire contract, typed handles and validated probabilities: wire strings become Rust types at one place |
 | incident.io client | `src/incidentio/client.rs`, `types.rs`, `error.rs` | Incidents, alerts, tags, attachments, notes and alert-source events; wire types ignore unknown fields so an API addition is not an outage |
 | Backstage client | `src/backstage/client.rs`, `types.rs`, `error.rs` | Catalog queries, the TechDocs search index and notifications; lenient entity types so catalog drift is a named `Decode` error, not a panic |
-| Shared HTTP | `crates/judgment/src/http.rs` | One retry loop for all three clients, so transient statuses are handled the same way everywhere and every failed attempt is counted once |
+| Shared HTTP | `judgment::http`, the crate's `src/http.rs` | One retry loop for all three clients, so transient statuses are handled the same way everywhere and every failed attempt is counted once |
 | Telemetry | `src/telemetry.rs` | The `tracing` subscriber, OTLP/HTTP export of spans and metrics when an endpoint is set, and the one place that names an instrument, so the table in [Observability](observability.md) has a single source |
 | Configuration | `src/config.rs` | One function resolves default, file, environment and flag, so the precedence table in [Configuration](configuration.md) describes code rather than approximating it |
 | CLI | `src/main.rs` | `triage`, `eval`, `serve`, `mcp`, `models`, `incidentio`, `backstage`, `config`, `schema`; builds every client and the flow from the resolved configuration |
@@ -143,7 +143,7 @@ Four boundaries organise the design. Each is a decision record.
 
 **signalman versus agents.** signalman is a tool that agents call: it answers with typed judgments over a versioned JSON contract ([Triage](triage.md#the-outcome-contract)) and tools over the [Model Context Protocol](mcp.md), read-only except for one write tool that is off by default (`signalman mcp`, or `/mcp` on the receiver). The agent owns the investigation and the conversation; no model inside signalman chooses actions or writes prose. [ADR 0008](decisions/0008-signalman-is-a-tool-for-agents.md).
 
-A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/0003-typed-handles-between-questions-and-answers.md).
+A fifth, internal boundary: every question returns a typed handle, and every answer is read through one. Wire strings become Rust types at exactly one place, and a response that does not answer the questions it was sent (an option nobody offered, a Score off its scale) is an error there, not a guess. [ADR 0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md).
 
 ## Failure containment
 

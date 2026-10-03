@@ -10,13 +10,13 @@ tags: [decisions, adr, madr]
 
 Each record captures one architecturally significant decision: the problem, the options that were weighed, the choice, and what it costs. Records follow [MADR](https://adr.github.io/madr/), the Markdown Any Decision Record format, so the structure is the same across records and readers can compare options rather than reconstruct them.
 
-Numbers are one sequence for the repository, and a record lives with the code it governs ([0011](0011-documentation-lives-with-its-concern.md)): a record about the `judgment` crate's own design is in the crate's [decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/README.md), and keeps its row here so the sequence has no hole.
+Numbers are one sequence for the repository, and a record lives with the code it governs ([0011](0011-documentation-lives-with-its-concern.md)): a record about the `judgment` crate's own design is in the crate's [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md), and keeps its row here so the sequence has no hole.
 
 | Id | Title | Status | Beads |
 |---|---|---|---|
 | [0001](0001-incidentio-remains-the-alert-hub.md) | incident.io remains the alert hub | accepted | `signalman-p2w` |
 | [0002](0002-calibrated-judgments-over-generated-text.md) | Calibrated judgments over generated text | accepted | |
-| [0003](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/0003-typed-handles-between-questions-and-answers.md) | Typed handles between questions and answers (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/README.md)) | accepted | |
+| [0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md) | Typed handles between questions and answers (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
 | [0004](0004-catalog-is-the-ownership-source-of-truth.md) | The catalog is the ownership source of truth | accepted | |
 | [0005](0005-observability-signals-enter-through-incidentio.md) | Observability signals enter through incident.io | accepted | `signalman-3l7.4` |
 | [0006](0006-layered-configuration.md) | Layered configuration with secrets outside the file | accepted | `signalman-071.4` |
@@ -34,16 +34,17 @@ Records are not edited after acceptance, so a fact that has moved since a record
 - 0006's confirmation counts four secret reads outside `src/config.rs`. There are now seven, in six files: the TypeSafe, incident.io and Backstage clients read their API key or token, the incident.io client also reads `INCIDENTIO_ALERT_SOURCE_TOKEN` for `triage --forward-to-incidentio`, the webhook verifier reads the signing secret, `src/changes/mod.rs` reads `SIGNALMAN_CHANGES_TOKEN`, and `src/mcp/http.rs` reads `SIGNALMAN_MCP_TOKEN`. Every one is a secret listed in [Configuration](../configuration.md#secrets); the rule the record states, that only `config.rs` reads a non-secret variable, holds again since the alert source id became the setting `incidentio.alert_source_config_id` (2026-09-23).
 - 0007's confirmation names `src/changes.rs`. The module is now the directory `src/changes/`: `mod.rs` holds the window and matching, `argocd.rs` and `gitlab.rs` the native adapters the record describes as translations of documented payloads.
 - 0010 puts the `Observer` on the client builder. The builder takes one (`ClientBuilder::observer`), but the retry loop the record keeps in the crate is a free function that the incident.io and Backstage clients call with no builder in reach, so failed attempts are reported through a process-wide observer instead: `judgment::observer::set_global`, installed once by `Providers::init` before any client exists. A client with no observer of its own reports usage to the global one too.
-- 0010 names the crate's documentation as its README and rustdoc, with `docs/typesafe-client.md` beside them. Since [0011](0011-documentation-lives-with-its-concern.md) the crate also has its own documentation set, `crates/judgment/docs/`, and `typesafe-client.md` covers only how signalman uses the crate.
+- 0010 names the crate's documentation as its README and rustdoc, with `docs/typesafe-client.md` beside them. Since [0011](0011-documentation-lives-with-its-concern.md) the crate also has its own documentation set, now in [its repository](https://github.com/chussenot/judgment), and `typesafe-client.md` covers only how signalman uses the crate.
 - 0010, 0003's neighbours in signalman's records and the pages citing 0003 had their links to it repointed when it moved to the crate (0011); no other line of an accepted record changed.
 - 0010 keeps the crate a workspace member "until a second consumer exists". [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) moves it to its own repository before that, for its history and its releases; signalman becomes the consumer that tests the API 0010 wanted a second consumer for.
+- 0012 is done: the crate moved to <https://github.com/chussenot/judgment> on 2026-10-03 with the history of `crates/judgment`, and signalman has depended on it by git, pinned to a revision, since the same day; the directory is gone from this repository.
 - 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record
 
-1. Copy [template.md](template.md) to `NNNN-short-title.md` with the next number of the repository's sequence (check the crate's [decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/decisions/README.md) too), and drop its `llms: false` line: that key keeps only the template itself out of [llms.txt](../llms.txt).
+1. Copy [template.md](template.md) to `NNNN-short-title.md` with the next number of the repository's sequence (check the crate's [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md) too), and drop its `llms: false` line: that key keeps only the template itself out of [llms.txt](../llms.txt).
 2. Fill the frontmatter (`title`, `description`, `status`, `date`, `decision-makers`) and every section. Keep options concrete; a record with one option is a note, not a decision.
 3. Set `status` to `proposed` until agreed, then `accepted`. A superseded record keeps its text and gains `status: superseded by 000N`.
-4. Add the row above and, when a beads decision issue exists, its id. A record that governs the `judgment` crate goes in `crates/judgment/docs/decisions/` and its nav instead, with a row here pointing to it.
+4. Add the row above and, when a beads decision issue exists, its id. A record that governs the `judgment` crate goes in the crate's `docs/decisions/` and its nav, in [chussenot/judgment](https://github.com/chussenot/judgment), instead, with a row here pointing to it.
 
 Records are not edited after acceptance except to mark them superseded; a change is a new record.

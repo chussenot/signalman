@@ -2,7 +2,8 @@
 
 Typed Rust client for the TypeSafe System One API, an alert-triage flow built
 on it, and an incident.io integration. The README says why; `docs/` says how.
-The judgment crate documents itself in `crates/judgment/` (README and `docs/`).
+The judgment crate lives in its own repository, https://github.com/chussenot/judgment,
+and documents itself there.
 
 ## Start here
 
@@ -16,22 +17,23 @@ The judgment crate documents itself in `crates/judgment/` (README and `docs/`).
 - Load the `typesafe:typesafe-ai` skill before touching questions, answers,
   the TypeSafe client or `src/triage/policy.rs`. The live docs are the
   contract; start at https://docs.typesafe.ai/llms.txt. The OpenAPI
-  document (https://api.typesafe.ai/openapi.json) is vendored at
-  `crates/judgment/tests/fixtures/typesafe-openapi.json`, checked by
-  `crates/judgment/tests/contract.rs` and `tests/typesafe_contract.rs`, and
-  refreshed only through the drift test; never hand-edit it.
-- The typed client is its own crate, `crates/judgment` (decision 0010), a
-  workspace member signalman depends on by path and re-exports. It is
-  generic: nothing about alerts, incident.io, Backstage or signalman's
-  telemetry goes in there. It reports token usage and failed attempts
-  through `judgment::Observer`, which `src/telemetry.rs` implements and
-  `Providers::init` installs globally; it emits `tracing` spans and no
-  metrics of its own. Its `http` feature gates the client; the questions
-  and answers build without it. Gate and tests run with `--workspace`. The
-  crate is moving to its own repository (decision 0012;
-  `docs/judgment-extraction.md` is the runbook): its directory already
-  carries its own manifest values and repository files, inert here; keep
-  them in step with the root's until the split.
+  document (https://api.typesafe.ai/openapi.json) is vendored in the
+  judgment crate and reaches this repository as
+  `judgment::contract::OPENAPI_DOCUMENT` (its `openapi` feature, on in the
+  dev-dependencies), which `tests/typesafe_contract.rs` checks signalman's
+  own traffic against; a refresh is a crate change, then a pin bump here.
+- The typed client is the `judgment` crate (decision 0010), in its own
+  repository since 2026-10-03 (decision 0012): a git dependency pinned to a
+  revision in `Cargo.toml`, in `[dependencies]` and, with the `openapi`
+  feature, in `[dev-dependencies]`. Bump both together, deliberately, and
+  read the crate's CHANGELOG when you do; until the pin moves, a change to
+  the crate does not reach these tests. Its rules live in its repository.
+  signalman re-exports it, implements `judgment::Observer` in
+  `src/telemetry.rs` and installs it globally in `Providers::init`; the
+  crate emits `tracing` spans and no metrics of its own. Nothing about
+  alerts, incident.io, Backstage or signalman's telemetry belongs in the
+  crate: a need there is a pull request there, then a pin bump here. Gate
+  and tests still run with `--workspace`.
 - incident.io contract: OpenAPI v3 at https://api.incident.io/v1/openapiV3.json
   and https://docs.incident.io/llms.txt. Never create incidents directly
   (decision `signalman-p2w`, `docs/decisions/0001-incidentio-remains-the-alert-hub.md`).
@@ -83,29 +85,26 @@ The judgment crate documents itself in `crates/judgment/` (README and `docs/`).
   `Outcome` document (`validate`, `decision`, `answers`, `expected_tags`) —
   never add a second write path that trusts free-form input instead.
 - Tests never call a real API: wiremock for both clients, hand-built answers
-  for policy. The exceptions are `crates/judgment/tests/live.rs`, all
-  `#[ignore]`, run by hand against `JUDGMENT_LIVE_BASE_URL`
-  (`crates/judgment/docs/verification/laya-typed-decisions.md`), and
-  `crates/judgment/tests/openapi_drift.rs`, ignored, network only, no key.
+  for policy. The judgment crate's ignored live tests and its OpenAPI drift
+  test run from its own repository; nothing in this gate reaches the network.
   TypeSafe has answered live once, under signalman's own account
   (`signalman-b11.1`, `docs/roadmap.md`); everything else is verified
   against wiremock and the vendored OpenAPI document; say so in docs where
   it matters.
-- Two documentation sets, one per concern (decision 0011): signalman's in
-  `docs/` with `mkdocs.yml`, the judgment crate's in `crates/judgment/docs/`
-  with `crates/judgment/mkdocs.yml`. A page is the crate's when it would
-  still be true, and still be needed, if signalman did not exist; otherwise
-  it is signalman's. Links inside a set are relative; links across sets are
-  absolute GitHub URLs. Paths in the crate's sources and pages are relative
-  to the crate. Decision records share one numbering sequence and live with
-  the code they govern.
-- Every page in both sets, and the root README, carries frontmatter
-  (`title`, `description`, `status`, `last_reviewed`, `tags`); the crate
-  README does not (crates.io renders it). Each set's `llms.txt` and
-  `llms-full.txt` are generated from its nav, its `llms-intro.txt` and
-  that frontmatter: never edit them, run `mise run docs:llms` after adding
-  a page (add it to its set's nav too) or changing a title or description;
-  the docs gate fails when they are stale.
+- One documentation set here, signalman's, in `docs/` with `mkdocs.yml`
+  (decision 0011); the judgment crate's is in its repository. A page belongs
+  to the crate when it would still be true, and still be needed, if
+  signalman did not exist: it goes there, in a pull request there. Links
+  inside this set are relative; links to the crate's pages are absolute
+  GitHub URLs on `chussenot/judgment`. Decision records share one numbering
+  sequence across the two repositories: check the crate's `docs/decisions/`
+  before numbering, and keep a row here for each crate record.
+- Every page in `docs/`, and the root README, carries frontmatter
+  (`title`, `description`, `status`, `last_reviewed`, `tags`).
+  `docs/llms.txt` and `docs/llms-full.txt` are generated from the nav,
+  `docs/llms-intro.txt` and that frontmatter: never edit them, run
+  `mise run docs:llms` after adding a page (add it to the nav too) or
+  changing a title or description; the docs gate fails when they are stale.
 - Secrets live in `.env` (gitignored, loaded by mise). Never commit one.
 
 ## Harness
@@ -116,15 +115,15 @@ The judgment crate documents itself in `crates/judgment/` (README and `docs/`).
   `config-reviewer` (a setting's seven places, decision 0006),
   `observability-reviewer` (spans, metrics, no secrets in fields),
   `question-designer` (TypeSafe questions and policy), `test-writer`
-  (tests in this repo's wiremock style), `docs-writer` (both documentation
-  sets, each page where its concern belongs; the why as well as the how), `docs-auditor` (docs vs code drift),
+  (tests in this repo's wiremock style), `docs-writer` (this documentation
+  set, the why as well as the how; what is the crate's goes to its repository), `docs-auditor` (docs vs code drift),
   `refactor-scout` (dead code and duplication, ranked), `pr-shepherd`
   (open the PR, read its CI checks, tell a failure that is not the
   change's from one that is). Delegate
   the job; run the reviewers on a diff before opening a pull request.
 - Hooks in `.claude/hooks/`: Rust files are formatted after every edit;
-  both sets' `llms.txt` are regenerated after a page, a README, an
-  `llms-intro.txt` or a `mkdocs.yml` is written; a Bash guard denies pushes to `main`, `bd edit`,
+  `docs/llms.txt` is regenerated after a page, the README,
+  `docs/llms-intro.txt` or `mkdocs.yml` is written; a Bash guard denies pushes to `main`, `bd edit`,
   committing `.env`, and `cargo publish`. `bd prime` runs at session start.
 
 ## Beads Issue Tracker

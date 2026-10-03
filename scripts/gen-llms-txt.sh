@@ -8,15 +8,15 @@
 #   scripts/gen-llms-txt.sh [--check] SITE...  only these sites
 #
 # A site is a directory holding a mkdocs.yml (decision 0011); with no SITE
-# argument every one under the root is built, outside build output: in
-# signalman, the repository root and crates/judgment; in the judgment crate
-# alone, its root. Each writes llms.txt and llms-full.txt into its own
-# docs_dir, and opens them with the preamble in <docs_dir>/llms-intro.txt,
-# where @RAW@ stands for the raw URL of the site's directory on the default
-# branch. The root's own place in its git repository is part of that URL, so
-# the crate's copy of this script writes the same links from inside the
-# signalman checkout as the root's does. The two copies are identical; keep
-# them so (decision 0012).
+# argument every one under the root is built, outside build output: here,
+# the repository root (the judgment crate's site lived under crates/judgment
+# until 2026-10-03 and is in its own repository since, decision 0012). Each
+# writes llms.txt and llms-full.txt into its own docs_dir, and opens them
+# with the preamble in <docs_dir>/llms-intro.txt, where @RAW@ stands for the
+# raw URL of the site's directory on the default branch. The root's own place
+# in its git repository is part of that URL, so the script also works from a
+# directory nested in a larger repository; the judgment repository carries a
+# copy.
 #
 # Order follows the nav. Top-level pages form one "Pages" section; every nav
 # group becomes its own section. Titles and descriptions come from the page
@@ -37,8 +37,8 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 # Where the root sits inside its git repository: "" at the repository root,
-# "crates/judgment/" while the crate is a workspace member of signalman.
-# Outside a git checkout the root is taken to be the repository.
+# "<dir>/" when the root is nested in a larger repository. Outside a git
+# checkout the root is taken to be the repository.
 git_prefix=$(git rev-parse --show-prefix 2>/dev/null || true)
 
 mode=write
