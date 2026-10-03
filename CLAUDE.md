@@ -23,10 +23,11 @@ and documents itself there.
   dev-dependencies), which `tests/typesafe_contract.rs` checks signalman's
   own traffic against; a refresh is a crate change, then a pin bump here.
 - The typed client is the `judgment` crate (decision 0010), in its own
-  repository since 2026-10-03 (decision 0012): a git dependency pinned to a
-  revision in `Cargo.toml`, in `[dependencies]` and, with the `openapi`
-  feature, in `[dev-dependencies]`. Bump both together, deliberately, and
-  read the crate's CHANGELOG when you do; until the pin moves, a change to
+  repository since 2026-10-03 (decision 0012) and on crates.io since 0.3.0:
+  a version requirement on the minor in `Cargo.toml` (0.x: a minor release
+  may break), in `[dependencies]` and, with the `openapi` feature, in
+  `[dev-dependencies]`. Bump both together, deliberately, and read the
+  crate's CHANGELOG when you do; until the requirement moves, a change to
   the crate does not reach these tests. Its rules live in its repository.
   signalman re-exports it, implements `judgment::Observer` in
   `src/telemetry.rs` and installs it globally in `Providers::init`; the
