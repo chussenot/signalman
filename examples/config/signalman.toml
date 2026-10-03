@@ -81,8 +81,8 @@ flag_change_above = 0.65               # caused_by_change probability above whic
 
 # Fallback owner candidates when no catalog is configured or nothing matched.
 # Replaces the built-in list entirely. `none_of_these` is appended automatically.
-# Uncomment to replace the built-in list; a custom list cannot replay
-# examples/eval/runs/jev-1.13.0, which was recorded against the built-in team keys.
+# Uncomment to replace the built-in list; a custom list cannot replay the committed
+# runs under examples/eval/runs, which were recorded against the built-in team keys.
 # [[triage.teams]]
 # key = "platform"
 # label = "Platform"
