@@ -7,6 +7,8 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+# Per-machine marker of the last JSONL auto-import (size and mtime of issues.jsonl)
+.beads/.auto-import-issues.jsonl
 
 # Local secrets (loaded by mise from .env; template lives in .env.example)
 .env
