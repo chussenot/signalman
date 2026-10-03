@@ -1,0 +1,30 @@
+# judgment
+
+> Typed, calibrated judgments from TypeSafe System One models (Jev) and compatible backends, as a Rust crate.
+
+This index is generated from the crate's documentation nav (`crates/judgment/mkdocs.yml`) and each page's frontmatter by the workspace's `scripts/gen-llms-txt.sh`; the pages are the source of truth. Read the README first: it says what the crate guarantees and maps TypeSafe's four patterns (speculative fan-out, confidence-gated routing, composite scoring, intent routing) onto its types, with one runnable example each. Then How judgment works for the mechanisms, Verification for what real servers did, and Decisions for why the API is shaped as it is. The rustdoc is the reference for every type; it is not published until the crate is (`cargo doc -p judgment --open`). The crate has been run against the hosted TypeSafe API (`jev-1.13.0`) and against Laya's open-weights server; its retry behaviour on 408, 429 and 529 is verified against wiremock only.
+
+## Start here
+
+- [README](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/README.md): what the crate is for, what it guarantees, the walkthrough, the patterns and how to depend on it
+- [CHANGELOG](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/CHANGELOG.md): what changed in each release, breaking changes listed
+- [Full documentation text](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/llms-full.txt): every page below, concatenated in this order
+
+## Pages
+
+- [judgment documentation](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/index.md): Map of the judgment crate's documentation, what each page answers, and where the crate's documentation ends and the signalman application's begins.
+- [How judgment works](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/design.md): The two mechanisms the rustdoc cannot draw, typed handles from question to answer and the retry loop, with the response check, the error grouping, the request id and what the crate deliberately does not do.
+
+## Verification
+
+- [Against the hosted TypeSafe API](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/verification/hosted-typesafe.md): The judgment crate's live tests run against api.typesafe.ai with a real key, what each one showed about the hosted wire that the mocks and the Laya run could not, what probing past the builder's limits taught (three 400 shapes, the token budget, non-determinism at two decimals, the confidence formulas) and what the crate changed for it, and how to repeat the check with one task.
+- [Against Laya typed-decisions](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/verification/laya-typed-decisions.md): How the judgment crate was tested against Laya's typed-decisions checkpoint through laya-serve, what each test asserts and why, the one decoding bug the run caught, the benchmark numbers, and how to repeat the run.
+
+## Research
+
+- [System One client libraries](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/research/system-one-client-libraries.md): A survey of the twenty-five community Rust clients for the TypeSafe System One wire, the official Python and JavaScript SDKs and the live OpenAPI document, what each did that judgment 0.1 did not, the ranked changes worth making to the crate, the ones rejected and why, and what judgment 0.2.0 shipped of them.
+
+## Decisions
+
+- [Decisions](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/decisions/README.md): The architecture decision records that govern the judgment crate's design, how their numbers relate to signalman's records, and the records of signalman's that shaped the crate.
+- [0003 Typed handles between questions and answers](https://raw.githubusercontent.com/chussenot/signalman/main/crates/judgment/docs/decisions/0003-typed-handles-between-questions-and-answers.md): Adding a question returns a handle that fixes the answer type, so the compiler ties each wire answer to the code that consumes it.

@@ -1,5 +1,7 @@
 # TechDocs build for the signalman Component (backstage.io/techdocs-ref: dir:.).
 # The pages under docs/ carry YAML frontmatter; mkdocs reads it as page meta.
+# The judgment crate documents itself in crates/judgment/docs, with its own
+# mkdocs.yml (decision 0011); its pages are not in this nav.
 site_name: signalman
 site_description: Alert triage with calibrated judgments, incident.io and the Backstage catalog.
 repo_url: https://github.com/chussenot/signalman
@@ -16,11 +18,8 @@ nav:
   - Backstage bridge: backstage.md
   - TypeSafe client: typesafe-client.md
   - Laya as a model provider: laya.md
-  - judgment against Laya typed-decisions: judgment-laya-typed-decisions.md
-  - judgment against the hosted TypeSafe API: judgment-typesafe-live.md
   - Research:
       - Open System One models: research/open-system-one-models.md
-      - System One client libraries: research/system-one-client-libraries.md
       - Decision recipes: research/decision-recipes.md
       - Rust macros: research/rust-macros.md
   - Triage: triage.md
@@ -37,7 +36,6 @@ nav:
       - Index: decisions/README.md
       - 0001 incident.io remains the alert hub: decisions/0001-incidentio-remains-the-alert-hub.md
       - 0002 Calibrated judgments over generated text: decisions/0002-calibrated-judgments-over-generated-text.md
-      - 0003 Typed handles between questions and answers: decisions/0003-typed-handles-between-questions-and-answers.md
       - 0004 The catalog is the ownership source of truth: decisions/0004-catalog-is-the-ownership-source-of-truth.md
       - 0005 Observability signals enter through incident.io: decisions/0005-observability-signals-enter-through-incidentio.md
       - 0006 Layered configuration with secrets outside the file: decisions/0006-layered-configuration.md
@@ -45,6 +43,7 @@ nav:
       - 0008 signalman is a tool for agents, not an agent: decisions/0008-signalman-is-a-tool-for-agents.md
       - 0009 Readiness depends on the upstreams: decisions/0009-readiness-depends-on-the-upstreams.md
       - 0010 Extract the judgment core into a reusable crate: decisions/0010-extract-the-judgment-core-into-a-crate.md
+      - 0011 Documentation lives with its concern: decisions/0011-documentation-lives-with-its-concern.md
       - Template: decisions/template.md
 
 plugins:

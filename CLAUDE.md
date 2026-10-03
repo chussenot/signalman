@@ -2,6 +2,7 @@
 
 Typed Rust client for the TypeSafe System One API, an alert-triage flow built
 on it, and an incident.io integration. The README says why; `docs/` says how.
+The judgment crate documents itself in `crates/judgment/` (README and `docs/`).
 
 ## Start here
 
@@ -80,18 +81,27 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
 - Tests never call a real API: wiremock for both clients, hand-built answers
   for policy. The exceptions are `crates/judgment/tests/live.rs`, all
   `#[ignore]`, run by hand against `JUDGMENT_LIVE_BASE_URL`
-  (`docs/judgment-laya-typed-decisions.md`), and
+  (`crates/judgment/docs/verification/laya-typed-decisions.md`), and
   `crates/judgment/tests/openapi_drift.rs`, ignored, network only, no key.
   TypeSafe has answered live once, under signalman's own account
   (`signalman-b11.1`, `docs/roadmap.md`); everything else is verified
   against wiremock and the vendored OpenAPI document; say so in docs where
   it matters.
-- Markdown under `docs/` and the README carries frontmatter (`title`,
-  `description`, `status`, `last_reviewed`, `tags`). `docs/llms.txt` and
-  `docs/llms-full.txt` are generated from the `mkdocs.yml` nav and that
-  frontmatter: never edit them, run `mise run docs:llms` after adding a
-  page (add it to the nav too) or changing a title or description; the
-  docs gate fails when they are stale.
+- Two documentation sets, one per concern (decision 0011): signalman's in
+  `docs/` with `mkdocs.yml`, the judgment crate's in `crates/judgment/docs/`
+  with `crates/judgment/mkdocs.yml`. A page is the crate's when it would
+  still be true, and still be needed, if signalman did not exist; otherwise
+  it is signalman's. Links inside a set are relative; links across sets are
+  absolute GitHub URLs. Paths in the crate's sources and pages are relative
+  to the crate. Decision records share one numbering sequence and live with
+  the code they govern.
+- Every page in both sets, and the root README, carries frontmatter
+  (`title`, `description`, `status`, `last_reviewed`, `tags`); the crate
+  README does not (crates.io renders it). Each set's `llms.txt` and
+  `llms-full.txt` are generated from its nav, its `llms-intro.txt` and
+  that frontmatter: never edit them, run `mise run docs:llms` after adding
+  a page (add it to its set's nav too) or changing a title or description;
+  the docs gate fails when they are stale.
 - Secrets live in `.env` (gitignored, loaded by mise). Never commit one.
 
 ## Harness
@@ -102,15 +112,15 @@ on it, and an incident.io integration. The README says why; `docs/` says how.
   `config-reviewer` (a setting's seven places, decision 0006),
   `observability-reviewer` (spans, metrics, no secrets in fields),
   `question-designer` (TypeSafe questions and policy), `test-writer`
-  (tests in this repo's wiremock style), `docs-writer` (README and `docs/`,
-  the why as well as the how), `docs-auditor` (docs vs code drift),
+  (tests in this repo's wiremock style), `docs-writer` (both documentation
+  sets, each page where its concern belongs; the why as well as the how), `docs-auditor` (docs vs code drift),
   `refactor-scout` (dead code and duplication, ranked), `pr-shepherd`
   (open the PR, read its CI checks, tell a failure that is not the
   change's from one that is). Delegate
   the job; run the reviewers on a diff before opening a pull request.
 - Hooks in `.claude/hooks/`: Rust files are formatted after every edit;
-  `docs/llms.txt` is regenerated after a docs page, the README or
-  `mkdocs.yml` is written; a Bash guard denies pushes to `main`, `bd edit`,
+  both sets' `llms.txt` are regenerated after a page, a README, an
+  `llms-intro.txt` or a `mkdocs.yml` is written; a Bash guard denies pushes to `main`, `bd edit`,
   committing `.env`, and `cargo publish`. `bd prime` runs at session start.
 
 ## Beads Issue Tracker

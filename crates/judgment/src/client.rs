@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn error_detail_reads_the_hosted_api_s_three_400_shapes() {
         // Bodies as api.typesafe.ai sent them on 2026-10-03 (`tests/live.rs`
-        // and docs/judgment-typesafe-live.md), none of them in the OpenAPI
+        // and docs/verification/hosted-typesafe.md), none of them in the OpenAPI
         // document, which describes the 422 list only.
 
         // A limit of the server's own: a sentence, no code.

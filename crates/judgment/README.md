@@ -186,7 +186,7 @@ probabilities are not deterministic, and the spread grows with ambiguity:
 identical requests moved by up to 0.05 on a clear-cut input and by 0.19 in
 probability (0.28 in confidence) on an ambiguous one, the decision holding
 every time
-([judgment against the hosted TypeSafe API](../../docs/judgment-typesafe-live.md)).
+([judgment against the hosted TypeSafe API](docs/verification/hosted-typesafe.md)).
 A recording is one draw, and a threshold needs its margin most where the
 input is least clear. A Noul
 carries no confidence, so it is thresholded on its probability, where a
@@ -222,7 +222,7 @@ whether a server speaks the wire the way the mocks assume. Two things can:
 Both were run against Laya's `typed-decisions` checkpoint through
 `laya-serve`; what they found, including the one decoding bug they caught,
 is in the signalman documentation page
-[judgment against Laya typed-decisions](../../docs/judgment-laya-typed-decisions.md).
+[judgment against Laya typed-decisions](docs/verification/laya-typed-decisions.md).
 
 ### Checking against the published contract
 
@@ -292,6 +292,21 @@ cargo test -p judgment --test contract                            # review the r
 This checks the published schema, not a live account: a server can accept
 or refuse what its schema does not say, which is what `tests/live.rs` is
 for.
+
+## Documentation
+
+The crate's documentation lives with it, under [`docs/`](docs/index.md):
+
+| Page | What it answers |
+|---|---|
+| [How judgment works](docs/design.md) | How a handle ties a question to its answer, how a response is checked before it is read, how the retry loop decides, what the crate leaves out |
+| [Against the hosted TypeSafe API](docs/verification/hosted-typesafe.md) | What `jev-1.13.0` did with the live tests and with fifty probes past the builder's limits |
+| [Against Laya typed-decisions](docs/verification/laya-typed-decisions.md) | The same tests against an open-weights server, the bug they caught, the benchmark numbers |
+| [System One client libraries](docs/research/system-one-client-libraries.md) | What the other Rust clients and the official SDKs do, and what the crate adopted |
+| [Decisions](docs/decisions/README.md) | Why the API is shaped as it is |
+| [llms.txt](docs/llms.txt) | The index for agents and models; [llms-full.txt](docs/llms-full.txt) is every page in one file |
+
+The rustdoc (`cargo doc -p judgment --open`) is the reference for every type, error and default. How signalman, the application the crate came from, uses it is signalman's documentation: [TypeSafe client](https://github.com/chussenot/signalman/blob/main/docs/typesafe-client.md).
 
 ## Status
 

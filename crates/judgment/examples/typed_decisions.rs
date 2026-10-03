@@ -10,7 +10,7 @@
 //!
 //! ```sh
 //! # live, against any server that speaks the wire (here laya-serve, see
-//! # docs/judgment-laya-typed-decisions.md), recording every answer
+//! # docs/verification/laya-typed-decisions.md), recording every answer
 //! TYPESAFE_BASE_URL=http://127.0.0.1:8000 TYPESAFE_MODEL=typed-decisions TYPESAFE_API_KEY=unused \
 //!   cargo run -p judgment --example typed_decisions -- \
 //!     crates/judgment/examples/typed-decisions/sample.jsonl --record /tmp/laya-run

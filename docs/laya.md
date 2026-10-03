@@ -52,4 +52,4 @@ Laya can stand in for Jev at the wire level today, and it cannot stand in for Je
 
 Until then Jev remains the default `typesafe.model`, and the only Laya artefact in the repository is the shim.
 
-Since this page was written the typed client became the `judgment` crate and Laya grew its own server, `laya-serve`, so the shim is no longer the only way to run it. [judgment against Laya typed-decisions](judgment-laya-typed-decisions.md) records the crate's compatibility run against that server and the `typed-decisions` checkpoint on the benchmark it was fine-tuned for, with the ignored live tests and the replay example that produced the numbers.
+Since this page was written the typed client became the `judgment` crate and Laya grew its own server, `laya-serve`, so the shim is no longer the only way to run it. [judgment against Laya typed-decisions](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/verification/laya-typed-decisions.md) records the crate's compatibility run against that server and the `typed-decisions` checkpoint on the benchmark it was fine-tuned for, with the ignored live tests and the replay example that produced the numbers.

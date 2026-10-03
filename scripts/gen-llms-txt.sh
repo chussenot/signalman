@@ -1,20 +1,30 @@
 #!/usr/bin/env sh
-# Generate docs/llms.txt and docs/llms-full.txt from the mkdocs.yml nav and
-# each page's frontmatter (https://llmstxt.org). Never hand-edit the outputs.
+# Generate llms.txt and llms-full.txt (https://llmstxt.org) for each
+# documentation site in the workspace, from its mkdocs.yml nav and each
+# page's frontmatter. Never hand-edit the outputs.
 #
-#   scripts/gen-llms-txt.sh            write both files
-#   scripts/gen-llms-txt.sh --check    exit 1 if either committed file is stale
+#   scripts/gen-llms-txt.sh                    write both files for every site
+#   scripts/gen-llms-txt.sh --check            exit 1 if any committed file is stale
+#   scripts/gen-llms-txt.sh [--check] SITE...  only these sites
+#
+# A site is a directory holding a mkdocs.yml (decision 0011): the repository
+# root for signalman, crates/judgment for the judgment crate. Each writes
+# llms.txt and llms-full.txt into its own docs_dir, and opens them with the
+# preamble in <docs_dir>/llms-intro.txt, where @RAW@ stands for the raw URL
+# of the site's directory on the default branch.
 #
 # Order follows the nav. Top-level pages form one "Pages" section; every nav
-# group (Architecture, Decisions) becomes its own section. Titles and
-# descriptions come from the page frontmatter, links point at the raw
-# Markdown on the repository's default branch (derived from repo_url), so an
-# agent that fetches llms.txt can fetch every page it lists.
+# group becomes its own section. Titles and descriptions come from the page
+# frontmatter, links point at the raw Markdown on the repository's default
+# branch (derived from repo_url), so an agent that fetches llms.txt can fetch
+# every page it lists. The header's one-line summary is the site README's
+# frontmatter description, or mkdocs.yml's site_description when the README
+# has none (a crate README is rendered by crates.io, so it carries none).
 #
 # A page opts out of both files with `llms: false` in its frontmatter (the
 # decision-record template does). Fails loudly on anything unexpected: a nav
-# entry without a file, a page under docs/ that the nav does not list, or a
-# page missing its frontmatter. POSIX sh and awk only (dash and mawk are
+# entry without a file, a page under docs_dir that the nav does not list, or
+# a page missing its frontmatter. POSIX sh and awk only (dash and mawk are
 # enough), like the other scripts.
 set -eu
 
@@ -22,31 +32,21 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 mode=write
+if [ "${1:-}" = "--check" ]; then
+  mode=check
+  shift
+fi
 case "${1:-}" in
-  "") ;;
-  --check) mode=check ;;
-  *) echo "usage: $0 [--check]" >&2; exit 2 ;;
+  -*) echo "usage: $0 [--check] [SITE...]" >&2; exit 2 ;;
 esac
-
-nav=mkdocs.yml
-out_index=docs/llms.txt
-out_full=docs/llms-full.txt
+[ "$#" -gt 0 ] || set -- . crates/judgment
 
 die() { echo "gen-llms-txt: $*" >&2; exit 1; }
 
-# One top-level scalar from mkdocs.yml, unquoted.
+# One top-level scalar of a mkdocs.yml, unquoted.
 mkdocs_value() {
-  awk -v key="$1" 'index($0, key ":") == 1 { sub("^" key ": *", ""); print; exit }' "$nav"
+  awk -v key="$2" 'index($0, key ":") == 1 { sub("^" key ": *", ""); print; exit }' "$1"
 }
-
-site_name=$(mkdocs_value site_name)
-repo_url=$(mkdocs_value repo_url)
-[ -n "$site_name" ] || die "site_name missing from $nav"
-case "$repo_url" in
-  https://github.com/*/*) ;;
-  *) die "repo_url in $nav must be a https://github.com/<owner>/<repo> URL, got '$repo_url'" ;;
-esac
-raw_base="https://raw.githubusercontent.com/${repo_url#https://github.com/}/main"
 
 # One frontmatter field of a Markdown page. Exit 1 when the key is absent or
 # the file does not start with a frontmatter block.
@@ -64,8 +64,14 @@ strip_frontmatter() {
   awk 'NR == 1 && $0 == "---" { infm = 1; next } infm && $0 == "---" { infm = 0; next } !infm' "$1"
 }
 
-# The nav as "section<TAB>path" lines: the "Pages" section first (top-level
-# leaves, in nav order), then each group in nav order with its leaves.
+# True when the page's frontmatter says `llms: false`.
+opted_out() {
+  [ "$(fm_field "$1" llms 2>/dev/null || true)" = "false" ]
+}
+
+# The nav of a mkdocs.yml as "section<TAB>path" lines: the "Pages" section
+# first (top-level leaves, in nav order), then each group in nav order with
+# its leaves.
 nav_entries() {
   awk '
     function lastsep(s,    i, p) { p = 0; for (i = 1; i <= length(s) - 1; i++) if (substr(s, i, 2) == ": ") p = i; return p }
@@ -97,94 +103,114 @@ nav_entries() {
         for (i = 1; i <= n; i++) if (ps[i] != "") printf "%s\t%s\n", groups[g], ps[i]
       }
     }
-  ' "$nav"
-}
-
-entries=$(nav_entries) || die "could not parse the nav in $nav"
-[ -n "$entries" ] || die "the nav in $nav lists no pages"
-
-# Every page under docs/ must be in the nav, or the index silently omits it.
-for f in $(find docs -type f -name '*.md' | sort); do
-  rel=${f#docs/}
-  printf '%s\n' "$entries" | awk -F '\t' -v p="$rel" '$2 == p { found = 1 } END { exit !found }' \
-    || die "$f is not in the mkdocs.yml nav; add it (or move it out of docs/)"
-done
-
-readme_desc=$(fm_field README.md description) || die "README.md has no frontmatter description"
-
-# True when the page's frontmatter says `llms: false`.
-opted_out() {
-  [ "$(fm_field "$1" llms 2>/dev/null || true)" = "false" ]
+  ' "$1"
 }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-index="$tmp/llms.txt"
-full="$tmp/llms-full.txt"
+stale=0
 
-header() {
-  printf '# %s\n\n> %s\n\n' "$site_name" "$readme_desc"
+# Write, or check, one site's llms.txt and llms-full.txt.
+build_site() {
+  site=${1%/}
+  case "$site" in
+    .) prefix="" ;;
+    *) prefix="$site/" ;;
+  esac
+  nav="${prefix}mkdocs.yml"
+  [ -f "$nav" ] || die "$site: no mkdocs.yml"
+
+  site_name=$(mkdocs_value "$nav" site_name)
+  repo_url=$(mkdocs_value "$nav" repo_url)
+  docs_dir=$(mkdocs_value "$nav" docs_dir)
+  [ -n "$site_name" ] || die "site_name missing from $nav"
+  [ -n "$docs_dir" ] || docs_dir=docs
+  case "$repo_url" in
+    https://github.com/*/*) ;;
+    *) die "repo_url in $nav must be a https://github.com/<owner>/<repo> URL, got '$repo_url'" ;;
+  esac
+  raw_base="https://raw.githubusercontent.com/${repo_url#https://github.com/}/main"
+  raw_site="$raw_base${prefix:+/${prefix%/}}"
+  docs="${prefix}$docs_dir"
+  intro="$docs/llms-intro.txt"
+  [ -f "$intro" ] || die "$intro is missing: the preamble of $site's llms.txt"
+
+  summary=$(fm_field "${prefix}README.md" description 2>/dev/null) \
+    || summary=$(mkdocs_value "$nav" site_description)
+  [ -n "$summary" ] || die "$site: neither the README frontmatter nor $nav has a description"
+
+  entries=$(nav_entries "$nav") || die "could not parse the nav in $nav"
+  [ -n "$entries" ] || die "the nav in $nav lists no pages"
+
+  # Every page under the docs directory must be in the nav, or the index
+  # silently omits it.
+  for f in $(find "$docs" -type f -name '*.md' | sort); do
+    rel=${f#"$docs"/}
+    printf '%s\n' "$entries" | awk -F '\t' -v p="$rel" '$2 == p { found = 1 } END { exit !found }' \
+      || die "$f is not in the $nav nav; add it (or move it out of $docs)"
+  done
+
+  index="$tmp/llms.txt"
+  full="$tmp/llms-full.txt"
+
+  {
+    printf '# %s\n\n> %s\n\n' "$site_name" "$summary"
+    sed "s#@RAW@#$raw_site#g" "$intro"
+    printf '\n'
+    section=""
+    printf '%s\n' "$entries" | while IFS="$(printf '\t')" read -r sec path; do
+      file="$docs/$path"
+      [ -f "$file" ] || die "nav entry $path has no file at $file"
+      opted_out "$file" && continue
+      title=$(fm_field "$file" title) || die "$file has no frontmatter title"
+      desc=$(fm_field "$file" description) || die "$file has no frontmatter description"
+      if [ "$sec" != "$section" ]; then
+        [ -z "$section" ] || printf '\n'
+        printf '## %s\n\n' "$sec"
+        section=$sec
+      fi
+      printf -- '- [%s](%s/%s): %s\n' "$title" "$raw_base" "$file" "$desc"
+    done
+  } > "$index"
+
+  {
+    printf '# %s\n\n> %s\n\n' "$site_name" "$summary"
+    printf 'Every documentation page, in the order of %s/llms.txt, each introduced by a comment naming its source file. Generated by scripts/gen-llms-txt.sh.\n' "$docs"
+    printf '%s\n' "$entries" | while IFS="$(printf '\t')" read -r sec path; do
+      file="$docs/$path"
+      opted_out "$file" && continue
+      printf '\n\n<!-- source: %s -->\n\n' "$file"
+      strip_frontmatter "$file"
+    done
+  } > "$full"
+
+  case "$mode" in
+    write)
+      cp "$index" "$docs/llms.txt"
+      cp "$full" "$docs/llms-full.txt"
+      echo "wrote $docs/llms.txt ($(wc -c < "$docs/llms.txt") bytes) and $docs/llms-full.txt ($(wc -c < "$docs/llms-full.txt") bytes)"
+      ;;
+    check)
+      for pair in "$index:$docs/llms.txt" "$full:$docs/llms-full.txt"; do
+        gen=${pair%%:*}; committed=${pair#*:}
+        if [ ! -f "$committed" ]; then
+          echo "$committed is missing" >&2; stale=1
+        elif ! cmp -s "$gen" "$committed"; then
+          echo "$committed is stale" >&2; stale=1
+        fi
+      done
+      ;;
+  esac
 }
 
-{
-  header
-  cat <<EOF
-This index is generated from the documentation nav (\`mkdocs.yml\`) and each page's frontmatter by \`scripts/gen-llms-txt.sh\`; the pages are the source of truth and every page carries \`title\`, \`description\`, \`status\` and \`last_reviewed\`. Read the README first, then Architecture and Triage for how a decision is made, Configuration and Operations to run it, the MCP server page to call it from an agent, and Decisions for why a constraint exists. TypeSafe has answered live once (\`jev-1.13.0\`, the three example alerts), and the Backstage catalog and incident.io's read endpoints have been called once; no write has reached a live incident.io alert, and neither TechDocs nor Notifications has been reached. Everything else is checked against wiremock and the published OpenAPI documents; the Roadmap says what is still unverified, and pages say so where it matters.
+for site in "$@"; do
+  build_site "$site"
+done
 
-## Start here
-
-- [README](${raw_base}/README.md): why signalman exists, what it does and does not do, and the map of these pages
-- [Outcome contract, JSON Schema v1](${raw_base}/docs/schema/outcome.v1.json): the document every triage emits, for scripts and agents; generated from the wire types, drift-tested
-- [Full documentation text](${raw_base}/docs/llms-full.txt): every page below, concatenated in this order
-
-EOF
-  section=""
-  printf '%s\n' "$entries" | while IFS="$(printf '\t')" read -r sec path; do
-    file="docs/$path"
-    [ -f "$file" ] || die "nav entry $path has no file at $file"
-    opted_out "$file" && continue
-    title=$(fm_field "$file" title) || die "$file has no frontmatter title"
-    desc=$(fm_field "$file" description) || die "$file has no frontmatter description"
-    if [ "$sec" != "$section" ]; then
-      [ -z "$section" ] || printf '\n'
-      printf '## %s\n\n' "$sec"
-      section=$sec
-    fi
-    printf -- '- [%s](%s/%s): %s\n' "$title" "$raw_base" "$file" "$desc"
-  done
-} > "$index"
-
-{
-  header
-  printf 'Every documentation page, in the order of docs/llms.txt, each introduced by a comment naming its source file. Generated by scripts/gen-llms-txt.sh.\n'
-  printf '%s\n' "$entries" | while IFS="$(printf '\t')" read -r sec path; do
-    file="docs/$path"
-    opted_out "$file" && continue
-    printf '\n\n<!-- source: %s -->\n\n' "$file"
-    strip_frontmatter "$file"
-  done
-} > "$full"
-
-case "$mode" in
-  write)
-    cp "$index" "$out_index"
-    cp "$full" "$out_full"
-    echo "wrote $out_index ($(wc -c < "$out_index") bytes) and $out_full ($(wc -c < "$out_full") bytes)"
-    ;;
-  check)
-    stale=0
-    for pair in "$index:$out_index" "$full:$out_full"; do
-      gen=${pair%%:*}; committed=${pair#*:}
-      if [ ! -f "$committed" ]; then
-        echo "$committed is missing" >&2; stale=1
-      elif ! cmp -s "$gen" "$committed"; then
-        echo "$committed is stale" >&2; stale=1
-      fi
-    done
-    if [ "$stale" -ne 0 ]; then
-      echo "run 'mise run docs:llms' and commit the result" >&2
-      exit 1
-    fi
-    echo "llms.txt ok"
-    ;;
-esac
+if [ "$mode" = check ]; then
+  if [ "$stale" -ne 0 ]; then
+    echo "run 'mise run docs:llms' and commit the result" >&2
+    exit 1
+  fi
+  echo "llms.txt ok"
+fi

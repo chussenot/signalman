@@ -8,7 +8,7 @@
 //! call costs a round trip per branch. A System One model evaluates every
 //! question of a request in parallel, so asking all five at once costs
 //! about the latency of asking one (25 Nouls came back in 344 ms from the
-//! hosted API, `docs/judgment-typesafe-live.md`), and the answers a branch
+//! hosted API, `docs/verification/hosted-typesafe.md`), and the answers a branch
 //! does not take are simply not read. Extra questions do cost input tokens;
 //! each request's usage is printed so that cost stays visible.
 //!
@@ -31,7 +31,7 @@
 //! thresholds are the documentation page's starting points, not values
 //! validated on labelled tickets; the page itself says to tune them on your
 //! own data, and identical requests to the hosted API can differ by a few
-//! hundredths (`docs/judgment-typesafe-live.md`), so a threshold set exactly
+//! hundredths (`docs/verification/hosted-typesafe.md`), so a threshold set exactly
 //! on an observed value will flip.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]

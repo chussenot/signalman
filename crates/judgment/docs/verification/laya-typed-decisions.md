@@ -1,14 +1,14 @@
 ---
-title: judgment against Laya typed-decisions
+title: Against Laya typed-decisions
 description: How the judgment crate was tested against Laya's typed-decisions checkpoint through laya-serve, what each test asserts and why, the one decoding bug the run caught, the benchmark numbers, and how to repeat the run.
 status: experiment
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-03
 tags: [judgment, typesafe, laya, evaluation, compatibility]
 ---
 
-# judgment against Laya typed-decisions
+# Against Laya typed-decisions
 
-The [judgment crate](typesafe-client.md) was written against TypeSafe's documented wire and tested against mocks of it. A mock encodes what the client author believed about the wire; only a real server can contradict that belief. This page records the first such contradiction test: the crate against [Laya](laya.md)'s `typed-decisions` checkpoint, served by Laya's own HTTP server, on the benchmark the checkpoint was fine-tuned for. The question was narrow: does the crate work, unchanged, against a second implementation of the System One wire, and if not, what has to change on which side.
+The [judgment crate](../../README.md) was written against TypeSafe's documented wire and tested against mocks of it. A mock encodes what the client author believed about the wire; only a real server can contradict that belief. This page records the first such contradiction test: the crate against [Laya](https://github.com/chussenot/signalman/blob/main/docs/laya.md)'s `typed-decisions` checkpoint, served by Laya's own HTTP server, on the benchmark the checkpoint was fine-tuned for. The question was narrow: does the crate work, unchanged, against a second implementation of the System One wire, and if not, what has to change on which side.
 
 The short answer: yes, after one fix in the crate that TypeSafe's own API would have needed too. Everything the crate sends is accepted, everything Laya returns decodes through the typed handles, errors are classified as documented (a 401 is `Unauthorized` and is not retried; no run has provoked a status that is retried), and the benchmark replays through the crate's evaluation module to numbers in line with the model card. Four differences between the two servers were found; none needs code, all are recorded below so the next person does not rediscover them.
 
@@ -23,7 +23,7 @@ The short answer: yes, after one fix in the crate that TypeSafe's own API would 
 | Crate | `judgment` at the commit this page was added in, built with its default `http` feature |
 | Benchmark | [LocalLLaMA/typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions), `test` split: 400 cases, 5 questions each, across four workflows, with a gold label and distribution per question, Apache 2.0 |
 
-Nothing here touched TypeSafe's hosted API: no key was available in the environment, so the comparison with Jev is against the numbers the benchmark and the model card publish, not a run of our own. That gap is stated where it matters; the same live tests were later run against the hosted API, in [judgment against the hosted TypeSafe API](judgment-typesafe-live.md).
+Nothing here touched TypeSafe's hosted API: no key was available in the environment, so the comparison with Jev is against the numbers the benchmark and the model card publish, not a run of our own. That gap is stated where it matters; the same live tests were later run against the hosted API, in [judgment against the hosted TypeSafe API](hosted-typesafe.md).
 
 ## Why a test, rather than reading the two specifications
 
@@ -123,7 +123,7 @@ The 40-case sample committed with the example was recorded from the same server 
 
 It establishes that the crate is not TypeSafe-specific in any way that matters: a second, independently written server was driven through the public API with one fix, and that fix corrected a reading of TypeSafe's own documentation. It establishes that the evaluation module and the recording backends work against real answers, not only the `Fake`. And it gives a number for the fine-tuned checkpoint on its own benchmark, through this crate, that the model card's number can be compared with.
 
-It does not establish anything about signalman's alerts. The checkpoint is fine-tuned for four workflows that are not alert triage, and the one out-of-domain probe in the live test, a customer's message about failing payouts, was routed to `technical` with 0.45 probability, which is the model card's warning made concrete. The path to self-hosting is still the one [Laya as a model provider](laya.md) describes: labelled alert history through the [evaluation harness](evaluation.md), both models, per-question numbers. What this page adds is that the crate side of that path is proven; the remaining work is data.
+It does not establish anything about signalman's alerts. The checkpoint is fine-tuned for four workflows that are not alert triage, and the one out-of-domain probe in the live test, a customer's message about failing payouts, was routed to `technical` with 0.45 probability, which is the model card's warning made concrete. The path to self-hosting is still the one [Laya as a model provider](https://github.com/chussenot/signalman/blob/main/docs/laya.md) describes: labelled alert history through the [evaluation harness](https://github.com/chussenot/signalman/blob/main/docs/evaluation.md), both models, per-question numbers. What this page adds is that the crate side of that path is proven; the remaining work is data.
 
 ## Repeating the run
 
