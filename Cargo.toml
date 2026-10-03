@@ -53,11 +53,12 @@ path = "src/main.rs"
 
 [dependencies]
 # The judgment core (decision 0010): questions, typed answers, the TypeSafe
-# client and its retries, from its own repository (decision 0012), pinned to
-# the revision verified here. Bump it deliberately, in [dev-dependencies]
-# too, and read the crate's CHANGELOG when you do: until the pin moves, a
-# change to the crate does not reach these tests.
-judgment = { git = "https://github.com/chussenot/judgment", rev = "ed0d2fa79d24296bbeed14f03b6bae03c8b05cd5" }
+# client and its retries, from crates.io since 0.3.0 (decision 0012 moved it
+# to its own repository). 0.x: a minor release may break, so the requirement
+# names the minor. Bump it deliberately, in [dev-dependencies] too, and read
+# the crate's CHANGELOG when you do: until the requirement moves, a change to
+# the crate does not reach these tests.
+judgment = "0.3"
 axum = { version = "0.8", features = ["json", "tokio", "http1"], default-features = false }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
@@ -91,8 +92,8 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 # The vendored TypeSafe OpenAPI document, for tests/typesafe_contract.rs,
-# through the crate's `openapi` feature. Same source and revision as above.
-judgment = { git = "https://github.com/chussenot/judgment", rev = "ed0d2fa79d24296bbeed14f03b6bae03c8b05cd5", features = ["openapi"] }
+# through the crate's `openapi` feature. Same requirement as above.
+judgment = { version = "0.3", features = ["openapi"] }
 # `json` only for the test clients; the crate serialises its own bodies.
 reqwest = { workspace = true, features = ["json"] }
 http-body-util = "0.1"
