@@ -1715,7 +1715,7 @@ async fn usage_is_reported_for_a_response_that_does_not_fit() {
 async fn a_400_with_a_code_and_no_message_keeps_the_code_as_kind() {
     // The hosted API's 400 for a state over the token budget, as it was
     // sent on 2026-10-03: a code and nothing else (`tests/live.rs`,
-    // `a_state_over_the_token_budget_is_a_400_with_a_kind`).
+    // `a_state_over_the_budget_is_refused_as_too_large`).
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
@@ -1777,7 +1777,8 @@ async fn a_400_with_a_code_and_no_message_keeps_the_code_as_kind() {
 async fn a_413_is_an_invalid_request_that_is_too_large_and_is_not_retried() {
     // What laya-serve (0.3.24) answers for a body past one of its own
     // limits (observed 2026-10-03): a 413 with a `detail` sentence naming
-    // the limit. The hosted API has no 413. The remedy is the one the
+    // the limit. The hosted API has not been seen to send a 413. The remedy
+    // is the one the
     // hosted API's `max_tokens_exceeded` has, send less, so it is the same
     // variant and the same predicate, and the default policy does not
     // retry it.

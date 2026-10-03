@@ -174,8 +174,9 @@ pub enum Error {
     /// budget ([`Error::is_request_too_large`]). The code is kept as `kind`,
     /// and when it is all the body says, it is the detail too.
     ///
-    /// The hosted API has no 413; its refusal of a large request is that
-    /// 400. `laya-serve` (0.3.24) answers 413 with a `detail` sentence that
+    /// The hosted API has not been seen to send a 413, and its OpenAPI
+    /// document lists none; its refusal of a large request is that 400.
+    /// `laya-serve` (0.3.24) answers 413 with a `detail` sentence that
     /// names the limit (`state too large (50600 > 50000 chars)`, `too many
     /// choice options for 'c' (256 > 100)`): a state over 50,000
     /// characters, more than 64 questions, more than 100 options or 32
@@ -584,9 +585,9 @@ impl Error {
     /// a body past one of its own limits, which `laya-serve` names in the
     /// `detail` (state length, question and option counts, body bytes). It
     /// is the one refused body a caller fixes by sending less, state first,
-    /// rather than by fixing a question, so it has a name; the known-issues
-    /// page says accuracy falls with unrelated state well before the budget
-    /// does.
+    /// rather than by fixing a question, so it has a name; TypeSafe's Jev
+    /// 1.13 jaggedness page says accuracy falls as the state grows with
+    /// content unrelated to the decision, well before the budget does.
     pub fn is_request_too_large(&self) -> bool {
         match self {
             Self::InvalidRequest { status: 413, .. } => true,

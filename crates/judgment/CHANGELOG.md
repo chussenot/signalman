@@ -66,11 +66,13 @@ All notable changes to the `judgment` crate. The format follows
   does), and every structured level failed `verify` against them. Spacing
   and key order no longer matter; a number written differently (`1.0` for
   `1`) and a string level echoed as anything but itself still do.
-  `Score::levels` labels a level echoed as text with that text, and one
-  echoed as a value with its compact JSON, as before.
+  `Score::levels` labels a structured level with its compact JSON whichever
+  way it was echoed; a string level whose own text is a JSON object or
+  array is re-spaced the same way, in its label only.
 - A 413 is `Error::InvalidRequest { status: 413, .. }`, with the server's
   `detail` and no retry, where it was `Error::Http`; `laya-serve` answers it
-  for a body past one of its limits, and the hosted API never sends one.
+  for a body past one of its limits; the hosted API has not been seen to
+  send one.
 - `Error::InvalidRequest` has a new field, `kind`; a struct literal or a
   pattern that names every field needs `kind` or `..`.
 - `http::Exhausted` is an enum, `Transport { attempts, source }` beside the
