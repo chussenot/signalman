@@ -330,10 +330,19 @@ fn the_shared_typesafe_mocks_are_system_one_responses() {
 }
 
 #[test]
-fn the_committed_jev_run_is_a_system_one_response() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval/runs/jev-1.13.0");
+fn the_committed_jev_runs_are_system_one_responses() {
+    // Both live runs: before the state rule and recorded again with it.
+    for name in ["jev-1.13.0", "jev-1.13.0-state-guard"] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/eval/runs")
+            .join(name);
+        assert_run_conforms(&dir);
+    }
+}
+
+fn assert_run_conforms(dir: &Path) {
     let mut count = 0;
-    for entry in std::fs::read_dir(&dir).unwrap() {
+    for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         // The run manifest sits beside the recordings and is not one.
         if path.extension().is_none_or(|e| e != "json")

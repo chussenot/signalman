@@ -2,7 +2,7 @@
 title: Evaluation harness
 description: How to replay labelled alerts through the triage questions, what the report measures (accuracy with its interval, Brier, calibration error, decision agreement, latency), what a case's split and provenance say about those numbers, how a recorded run's manifest keeps old answers from being graded under new questions, and how to use it to compare models.
 status: current
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-03
 tags: [evaluation, triage, tuning, typesafe]
 ---
 
@@ -70,32 +70,32 @@ signalman eval cases.jsonl --replay runs/old --stale-ok        # grade answers r
 signalman eval cases.jsonl --json > report.json                # the full report, every case included
 ```
 
-One recording is committed: `examples/eval/runs/jev-1.13.0` holds the raw `jev-1.13.0` answers to the three example cases from the first live run (2026-09-23), with its `run.json` manifest, so `--replay examples/eval/runs/jev-1.13.0` grades a policy change with no key and no model call. The run predates the rule every instruction now ends with ([Triage](triage.md#which-questions-are-asked)), so its manifest carries another question fingerprint than the current defaults and the replay needs `--stale-ok`: its figures are how the policy reads answers to the earlier wording, not how the model answers the current one. Recording it again with a key is `signalman-whv.5`.
+Two recordings are committed, both of `jev-1.13.0` answering the three example cases, each with its `run.json` manifest. `examples/eval/runs/jev-1.13.0-state-guard` (2026-10-03, `signalman-whv.5`) was recorded under the current default questions, so `--replay examples/eval/runs/jev-1.13.0-state-guard` grades a policy change with no key, no model call and no `--stale-ok`. `examples/eval/runs/jev-1.13.0` is the first live run (2026-09-23), recorded before the rule every instruction now ends with ([Triage](triage.md#which-questions-are-asked)); its manifest carries the earlier question fingerprint, so it replays only with `--stale-ok`. It is kept so the rule's effect is a comparison of two recordings, [below](#what-the-state-rule-changed), not an assumption.
 
 `--model`, the configuration file and the environment choose the model and the wording, exactly as for `serve` ([Configuration](configuration.md)). The harness uses the fallback team list as owner candidates: no catalog lookup, so a case is reproducible from the file alone. Put the resolved `component` into the alert JSON if the catalog context should be part of the state.
 
 ## The report
 
-The committed `jev-1.13.0` run, replayed on 2026-10-02 under the default policy (`--stale-ok`, for the reason above):
+The committed `jev-1.13.0-state-guard` run, replayed on 2026-10-03 under the default policy:
 
 ```
 cases     3   model jev-1.13.0
 decision  labelled 3  agreement 1.00  95% 0.44..1.00
-evidence  replay recorded 2026-09-23T13:21:37Z  questions 1677815da49da9d9  STALE: recorded under 0165f119e3162330; these answers were given to other questions
+evidence  replay recorded 2026-10-03T07:18:53.830808109Z  questions 1677815da49da9d9
 policy    cdddb2572b782200
 origin    split development 3   labels author-synthetic 3
 
 question             n   acc    acc 95%  brier   ece conf|right conf|wrong
 owner                3  1.00 0.44..1.00   0.00  0.00       1.00          -
-impact               3  0.67 0.21..0.94   0.36  0.26       0.96       0.70
+impact               3  0.67 0.21..0.94   0.45  0.28       0.98       0.79
 actionable           3  1.00 0.44..1.00   0.02  0.09       0.91          -
-duplicate_of         3  1.00 0.44..1.00   0.00  0.02       0.98          -
+duplicate_of         3  1.00 0.44..1.00   0.00  0.04       0.96          -
 caused_by_change     3  1.00 0.44..1.00   0.01  0.06       0.94          -
 
-latency   p50 308 ms  p95 722 ms  mean 438 ms   tokens in 2851 out 381
+latency   p50 173 ms  p95 563 ms  mean 300 ms   tokens in 3733 out 381
 
 mismatches (1):
-  dns            impact           expected outage, got major (p 0.26, confidence 0.70)
+  dns            impact           expected outage, got major (p 0.17, confidence 0.79)
 ```
 
 Read the second line with the fourth: three author-written cases decided as their authors expected is agreement 1.00 with an interval reaching down to 0.44, which is the honest claim. The same three cases against Laya's English checkpoint on CPU (2026-09-21, [Laya](laya.md)) gave decision agreement 0.00 with ten mismatches, and replaying those recordings with `suppress_below = 0.55` in `[policy]` moved it to 0.33 (the noise case is suppressed) with no model call and every question row unchanged, which is the tuning loop below in one line.
@@ -114,6 +114,21 @@ Read the second line with the fourth: three author-written cases decided as thei
 | `origin` | cases per split and per provenance method | whether the accuracy is against observed outcomes or against the harness author's own examples, and whether it was fitted to the cases it is reported on |
 
 Confidence is the Choice or Score confidence for those primitives and `max(p, 1 - p)` for a Noul. The JSON report adds per-question confusion tables, the decision confusion table, an `evidence` object with the same fields as the two lines above, and every graded case with its full distributions.
+
+### What the state rule changed
+
+The two committed runs differ only in the rule appended to every instruction: same model (`jev-1.13.0`, pinned with `--model`), same case file (cases fingerprint `9535a2944387f859`), same policy. Replaying both under the default policy:
+
+| | before the rule (2026-09-23) | with the rule (2026-10-03) |
+|---|---|---|
+| question fingerprint | `0165f119e3162330` | `1677815da49da9d9` |
+| decision agreement | 1.00 (3 of 3) | 1.00 (3 of 3) |
+| per-question accuracy | as labelled except `dns` impact | as labelled except `dns` impact |
+| `dns` impact, p(`outage`) / confidence | 0.26 / 0.70 | 0.17 / 0.79 |
+| impact Brier / ECE | 0.36 / 0.26 | 0.45 / 0.28 |
+| input tokens, three cases | 2,851 | 3,733 (+31 %, about 59 per question) |
+
+What this measures: the rule costs about 59 input tokens per question, and on these three cases it changed no decision and no reported answer. What it does not: three author-written cases cannot show whether the rule biases an inferential question. The one movement, `dns` impact drifting further from the labelled `outage` and the model growing surer of `major`, is a single answer and as consistent with run-to-run variation as with the rule's "do not invent details" clause leaning a Score toward the milder level, which is the bias the rule was reworded once to avoid ([Decision recipes](research/decision-recipes.md)). It is a reason to watch impact when labelled history arrives (`signalman-ufg.6`), not a finding. Latency is lower in the second run; nothing in the rule would make a request faster, so read it as the service's variation, not an effect.
 
 ### An answer that does not fit
 

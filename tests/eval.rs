@@ -228,16 +228,33 @@ async fn run_grades_judgments_and_decisions_and_records_for_replay() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The committed live TypeSafe runs: the first (2026-09-23), recorded
+/// before the state rule, and the same cases recorded again with it in
+/// every instruction (2026-10-03), the one replays grade.
+const COMMITTED_RUNS: [&str; 2] = ["jev-1.13.0", "jev-1.13.0-state-guard"];
+
+/// The committed run recorded under the current default questions.
+const CURRENT_RUN: &str = "runs/jev-1.13.0-state-guard";
+
 #[test]
-fn the_committed_jev_run_decodes_and_rewrites_byte_for_byte() {
-    // The raw responses of the first live TypeSafe run (2026-09-23), which
-    // `signalman eval --replay` grades offline. judgment's tolerant decoder
-    // must read them as the strict one did (nothing unknown, nothing extra)
-    // and write them back unchanged.
-    let run = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval/runs/jev-1.13.0");
-    let out = tmp("jev-rewrite");
+fn the_committed_jev_runs_decode_and_rewrite_byte_for_byte() {
+    // The raw responses of the live TypeSafe runs, which `signalman eval
+    // --replay` grades offline. judgment's tolerant decoder must read them
+    // as the strict one did (nothing unknown, nothing extra) and write them
+    // back unchanged.
+    for name in COMMITTED_RUNS {
+        let run = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/eval/runs")
+            .join(name);
+        assert_eq!(rewrite_run(&run, name), 3, "{name}");
+    }
+}
+
+/// Decodes and rewrites every recording of `run`, returning how many.
+fn rewrite_run(run: &Path, name: &str) -> usize {
+    let out = tmp(&format!("jev-rewrite-{name}"));
     let mut seen = 0;
-    for entry in std::fs::read_dir(&run).unwrap() {
+    for entry in std::fs::read_dir(run).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|e| e != "json")
             || path.file_name().is_some_and(|n| n == eval::MANIFEST_FILE)
@@ -246,7 +263,7 @@ fn the_committed_jev_run_decodes_and_rewrites_byte_for_byte() {
         }
         let case = path.file_stem().unwrap().to_str().unwrap().to_owned();
         let text = std::fs::read_to_string(&path).unwrap();
-        let recording = judgment::eval::read_recording(&run, &case).unwrap();
+        let recording = judgment::eval::read_recording(run, &case).unwrap();
         assert_eq!(recording.case, case);
         assert_eq!(recording.response.model, "jev-1.13.0");
         assert!(
@@ -264,8 +281,8 @@ fn the_committed_jev_run_decodes_and_rewrites_byte_for_byte() {
         assert_eq!(std::fs::read_to_string(&written).unwrap(), text, "{case}");
         seen += 1;
     }
-    assert_eq!(seen, 3);
     let _ = std::fs::remove_dir_all(&out);
+    seen
 }
 
 fn default_setup<'a>(
@@ -282,9 +299,10 @@ fn default_setup<'a>(
 
 #[test]
 fn the_committed_jev_run_grades_on_replay() {
-    // The first live TypeSafe run, graded offline against the committed
-    // cases: every recorded answer still fits the questions the current
-    // default setup asks.
+    // The live TypeSafe run recorded under the current default questions,
+    // graded offline against the committed cases: every recorded answer
+    // fits the questions the default setup asks, and the manifest agrees,
+    // so the replay needs no opt-in.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval");
     let cases = eval::read_cases(&root.join("cases.jsonl")).unwrap();
     let (texts, candidates, policy) = (
@@ -292,17 +310,16 @@ fn the_committed_jev_run_grades_on_replay() {
         OwnerCandidates::from_teams(),
         Policy::default(),
     );
-    // The run predates the state rule in the instructions, so its manifest
-    // carries the old question fingerprint and the replay must opt in.
     let report = eval::replay(
-        &root.join("runs/jev-1.13.0"),
+        &root.join(CURRENT_RUN),
         &cases,
         &default_setup(&texts, &candidates, &policy),
-        true,
+        false,
     )
     .unwrap();
     assert_eq!(report.cases, 3);
     assert!(report.failed.is_empty());
+    assert!(!report.evidence.stale);
     assert_eq!(
         report.models.iter().map(String::as_str).collect::<Vec<_>>(),
         ["jev-1.13.0"]
@@ -328,7 +345,7 @@ fn a_replay_under_reworded_impact_levels_names_the_question() {
     };
     let (candidates, policy) = (OwnerCandidates::from_teams(), Policy::default());
     let err = eval::replay(
-        &root.join("runs/jev-1.13.0"),
+        &root.join(CURRENT_RUN),
         &cases,
         &default_setup(&texts, &candidates, &policy),
         true,
@@ -563,10 +580,10 @@ fn the_committed_jev_run_replays_under_the_example_configuration() {
     let candidates = cfg.triage.fallback_candidates();
     let cases = eval::read_cases(&root.join("examples/eval/cases.jsonl")).unwrap();
     let report = eval::replay(
-        &root.join("examples/eval/runs/jev-1.13.0"),
+        &root.join("examples/eval").join(CURRENT_RUN),
         &cases,
         &default_setup(&cfg.triage.text, &candidates, &cfg.policy),
-        true,
+        false,
     )
     .unwrap();
     assert_eq!(report.cases, 3);
@@ -627,6 +644,28 @@ fn the_committed_manifest_pins_the_questions_the_run_was_recorded_under() {
         manifest.questions_fingerprint,
         eval::questions_fingerprint(&Texts::default(), &OwnerCandidates::from_teams())
     );
+}
+
+#[test]
+fn the_current_committed_manifest_pins_the_default_questions() {
+    // Recorded again with the state rule in every instruction
+    // (`signalman-whv.5`), the run answers the questions the defaults ask
+    // today, against the same case file and model as the first run.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/eval");
+    let read = |dir: &str| -> eval::Manifest {
+        serde_json::from_str(&std::fs::read_to_string(root.join(dir).join("run.json")).unwrap())
+            .unwrap()
+    };
+    let (current, first) = (read(CURRENT_RUN), read("runs/jev-1.13.0"));
+    assert_eq!(
+        current.questions_fingerprint,
+        eval::questions_fingerprint(&Texts::default(), &OwnerCandidates::from_teams())
+    );
+    assert!(!Texts::default().state_guard.is_empty());
+    let cases = eval::read_cases(&root.join("cases.jsonl")).unwrap();
+    assert_eq!(current.cases_fingerprint, eval::cases_fingerprint(&cases));
+    assert_eq!(current.cases_fingerprint, first.cases_fingerprint);
+    assert_eq!(current.model, first.model);
 }
 
 #[tokio::test]

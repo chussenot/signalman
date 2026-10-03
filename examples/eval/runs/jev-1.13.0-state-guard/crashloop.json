@@ -1,0 +1,62 @@
+{
+  "case": "crashloop",
+  "response": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "actionable": {
+        "type": "noul",
+        "noul": 0.96
+      },
+      "caused_by_change": {
+        "type": "noul",
+        "noul": 0.92
+      },
+      "duplicate_of": {
+        "type": "choice",
+        "choice": "none",
+        "probabilities": {
+          "INC-4821": 0.07,
+          "none": 0.93
+        },
+        "confidence": 0.87
+      },
+      "impact": {
+        "type": "score",
+        "score": 1.98,
+        "legend": {
+          "0": "No user-facing impact: internal, informational, or affects only non-production",
+          "1": "Degraded experience for a small subset of users or one non-critical feature",
+          "2": "Degraded or failing for most users, or a critical feature is unavailable",
+          "3": "Full outage: the product is unavailable or data integrity is at risk for everyone"
+        },
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.01,
+          "2": 0.99,
+          "3": 0.0
+        },
+        "confidence": 0.97
+      },
+      "owner": {
+        "type": "choice",
+        "choice": "application",
+        "probabilities": {
+          "application": 0.99,
+          "database": 0.0,
+          "network": 0.0,
+          "none_of_these": 0.0,
+          "observability": 0.0,
+          "platform": 0.01,
+          "security": 0.0
+        },
+        "confidence": 0.99
+      }
+    },
+    "usage": {
+      "input_tokens": 1509,
+      "output_tokens": 156
+    },
+    "request_id": "req_01a100a14d0473fe9ba496f982dd5e20"
+  },
+  "elapsed_ms": 563
+}
