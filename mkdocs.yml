@@ -17,6 +17,7 @@ nav:
   - TypeSafe client: typesafe-client.md
   - Laya as a model provider: laya.md
   - judgment against Laya typed-decisions: judgment-laya-typed-decisions.md
+  - judgment against the hosted TypeSafe API: judgment-typesafe-live.md
   - Research:
       - Open System One models: research/open-system-one-models.md
       - System One client libraries: research/system-one-client-libraries.md

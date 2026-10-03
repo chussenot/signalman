@@ -23,7 +23,7 @@ The short answer: yes, after one fix in the crate that TypeSafe's own API would 
 | Crate | `judgment` at the commit this page was added in, built with its default `http` feature |
 | Benchmark | [LocalLLaMA/typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions), `test` split: 400 cases, 5 questions each, across four workflows, with a gold label and distribution per question, Apache 2.0 |
 
-Nothing here touched TypeSafe's hosted API: no key was available in the environment, so the comparison with Jev is against the numbers the benchmark and the model card publish, not a run of our own. That gap is stated where it matters.
+Nothing here touched TypeSafe's hosted API: no key was available in the environment, so the comparison with Jev is against the numbers the benchmark and the model card publish, not a run of our own. That gap is stated where it matters; the same live tests were later run against the hosted API, in [judgment against the hosted TypeSafe API](judgment-typesafe-live.md).
 
 ## Why a test, rather than reading the two specifications
 
