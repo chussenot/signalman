@@ -115,7 +115,7 @@ Concretely:
 ### A separate repository, published from the start
 
 - Good, because discoverability and semver are real from day one, and the boundary cannot erode
-- Bad, because CI in this account has never run ([roadmap](../roadmap.md#ci)); a second repository doubles a blocked pipeline, the release process and the pull-request traffic for a team of one
+- Bad, because the pipeline was taken for blocked when this was written (it had in fact been passing since 2026-09-23, [roadmap](../roadmap.md#ci)); a second repository doubles the pipeline, the release process and the pull-request traffic for a team of one
 - Bad, because signalman's live verification and the harness would need to be duplicated or lost to the core, and the two repositories drift in Rust version, lint set and conventions
 - Bad, because the name must be chosen and published now, into a crowded namespace, before the API has a second consumer to settle it
 - Deferred, not rejected: publication from the workspace gives the discoverability without the second repository

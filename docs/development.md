@@ -2,7 +2,7 @@
 title: Development
 description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, TechDocs rendering, and the Claude Code harness for contributors.
 status: current
-last_reviewed: 2026-09-26
+last_reviewed: 2026-10-03
 tags: [development, tooling]
 ---
 
@@ -128,7 +128,7 @@ Cross-machine sync uses `bd dolt push` and `pull` over `refs/dolt/data` on the g
 
 ## Claude Code harness
 
-The harness exists because the same mistakes recurred across sessions: a setting added in six of its seven places, a documentation index left stale, a span forgotten on a new client method, a pull request argued with a CI that has never run. Each hook removes a class of mistake at the moment it would be made; each agent carries the checklist for one job so the main session does not have to hold it.
+The harness exists because the same mistakes recurred across sessions: a setting added in six of its seven places, a documentation index left stale, a span forgotten on a new client method, a pull request argued with a CI that was refused at scheduling. Each hook removes a class of mistake at the moment it would be made; each agent carries the checklist for one job so the main session does not have to hold it.
 
 `.claude/settings.json` pins the `typesafe@typesafe-ai` skill plugin, pre-allows the read-only and build commands used here, denies reading `.env`, and wires four hooks:
 
@@ -151,7 +151,7 @@ Subagents in `.claude/agents/`. Reviewers and auditors are read-only and report;
 | `docs-writer` | writes | README and `docs/`, explaining the problem solved and the trade-off taken, not only the mechanism |
 | `docs-auditor` | reports | every documentation claim the code no longer supports, every page that says how without why, drift in the generated index |
 | `refactor-scout` | reports | dead public items, duplicated logic, stale comments and unused dependencies, as a ranked plan with evidence |
-| `pr-shepherd` | acts | opening a pull request in the repository's shape and telling the CI billing block apart from a real failure, with the one standing-down comment |
+| `pr-shepherd` | acts | opening a pull request in the repository's shape and reading its CI checks: the first failing step reproduced locally, and the one standing-down comment when a failure is not the change's (refused at scheduling, or red on `main` too) |
 
 A typical feature runs `test-writer` and `docs-writer` in parallel with the code, then `config-reviewer` and `observability-reviewer` on the diff, then `pr-shepherd`. A cleanup pass starts with `refactor-scout` and `docs-auditor` and feeds their reports to the main session and `docs-writer`.
 
