@@ -2,9 +2,10 @@ wrappers = { cargo = { command = "mbx", env = { MBX_CARGO_SHIM_MODE = "1" } } }
 # mise-en-place: tools and tasks for the judgment crate on its own.
 # https://mise.jdx.dev — run `mise install` once, then `mise run <task>` (or `mise tasks`).
 #
-# Inside the signalman workspace this file is read only when the working
-# directory is this crate; the workspace gates run from the repository root
-# with its own mise.toml. On its own (decision 0012) this is the whole tooling.
+# Inside the signalman workspace mise reads this file when the working
+# directory is this crate or below, merged over the root's (the nearest task
+# wins); the workspace gates run from the repository root with its own
+# mise.toml. On its own (decision 0012) this is the whole tooling.
 
 [tools]
 # Keep in step with rust-toolchain.toml, which rustup and CI read. mise must not read that

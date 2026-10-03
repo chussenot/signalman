@@ -21,13 +21,13 @@ The directory `crates/judgment/` is laid out as the root of the future repositor
 | A manifest that inherits nothing | `crates/judgment/Cargo.toml` | Edition, Rust version, licence, dependency versions and the lint set are declared, not `workspace = true`, so the crate builds from a checkout of its directory alone. The root manifest says to keep the two in step until the split |
 | The document signalman used to read by path | `judgment::contract::OPENAPI_DOCUMENT`, feature `openapi` | `tests/typesafe_contract.rs` used to `include_str!` the crate's vendored OpenAPI document across the tree; it now reads it through the crate, so a git or registry dependency works |
 | CI | `crates/judgment/.github/workflows/ci.yml` | The crate's gate (fmt, clippy, the no-`http` build, tests, rustdoc, docs, `cargo package --list`) and the prek job. GitHub reads workflows at the repository root only, so it does nothing here |
-| Tasks and tools | `crates/judgment/mise.toml` | `mise run check`, `docs:llms`, `live:typesafe`, `live:laya` and the rest, for the crate alone. mise reads it only when the working directory is the crate |
+| Tasks and tools | `crates/judgment/mise.toml` | `mise run check`, `docs:llms`, `live:typesafe`, `live:laya` and the rest, for the crate alone. mise reads it when the working directory is the crate or below, merged over the root's |
 | Hooks | `crates/judgment/.pre-commit-config.yaml` | The same hooks as signalman's with crate paths. prek installs the root's configuration here, and from 0.5 also runs a nested configuration as a workspace of its own on `--all-files`, so signalman's CI exercises the crate's hooks before the split |
 | Docs tooling | `crates/judgment/scripts/gen-llms-txt.sh`, `check-frontmatter.sh` | Byte-identical copies of signalman's. The generator finds every `mkdocs.yml` under its root and derives each raw link from the site's place in the git repository, so the crate's copy writes the same `llms.txt` from inside signalman as the root's does, and the right one from the new repository once `repo_url` changes |
 | Claude Code harness | `crates/judgment/CLAUDE.md`, `.claude/` | The crate's instructions, six agents written for a library (`contract-reviewer`, `docs-writer`, `docs-auditor`, `test-writer`, `refactor-scout`, `pr-shepherd`), the three hooks and the settings. `.claude/` is read at a project root only; the nested `CLAUDE.md` is read when a session works in the directory, and is true in both places |
-| Toolchain and lint configuration | `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml` | Copies of signalman's (the clippy list cut to the crate's words); identical content, so the nested copies change nothing here |
+| Toolchain and lint configuration | `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml` | The first two are identical copies of signalman's, so the nested files change nothing here. `clippy.toml` holds the crate's own words; clippy looks from the package's manifest directory upwards, so it already applies to the crate inside the workspace |
 | Catalog entry | `crates/judgment/catalog-info.yaml` | The `judgment` Component with `techdocs-ref: dir:.` and the new repository's slug. Not registered from here; signalman's root file holds the Component until the split |
-| Licence, ignore rules, attributes | `LICENSE`, `.gitignore`, `.gitattributes`, `.env.example` | What a repository root needs; the attributes mark the generated `docs/llms*.txt`. The manifest's `exclude` keeps all of this tooling out of the package, so `cargo package --list` shows the crate, its docs, its examples and the vendored document only |
+| Licence, ignore rules, attributes | `LICENSE`, `.gitignore`, `.gitattributes`, `.env.example` | What a repository root needs. The ignore and attribute files are live here too, since git applies them to the subtree: the crate's `.venv/` is ignored and its `docs/llms*.txt` marked generated, as wanted. The manifest's `exclude` keeps the tooling out of the package, so `cargo package --list` shows none of it |
 
 What is deliberately not prepared: a `Cargo.lock` (generated in the new repository, below), the repository URL in the manifest and the README's dependency snippet (both still name signalman, which is true until the split), and `mkdocs.yml`'s `repo_url`, which the `llms.txt` links derive from and which must point at a repository that exists.
 
@@ -52,7 +52,7 @@ Add `--force` if `filter-repo` refuses because the clone is not fresh. Then chec
 git log --oneline | wc -l                                            # 46 on 2026-10-03
 git log --follow --format='%ad %s' --date=short -- src/client.rs | tail -1   # 2026-09-20 Replace demo service ...
 ls -a                                                                # Cargo.toml, README.md, src, tests, examples, docs, .github, mise.toml, ...
-git tag -l                                                           # signalman's tags, rewritten; delete them
+git tag -l                                                           # signalman's tags, if any came through: rewritten onto crate commits, so delete them
 git tag -l | xargs -r git tag -d
 ```
 
@@ -67,15 +67,16 @@ git push -u origin main
 
 Everything below is a small edit; the new repository's own `CLAUDE.md` and agents apply from here on.
 
-1. `Cargo.toml`: `repository = "https://github.com/chussenot/judgment"`. Leave `publish = false` until the first release is decided; the Bash guard denies `cargo publish` meanwhile.
+1. `Cargo.toml`: `repository = "https://github.com/chussenot/judgment"`. Leave `publish = false` until the first release is decided, because a published version cannot be taken back and the `Unreleased` section still holds API changes; the Bash guard denies `cargo publish` meanwhile.
 2. `README.md`, section "Status": the crate is in its own repository, not a workspace member; the snippet becomes `judgment = { git = "https://github.com/chussenot/judgment" }` (no `package` key).
 3. `docs/index.md`, section "What is not here": the crate was extracted from signalman and moved here (signalman's decisions 0010 and 0012); the pointer to signalman's `docs/` stays.
 4. `mkdocs.yml`: `repo_url: https://github.com/chussenot/judgment`, `edit_uri: edit/main/docs/`, and the header comment. Then `mise run docs:llms`: the raw links in `docs/llms.txt` derive from `repo_url` and from the site's place under it, so until this step `docs:check` reports both files stale (they were generated for `crates/judgment` under signalman).
 5. `CLAUDE.md`: delete the section "In the signalman workspace".
-6. `docs/llms-intro.txt`, `docs/decisions/README.md` and the verification records: keep their absolute links to signalman as they are; they point at pages that stay there.
-7. Tooling: `mise trust && mise install && mise run setup`, then `cargo generate-lockfile` and commit `Cargo.lock` (a library may commit it; CI caches on it).
-8. `mise run check` and `mise run precommit` green, then commit, push, and watch the first CI run.
-9. GitHub: enable Actions if the organisation policy asks, protect `main` with the two checks required. Backstage: register `catalog-info.yaml` from the new repository; signalman's root file drops its `judgment` Component in the pull request below.
+6. The transition wording: `grep -rn 'crates/judgment\|until the split\|inert\|workspace member\|signalman workspace' .` and reword each hit. The comments in `Cargo.toml`, `.github/workflows/ci.yml`, `mise.toml`, `.pre-commit-config.yaml`, `catalog-info.yaml` and `clippy.toml`, and the README's "Status" section, describe a situation that has ended; `mkdocs.yml`'s comment names the old TechDocs path. The pages' paths are already crate-relative.
+7. `docs/llms-intro.txt`, `docs/decisions/README.md` and the verification records: keep their absolute links to signalman as they are; they point at pages that stay there.
+8. Tooling: `mise trust && mise install && mise run setup`, then `cargo generate-lockfile` and commit `Cargo.lock` (a library may commit it; CI caches on it).
+9. `mise run check` and `mise run precommit` green, then commit, push, and watch the first CI run.
+10. GitHub: enable Actions if the organisation policy asks, protect `main` with the two checks required. Backstage: register `catalog-info.yaml` from the new repository; signalman's root file drops its `judgment` Component in the pull request below.
 
 Nothing about the shared decision-record numbers changes: the crate's `docs/decisions/` keeps 0003 and continues the sequence shared with signalman's, checking both before numbering.
 
@@ -83,19 +84,21 @@ Nothing about the shared decision-record numbers changes: the crate's `docs/deci
 
 One pull request here, once the new repository's first CI run is green.
 
-- `Cargo.toml`: drop `members = ["crates/judgment"]` (the `[workspace]` table stays, so `--workspace` keeps working); `judgment = { git = "https://github.com/chussenot/judgment", rev = "<the new repository's head>" }` under `[dependencies]`, the same source with `features = ["openapi"]` under `[dev-dependencies]`; remove the comment about keeping the two manifests in step. Bump the pin deliberately from then on; move to a crates.io version when the crate is published.
+- `Cargo.toml`: drop `members = ["crates/judgment"]` (the `[workspace]` table stays, so `--workspace` keeps working); `judgment = { git = "https://github.com/chussenot/judgment", rev = "<the new repository's head>" }` under `[dependencies]`, the same source with `features = ["openapi"]` under `[dev-dependencies]`; remove the comment about keeping the two manifests in step. A revision pins exactly what was verified; switch to `tag = "vX.Y.Z"` once the crate tags releases, and to a crates.io version once it publishes. Bump the pin deliberately from then on: until it moves, a crate change does not run signalman's tests.
 - `git rm -r crates/judgment`; `cargo build` rewrites `Cargo.lock`.
-- `mise.toml`: remove `check:minimal` and `live:typesafe` (they are the crate's now), and `crates/judgment/docs` from `docs:check`; `scripts/gen-llms-txt.sh`: default site `.` only; `.pre-commit-config.yaml`: drop the `crates/judgment/...` alternatives from the two docs hooks; `.github/workflows/ci.yml`: drop the `cargo check -p judgment` step; `.claude/hooks/llms-on-docs-edit.sh`: one set.
+- `mise.toml`: remove `check:minimal` and `live:typesafe` (they are the crate's now), and `crates/judgment/docs` from `docs:check`; `.pre-commit-config.yaml`: drop the `crates/judgment/...` alternatives from the two docs hooks; `.github/workflows/ci.yml`: drop the `cargo check -p judgment` step; `.claude/hooks/llms-on-docs-edit.sh`: one set. `scripts/gen-llms-txt.sh` needs nothing: it finds the sites under its root itself.
 - `catalog-info.yaml`: delete the `judgment` Component block; keep `dependsOn: component:default/judgment`, which the new repository's file provides once registered.
 - `CLAUDE.md`: the crate bullet says the crate lives in `chussenot/judgment` and is a git dependency here, and that its rules live there; the documentation bullet and the harness bullets describe one set.
 - `.claude/agents/`: `contract-reviewer`, `docs-writer`, `docs-auditor`, `test-writer`, `refactor-scout` and `observability-reviewer` name crate paths; point them at the new repository or remove the crate half.
-- Documentation: every absolute link into `crates/judgment/` on this repository (the index, the README table, the decisions index's 0003 row, the development guide, `typesafe-client.md`, `laya.md`, the C4 pages) becomes `https://github.com/chussenot/judgment/blob/main/...`; `docs/development.md` loses the crate's tree from the layout and the two-set table points at the other repository; `docs/decisions/README.md` gains a status note that 0012 is done; `mise run docs:llms` after. This grep lists what to touch:
+- Documentation: every absolute link into `crates/judgment/` on this repository (the index, the README table, the decisions index's 0003 row, the development guide, `typesafe-client.md`, `laya.md`, the architecture and C4 pages, `triage.md`, `evaluation.md`, `roadmap.md`, the research notes, and `docs/llms-intro.txt`, whose line for the crate's index must name the new repository's raw URL) becomes `https://github.com/chussenot/judgment/blob/main/...`; `docs/development.md` loses the crate's tree from the layout and the two-set table points at the other repository; `docs/decisions/README.md` gains a status note that 0012 is done; `mise run docs:llms` after. This grep is the list:
 
   ```sh
-  grep -rn 'crates/judgment' --include='*.md' --include='*.yml' --include='*.yaml' --include='*.toml' --include='*.sh' --include='*.rs' . | grep -v '^./target'
+  grep -rn 'crates/judgment' --include='*.md' --include='*.txt' --include='*.yml' --include='*.yaml' --include='*.toml' --include='*.sh' --include='*.rs' . | grep -v '^./target' | grep -v 'llms-full.txt\|llms.txt'
   ```
 
-- Beads: close the epic that tracks this page.
+  Leave three kinds of hit alone: records 0010 and 0011 (records are not edited after acceptance; the status note carries the change), `.beads/issues.jsonl` (history), and the generated `llms*.txt` (regenerated). The comment in `tests/webhook_server.rs` is reworded, not removed.
+
+- Beads: close `signalman-bdl`, the epic that tracks this page.
 
 ## Verification
 

@@ -37,7 +37,7 @@ Chosen option: 2, a repository of its own by a history-preserving split, because
 Three things are done in this repository before the split, so the new repository passes its gates on its first commit and the split needs no judgment calls:
 
 - The crate's manifest declares its own edition, Rust version, licence, dependency versions and lints instead of inheriting the workspace's. It still builds here as a member; it also builds from a checkout of its directory alone.
-- The directory carries the files a repository root needs (`.github/workflows/ci.yml`, `mise.toml`, `.pre-commit-config.yaml`, `scripts/`, `.claude/`, `CLAUDE.md`, `catalog-info.yaml`, `LICENSE`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.gitignore`), each inert or harmless while the directory sits inside signalman (prek runs the nested hook configuration as a workspace of its own, which exercises it early) and each the new repository's on the split, with history. Where a file is a copy of signalman's (the two docs scripts, the hooks), the copy is the price of the files travelling with the crate; the docs generator derives its links from the site's place in the git repository, so the copies stay byte-identical.
+- The directory carries the files a repository root needs (`.github/workflows/ci.yml`, `mise.toml`, `.pre-commit-config.yaml`, `scripts/`, `.claude/`, `CLAUDE.md`, `catalog-info.yaml`, `LICENSE`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `.gitignore`), each inert or harmless while the directory sits inside signalman (prek runs the nested hook configuration as a workspace of its own, which exercises it early; git applies the nested ignore and attribute files to the subtree, which is wanted) and each the new repository's on the split, with history. Where a file is a copy of signalman's (the two docs scripts, the hooks), the copy is the price of the files travelling with the crate; the docs generator derives its links from the site's place in the git repository, so the copies stay byte-identical.
 - The one place signalman reached into the crate's tree, its contract test reading the vendored OpenAPI document by path, now reads it through the crate (`judgment::contract::OPENAPI_DOCUMENT`, feature `openapi`), so the dependency can become a git or registry dependency without a copy of the document.
 
 The split itself is `git filter-repo` keeping `crates/judgment/` and the six files the crate's sources were renamed from (`src/answer.rs`, `src/client.rs`, `src/error.rs`, `src/http.rs`, `src/question.rs`, `tests/client.rs`), with the directory prefix stripped: the pre-move paths are the post-move paths relative to the crate, so one pass yields a history that `git log --follow` reads back to the first commit of 2026-09-20. [Extracting the judgment crate](../judgment-extraction.md) is the runbook, with the command as rehearsed and the edits each repository makes afterwards.
@@ -48,15 +48,16 @@ Decision records keep one number sequence across the two repositories: a number 
 
 - Good, because a crate change is one pull request in one repository, with the crate's gates and nothing else, and a release is a tag there.
 - Good, because the history, the pre-move days included, travels with the code; nothing in the verification records or the changelog points at a commit the new repository cannot show.
-- Good, because signalman becomes an ordinary consumer, which is the test 0010 wanted a second consumer for: anything the crate still needs from signalman's tree shows up as a build failure there.
+- Good, because signalman becomes an ordinary consumer: anything the crate still needs from signalman's tree shows up as a build failure there. That proves the build boundary; the test 0010 wanted, a second project that carries nothing of signalman, is still to come.
 - Bad, because the lint set and the dependency versions are no longer shared by inheritance; the two manifests are kept in step by hand until the split, and may drift after it, which is the point.
 - Bad, because signalman pins a tag or revision of the crate and bumps it deliberately; a change that needs both sides lands in two pull requests, the crate's first.
+- Bad, because a change to the crate no longer runs signalman's tests (its contract test, its triage and evaluation suites) until signalman bumps its pin; between the two, the crate's own tests and its committed recordings are all that stands between a change and its consumer.
 - Bad, because signalman's absolute links into `crates/judgment/` (its index, its decisions index, the development guide) must be repointed at the new repository after the split, and nothing but a link check finds a stale one.
 - Bad, because the records about the crate's design are split across two repositories by number, and a reader of either index must follow a link to see the whole sequence.
 
 ### Confirmation
 
-Before the split: `crates/judgment` copied alone into an empty directory passes its own `mise run check` (fmt, clippy pedantic, the no-`http` build, tests, rustdoc, docs), and the workspace's `mise run check` still passes with the crate as a member. After it: the new repository's CI is green on its first commit, and signalman's CI is green with the crate as a git dependency and `crates/judgment` removed. The runbook lists both checks.
+Before the split: `crates/judgment` copied alone into an empty directory passes its own `mise run check` (fmt, clippy pedantic, the no-`http` build, tests, rustdoc, docs) after `cargo generate-lockfile` and `mise run docs:llms`, and the workspace's `mise run check` still passes with the crate as a member. After it: the new repository's CI is green on its first commit, and signalman's CI is green with the crate as a git dependency and `crates/judgment` removed. The runbook lists both checks.
 
 ## Pros and cons of the options
 
@@ -74,8 +75,8 @@ Before the split: `crates/judgment` copied alone into an empty directory passes 
 ### A subtree or submodule from the new repository
 
 - Good, because one copy of the code stays here.
-- Bad, because the new repository would be a view, not a home: its CI would still run against signalman's tree, and a submodule pins signalman's consumers to a commit of a repository they do not own.
+- Bad, because the new repository would be a view, not a home: its CI would still run against signalman's tree, and a submodule pins the new repository's consumers to a commit of a repository they do not own.
 
 ## More information
 
-[Decision 0010](0010-extract-the-judgment-core-into-a-crate.md), which this completes; [Decision 0011](0011-documentation-lives-with-its-concern.md), whose two sets make the split clean; [Extracting the judgment crate](../judgment-extraction.md), the runbook; the crate's own instructions, [crates/judgment/CLAUDE.md](https://github.com/chussenot/signalman/blob/main/crates/judgment/CLAUDE.md), which say which of its files are inert until the split.
+[Decision 0010](0010-extract-the-judgment-core-into-a-crate.md), which this completes; [Decision 0011](0011-documentation-lives-with-its-concern.md), whose two sets make the split clean; [Extracting the judgment crate](../judgment-extraction.md), the runbook, whose first table says which of the crate's files are inert here, which are merely harmless, and why.

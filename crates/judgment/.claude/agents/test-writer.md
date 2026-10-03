@@ -39,8 +39,8 @@ network, or that passes without asserting the shape, is worse than none.
 - The pattern examples under `examples/` carry a test that replays their
   recordings; a changed question needs re-recorded answers, never an edited
   recording.
-- Test files start with `#![allow(clippy::unwrap_used, clippy::expect_used)]`
-  and a module doc saying what the file proves. Test names are sentences:
+- Test files open with a module doc saying what the file proves, then
+  `#![allow(clippy::unwrap_used, clippy::expect_used)]`. Test names are sentences:
   `a_structured_level_may_be_echoed_as_itself_or_as_its_json_text`.
 - Every check gets its negative: the option not offered, the legend with one
   level too many, the 413 that must not be retried, the string level that

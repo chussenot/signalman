@@ -71,8 +71,10 @@ workspace, whose root `CLAUDE.md` applies as well and whose gates run with
 `catalog-info.yaml`, `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`)
 are inert inside signalman, except that prek runs the nested hook
 configuration as a workspace of its own, and become the new repository's on
-the split. Keep them in step with signalman's until then; the two docs
-scripts are byte-identical copies.
+the split. Keep them in step with signalman's until then: compare `[lints]`
+and the dependency versions with the root `Cargo.toml` when either changes,
+and `diff` the hooks and the two docs scripts against the root's `.claude/hooks/`
+and `scripts/`, which they copy byte for byte.
 
 ## Harness
 

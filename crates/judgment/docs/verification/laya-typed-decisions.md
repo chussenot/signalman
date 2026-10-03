@@ -31,7 +31,7 @@ Laya's README says its payload is schema-identical to Jev's and lists three diff
 
 ## The tests
 
-The live checks are in `crates/judgment/tests/live.rs`. Every one is `#[ignore]`, so the gate stays hermetic and they run only by hand:
+The live checks are in `tests/live.rs`. Every one is `#[ignore]`, so the gate stays hermetic and they run only by hand:
 
 ```sh
 JUDGMENT_LIVE_BASE_URL=http://127.0.0.1:8000 JUDGMENT_LIVE_MODEL=typed-decisions \
@@ -50,7 +50,7 @@ Each test exists for one belief the mocks could not check.
 | `a_model_name_the_server_does_not_know_is_still_answered` | A client sending the crate's default `jev-latest` gets an answer | A consumer that only changed `base_url` must not be broken by the model name it never set |
 | `a_live_answer_replays_offline_from_its_recording` | `Recorder` over the live client, then `Replay` over the directory, return the same `Response` for the same state and questions | The request hash that keys a recording is computed on the crate side; this proves it is stable across a real round trip, which the mocks could not, since they never see a serialised request |
 | `an_unknown_extra_field_is_answered_or_refused_by_name` | A request carrying an unknown `CallOptions::extra` field is either answered or refused as `Error::InvalidRequest` with status 400 or 422, and the test prints which; a 5xx, a transport failure or a decode error fails | The crate sends extra fields as given and leaves the choice to the server, so either outcome is a pass, but only a run says which one a server takes. Added with judgment 0.2 |
-| `the_builder_refuses_what_the_reference_page_forbids` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server. The limits are the HTTP API reference page's; TypeSafe's OpenAPI document states none above and only one level below, so the builder is the stricter, and what a server does past them is unverified (`crates/judgment/tests/contract.rs` pins the difference). Named `the_builder_refuses_what_the_wire_would_reject` when this run was made |
+| `the_builder_refuses_what_the_reference_page_forbids` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server. The limits are the HTTP API reference page's; TypeSafe's OpenAPI document states none above and only one level below, so the builder is the stricter, and what a server does past them is unverified (`tests/contract.rs` pins the difference). Named `the_builder_refuses_what_the_wire_would_reject` when this run was made |
 | `a_wrong_bearer_token_is_unauthorized_and_the_right_one_is_not` | Against a second server started with `LAYA_API_KEY`, a wrong key is `Error::Unauthorized` and the right one is answered, and the 401's request id is printed; skipped unless `JUDGMENT_LIVE_AUTH_BASE_URL` is set | The retry loop must not retry a 401 and the error must be the one whose remedy is "check the key". Laya returns FastAPI's `{"detail": …}` body rather than TypeSafe's `{"error": …}`; the classification is by status, so the body shape does not matter |
 
 The eight tests of the first run, all but the two added with judgment 0.2, passed on 2026-09-24 against the two servers described above.
@@ -64,17 +64,17 @@ With judgment 0.2.0, all ten passed on 2026-09-25 against the same two servers, 
 
 The benchmark was not re-run live; the committed recordings replay under 0.2 to the same report as before ([below](#what-the-benchmark-measured)).
 
-The benchmark replay is `crates/judgment/examples/typed_decisions.rs`. It reads one case per line, builds the crate's `Questions` from each case's wire JSON through the public builders, sends every case through one `dyn SystemOne`, and grades each answer against the gold label with `judgment::eval`:
+The benchmark replay is `examples/typed_decisions.rs`. It reads one case per line, builds the crate's `Questions` from each case's wire JSON through the public builders, sends every case through one `dyn SystemOne`, and grades each answer against the gold label with `judgment::eval` (commands run from the crate's directory):
 
 ```sh
 # live, recording every answer
 TYPESAFE_BASE_URL=http://127.0.0.1:8000 TYPESAFE_MODEL=typed-decisions TYPESAFE_API_KEY=unused \
   cargo run -p judgment --example typed_decisions -- \
-    crates/judgment/examples/typed-decisions/sample.jsonl --record /tmp/laya-run
+    examples/typed-decisions/sample.jsonl --record /tmp/laya-run
 
 # offline, from the recordings: no server, no key, same numbers
 cargo run -p judgment --example typed_decisions -- \
-  crates/judgment/examples/typed-decisions/sample.jsonl --replay /tmp/laya-run
+  examples/typed-decisions/sample.jsonl --replay /tmp/laya-run
 ```
 
 `examples/typed-decisions/sample.jsonl` is the first ten test cases of each workflow, committed so the example runs from a checkout; `export.py` next to it writes the full split from the Parquet files. The example is a compatibility test at scale before it is an evaluation: 400 cases is 2,000 questions through the builder, 400 requests through the client, 2,000 answers through the decoder, and every combination of primitive and criteria shape the benchmark uses (Noul with and without criteria, Choice with three to five described options, Score with three to five levels).
@@ -117,7 +117,7 @@ The numbers also say what the card says about the model. Mean answer probability
 
 Latency, per five-question case on four CPU cores, warm, with nothing else running: p50 2.1 s, p95 2.2 s. During the full run, which shared the cores with the build gate and a second server, it was p50 4.1 s and p95 6.2 s; the run is I/O-free, so the difference is CPU contention. The card's tens of milliseconds are on a T4.
 
-The 40-case sample committed with the example was recorded from the same server into `examples/typed-decisions/recordings/`; replaying it offline produces the identical report (accuracy 0.725 on 200 questions, the same to every digit as the live run that wrote it), which is the recording round trip checked at benchmark scale rather than on one request. The recordings hold none of Laya's extras (no `routing`, no `action`): the `Recorder` writes the decoded `Response`, and the crate that recorded them dropped what it did not model. A test (`the_committed_recordings_decode_and_rewrite_byte_for_byte` in `crates/judgment/tests/backend.rs`) checks that all 40 still decode, with no unknown answer and nothing in `Response::extra`, and write back byte for byte.
+The 40-case sample committed with the example was recorded from the same server into `examples/typed-decisions/recordings/`; replaying it offline produces the identical report (accuracy 0.725 on 200 questions, the same to every digit as the live run that wrote it), which is the recording round trip checked at benchmark scale rather than on one request. The recordings hold none of Laya's extras (no `routing`, no `action`): the `Recorder` writes the decoded `Response`, and the crate that recorded them dropped what it did not model. A test (`the_committed_recordings_decode_and_rewrite_byte_for_byte` in `tests/backend.rs`) checks that all 40 still decode, with no unknown answer and nothing in `Response::extra`, and write back byte for byte.
 
 ## What this does and does not establish
 
@@ -167,6 +167,8 @@ What this adds to the first run's conclusion: a compatible server can change wha
 
 ## Repeating the run
 
+From the crate's directory:
+
 ```sh
 python -m venv .venv
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -185,7 +187,7 @@ JUDGMENT_LIVE_AUTH_BASE_URL=http://127.0.0.1:8001 JUDGMENT_LIVE_AUTH_API_KEY=sec
   cargo test -p judgment --test live -- --ignored --nocapture --test-threads=1
 
 # the full benchmark
-.venv/bin/python crates/judgment/examples/typed-decisions/export.py --split test --out /tmp/typed-decisions-test.jsonl
+.venv/bin/python examples/typed-decisions/export.py --split test --out /tmp/typed-decisions-test.jsonl
 TYPESAFE_BASE_URL=http://127.0.0.1:8000 TYPESAFE_MODEL=typed-decisions TYPESAFE_API_KEY=unused \
   cargo run -p judgment --example typed_decisions -- /tmp/typed-decisions-test.jsonl --record /tmp/laya-full --json
 ```

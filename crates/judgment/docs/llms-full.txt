@@ -142,7 +142,7 @@ Quote it to TypeSafe support when a call fails or an answer looks wrong. It is t
 
 The [judgment crate](../../README.md) is tested against mocks of TypeSafe's wire and the vendored OpenAPI document. A mock and a schema both encode what someone believed about the wire; only the server can contradict that belief. The [Laya run](laya-typed-decisions.md) checked the crate against a second implementation of System One, but no TypeSafe key was available then, so the hosted API itself had answered only once, through signalman's triage of the three example alerts (`signalman-b11.1`, 2026-09-23, recorded under `examples/eval/runs/jev-1.13.0`). That run proved signalman's own questions round-trip; it did not exercise the crate's edges: structured Score levels, null option descriptions, an unknown extra field, the model list, a wrong key.
 
-This page records the run that did. All ten tests in `crates/judgment/tests/live.rs`, the same file the Laya run used, passed against `https://api.typesafe.ai` with a real key on 2026-10-03; five more, written from the probes [below](#beyond-the-test-file), passed the same day, and `mise run live:typesafe` runs all fifteen.
+This page records the run that did. All ten tests in `tests/live.rs`, the same file the Laya run used, passed against `https://api.typesafe.ai` with a real key on 2026-10-03; five more, written from the probes [below](#beyond-the-test-file), passed the same day, and `mise run live:typesafe` runs all fifteen.
 
 ## What was tested, and with what
 
@@ -152,7 +152,7 @@ This page records the run that did. All ten tests in `crates/judgment/tests/live
 | Key | `TYPESAFE_API_KEY`, signalman's own account, from the environment |
 | Model requested | `jev-latest`, the crate's default; it resolved to `jev-1.13.0`, the version the 2026-09-23 run saw |
 | Crate | `judgment` at the commit this page was added in, built with its default `http` feature |
-| Tests | `crates/judgment/tests/live.rs`, all ten, with `--test-threads=1`; the bearer test pointed at the same server with the same key |
+| Tests | `tests/live.rs`, all ten, with `--test-threads=1`; the bearer test pointed at the same server with the same key |
 
 Total wall time was about four seconds for the nine tests that call the model: the hosted API answers in hundreds of milliseconds, against two seconds per case for Laya on CPU, so the crate's 10 s default timeout is the right default for it. The run spends a handful of model calls on the account.
 
@@ -251,7 +251,7 @@ Laya's README says its payload is schema-identical to Jev's and lists three diff
 
 ## The tests
 
-The live checks are in `crates/judgment/tests/live.rs`. Every one is `#[ignore]`, so the gate stays hermetic and they run only by hand:
+The live checks are in `tests/live.rs`. Every one is `#[ignore]`, so the gate stays hermetic and they run only by hand:
 
 ```sh
 JUDGMENT_LIVE_BASE_URL=http://127.0.0.1:8000 JUDGMENT_LIVE_MODEL=typed-decisions \
@@ -270,7 +270,7 @@ Each test exists for one belief the mocks could not check.
 | `a_model_name_the_server_does_not_know_is_still_answered` | A client sending the crate's default `jev-latest` gets an answer | A consumer that only changed `base_url` must not be broken by the model name it never set |
 | `a_live_answer_replays_offline_from_its_recording` | `Recorder` over the live client, then `Replay` over the directory, return the same `Response` for the same state and questions | The request hash that keys a recording is computed on the crate side; this proves it is stable across a real round trip, which the mocks could not, since they never see a serialised request |
 | `an_unknown_extra_field_is_answered_or_refused_by_name` | A request carrying an unknown `CallOptions::extra` field is either answered or refused as `Error::InvalidRequest` with status 400 or 422, and the test prints which; a 5xx, a transport failure or a decode error fails | The crate sends extra fields as given and leaves the choice to the server, so either outcome is a pass, but only a run says which one a server takes. Added with judgment 0.2 |
-| `the_builder_refuses_what_the_reference_page_forbids` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server. The limits are the HTTP API reference page's; TypeSafe's OpenAPI document states none above and only one level below, so the builder is the stricter, and what a server does past them is unverified (`crates/judgment/tests/contract.rs` pins the difference). Named `the_builder_refuses_what_the_wire_would_reject` when this run was made |
+| `the_builder_refuses_what_the_reference_page_forbids` | 256 options, one level and a null level are refused by the builder before any request | Listed with the live tests so a run shows the limits next to the behaviour they guard; it needs no server. The limits are the HTTP API reference page's; TypeSafe's OpenAPI document states none above and only one level below, so the builder is the stricter, and what a server does past them is unverified (`tests/contract.rs` pins the difference). Named `the_builder_refuses_what_the_wire_would_reject` when this run was made |
 | `a_wrong_bearer_token_is_unauthorized_and_the_right_one_is_not` | Against a second server started with `LAYA_API_KEY`, a wrong key is `Error::Unauthorized` and the right one is answered, and the 401's request id is printed; skipped unless `JUDGMENT_LIVE_AUTH_BASE_URL` is set | The retry loop must not retry a 401 and the error must be the one whose remedy is "check the key". Laya returns FastAPI's `{"detail": …}` body rather than TypeSafe's `{"error": …}`; the classification is by status, so the body shape does not matter |
 
 The eight tests of the first run, all but the two added with judgment 0.2, passed on 2026-09-24 against the two servers described above.
@@ -284,17 +284,17 @@ With judgment 0.2.0, all ten passed on 2026-09-25 against the same two servers, 
 
 The benchmark was not re-run live; the committed recordings replay under 0.2 to the same report as before ([below](#what-the-benchmark-measured)).
 
-The benchmark replay is `crates/judgment/examples/typed_decisions.rs`. It reads one case per line, builds the crate's `Questions` from each case's wire JSON through the public builders, sends every case through one `dyn SystemOne`, and grades each answer against the gold label with `judgment::eval`:
+The benchmark replay is `examples/typed_decisions.rs`. It reads one case per line, builds the crate's `Questions` from each case's wire JSON through the public builders, sends every case through one `dyn SystemOne`, and grades each answer against the gold label with `judgment::eval` (commands run from the crate's directory):
 
 ```sh
 # live, recording every answer
 TYPESAFE_BASE_URL=http://127.0.0.1:8000 TYPESAFE_MODEL=typed-decisions TYPESAFE_API_KEY=unused \
   cargo run -p judgment --example typed_decisions -- \
-    crates/judgment/examples/typed-decisions/sample.jsonl --record /tmp/laya-run
+    examples/typed-decisions/sample.jsonl --record /tmp/laya-run
 
 # offline, from the recordings: no server, no key, same numbers
 cargo run -p judgment --example typed_decisions -- \
-  crates/judgment/examples/typed-decisions/sample.jsonl --replay /tmp/laya-run
+  examples/typed-decisions/sample.jsonl --replay /tmp/laya-run
 ```
 
 `examples/typed-decisions/sample.jsonl` is the first ten test cases of each workflow, committed so the example runs from a checkout; `export.py` next to it writes the full split from the Parquet files. The example is a compatibility test at scale before it is an evaluation: 400 cases is 2,000 questions through the builder, 400 requests through the client, 2,000 answers through the decoder, and every combination of primitive and criteria shape the benchmark uses (Noul with and without criteria, Choice with three to five described options, Score with three to five levels).
@@ -337,7 +337,7 @@ The numbers also say what the card says about the model. Mean answer probability
 
 Latency, per five-question case on four CPU cores, warm, with nothing else running: p50 2.1 s, p95 2.2 s. During the full run, which shared the cores with the build gate and a second server, it was p50 4.1 s and p95 6.2 s; the run is I/O-free, so the difference is CPU contention. The card's tens of milliseconds are on a T4.
 
-The 40-case sample committed with the example was recorded from the same server into `examples/typed-decisions/recordings/`; replaying it offline produces the identical report (accuracy 0.725 on 200 questions, the same to every digit as the live run that wrote it), which is the recording round trip checked at benchmark scale rather than on one request. The recordings hold none of Laya's extras (no `routing`, no `action`): the `Recorder` writes the decoded `Response`, and the crate that recorded them dropped what it did not model. A test (`the_committed_recordings_decode_and_rewrite_byte_for_byte` in `crates/judgment/tests/backend.rs`) checks that all 40 still decode, with no unknown answer and nothing in `Response::extra`, and write back byte for byte.
+The 40-case sample committed with the example was recorded from the same server into `examples/typed-decisions/recordings/`; replaying it offline produces the identical report (accuracy 0.725 on 200 questions, the same to every digit as the live run that wrote it), which is the recording round trip checked at benchmark scale rather than on one request. The recordings hold none of Laya's extras (no `routing`, no `action`): the `Recorder` writes the decoded `Response`, and the crate that recorded them dropped what it did not model. A test (`the_committed_recordings_decode_and_rewrite_byte_for_byte` in `tests/backend.rs`) checks that all 40 still decode, with no unknown answer and nothing in `Response::extra`, and write back byte for byte.
 
 ## What this does and does not establish
 
@@ -387,6 +387,8 @@ What this adds to the first run's conclusion: a compatible server can change wha
 
 ## Repeating the run
 
+From the crate's directory:
+
 ```sh
 python -m venv .venv
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -405,7 +407,7 @@ JUDGMENT_LIVE_AUTH_BASE_URL=http://127.0.0.1:8001 JUDGMENT_LIVE_AUTH_API_KEY=sec
   cargo test -p judgment --test live -- --ignored --nocapture --test-threads=1
 
 # the full benchmark
-.venv/bin/python crates/judgment/examples/typed-decisions/export.py --split test --out /tmp/typed-decisions-test.jsonl
+.venv/bin/python examples/typed-decisions/export.py --split test --out /tmp/typed-decisions-test.jsonl
 TYPESAFE_BASE_URL=http://127.0.0.1:8000 TYPESAFE_MODEL=typed-decisions TYPESAFE_API_KEY=unused \
   cargo run -p judgment --example typed_decisions -- /tmp/typed-decisions-test.jsonl --record /tmp/laya-full --json
 ```
@@ -502,7 +504,7 @@ Each item names where the idea was seen, why it matters to this project, and the
 
 ## What to do with this
 
-Items 1 to 4 are one release, small, and each removes a class of failure that a second provider or a support ticket would expose; they are worth a beads epic now. Items 5 to 7 are the "parity" release that makes the rustdoc's comparison with the official SDK true. Items 8 to 12 wait for the consumer that needs them, with 9 and 10 the first to arrive if the self-hosting question in the research note is ever answered yes. This paragraph first said that nothing on the list changes a signature a consumer holds except the `Answer` variant in item 2, and that the variant was additive. Both halves were wrong: a new variant on an exhaustive public enum breaks every exhaustive `match` outside the crate ([Cargo's SemVer rules](https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new)), and items 1, 3, 5 and 7 change error variants, public struct fields and a method's receiver as well. The release that did items 1 to 7 lists thirty-odd breaking changes in [its CHANGELOG](https://github.com/chussenot/signalman/blob/main/crates/judgment/CHANGELOG.md); from 0.2 on, `Error` and `Answer` are `#[non_exhaustive]`, so a new variant is additive for real.
+Items 1 to 4 are one release, small, and each removes a class of failure that a second provider or a support ticket would expose; they are worth a beads epic now. Items 5 to 7 are the "parity" release that makes the rustdoc's comparison with the official SDK true. Items 8 to 12 wait for the consumer that needs them, with 9 and 10 the first to arrive if the self-hosting question in the research note is ever answered yes. This paragraph first said that nothing on the list changes a signature a consumer holds except the `Answer` variant in item 2, and that the variant was additive. Both halves were wrong: a new variant on an exhaustive public enum breaks every exhaustive `match` outside the crate ([Cargo's SemVer rules](https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new)), and items 1, 3, 5 and 7 change error variants, public struct fields and a method's receiver as well. The release that did items 1 to 7 lists thirty-odd breaking changes in [its CHANGELOG](../../CHANGELOG.md); from 0.2 on, `Error` and `Answer` are `#[non_exhaustive]`, so a new variant is additive for real.
 
 ## What shipped in judgment 0.2.0
 
@@ -513,12 +515,12 @@ Items 1 to 7 shipped together as judgment 0.2.0 (signalman 0.4.0 took it), in on
 | 1. Request id | `x-typesafe-request-id` on `Response::request_id`, on every error that came from an HTTP response (`Error::request_id()`, and a `[request_id …]` suffix on the message), and as the `request_id` field of the `typesafe.evaluate` and `typesafe.list_models` spans | Read in `client.rs`, not in the shared retry loop, which stays generic across the three upstreams and hands back the last response's headers in `http::Completed::headers`. It is the last attempt's id only, and optional everywhere, because the OpenAPI document lists no response headers; Laya sends none |
 | 2. Tolerant decode | `Answer::Unknown(Value)` with a `warn` event naming the key and kind (escaped and cut to 64 characters); `Response::extra` keeps every undocumented top-level field, so Laya's `routing` or OpenRouter's `provider` can be logged; a missing `usage`, or null counts, read as zero | The known answer kinds stay strict, and `Answer` is now `#[non_exhaustive]` |
 | 3. Verify | `Response::verify(&Questions)` checks every id, kind, Choice key and Score legend, and every backend in the crate runs it: `Client`, `Fake`, `Replay`, `Recorder`. A 2xx that does not fit is an error (`Error::is_unfit`), reported to the observer as `unfit` and never retried | A structured Score level may be echoed as itself or as text that parses to it: the hosted API echoes the value (2026-10-03), `laya-serve` 0.3.20 and 0.3.21 did too, and `laya-serve` 0.3.22 and later echo Python-spaced JSON text, so the comparison is on the parsed value ([the Laya record](../verification/laya-typed-decisions.md#re-run-against-laya-serve-0324)). signalman no longer reads an off-list Choice option as the no-match option: the triage fails, the alert keeps no tags and no note, and `eval` records the case as failed ([Triage](https://github.com/chussenot/signalman/blob/main/docs/triage.md)) |
-| 4. OpenAPI contract test | The vendored `api.typesafe.ai/openapi.json` (0.2.0) validates the requests the builders produce and the responses the `Fake` and the committed recordings hold (`crates/judgment/tests/contract.rs`); an ignored drift test compares the copy with the URL (`tests/openapi_drift.rs`); signalman validates its own TypeSafe traffic against the same document | As ranked |
+| 4. OpenAPI contract test | The vendored `api.typesafe.ai/openapi.json` (0.2.0) validates the requests the builders produce and the responses the `Fake` and the committed recordings hold (`tests/contract.rs`); an ignored drift test compares the copy with the URL (`tests/openapi_drift.rs`); signalman validates its own TypeSafe traffic against the same document | As ranked |
 | 5. Retry parity, stated | `retry-after-ms`, then `Retry-After` in seconds, then as an HTTP date, all under `retry_after_max`; one-sided jitter; an optional total `budget`; `RetryPolicy::conservative()` (408, 429 and failures before the request left the process); a parity table on `RetryPolicy` that lists what matches Python 0.7.1 and JS 0.6.0, what deliberately differs and what is not implemented | The budget is off by default, so no consumer's timing changed. `x-typesafe-retry-count` is reserved (a caller cannot set it) but not yet sent. A `Retry-After` of `inf` or 1e20 used to panic in the loop; it is now ignored. The client follows no redirect, like the Python SDK |
 | 6. Per-call overrides | `Client::evaluate_with(&Request, &CallOptions)` with a per-call timeout, retry policy, headers and extra body fields, plus `ClientBuilder::default_header` | Not as fields on `Request`: `Request` is unchanged, so struct literals and signalman's `--print-request` keep the documented body. The model stays on `Request`, which is already per call, because a second override would make the span's `model` field and the `Recorder`'s hash name a model the call did not use |
 | 7. Schema fixes | A 400 is `Error::InvalidRequest` like 422, with the body's issues parsed into `ValidationIssue`s; 403 is `Error::PermissionDenied`; `Error::InvalidApiKey` applies the Python SDK's key hygiene at `build()`; the `/v1/models` and question-limit notes are corrected | `instructions` may be null, but a null is still sent as `"instructions": null` rather than left out: the schema accepts it and Laya's server reads the key unconditionally. A Noul with neither instructions nor criteria is refused, since the id is never shown to the model |
 
-The evidence, as of the release: the workspace tests (wiremock for the client, no network in the default run); the ten ignored live tests in `crates/judgment/tests/live.rs`, all passing against `laya-serve` ([judgment against Laya typed-decisions](../verification/laya-typed-decisions.md)); the committed Laya recordings, which still replay to an accuracy of 0.725 on 200 questions under the stricter decoder; and signalman's committed Jev recordings (`examples/eval/runs/jev-1.13.0`), which replay to a decision agreement of 1.00. None of the 0.2 behaviour had been checked against a live TypeSafe account at the release: the hosted API had answered this client once, under 0.1. It has since: the ten live tests passed against the hosted API on 2026-10-03 ([judgment against the hosted TypeSafe API](../verification/hosted-typesafe.md)). The full list of changes, the breaking ones included, is in the crate's [CHANGELOG](https://github.com/chussenot/signalman/blob/main/crates/judgment/CHANGELOG.md).
+The evidence, as of the release: the workspace tests (wiremock for the client, no network in the default run); the ten ignored live tests in `tests/live.rs`, all passing against `laya-serve` ([judgment against Laya typed-decisions](../verification/laya-typed-decisions.md)); the committed Laya recordings, which still replay to an accuracy of 0.725 on 200 questions under the stricter decoder; and signalman's committed Jev recordings (`examples/eval/runs/jev-1.13.0`), which replay to a decision agreement of 1.00. None of the 0.2 behaviour had been checked against a live TypeSafe account at the release: the hosted API had answered this client once, under 0.1. It has since: the ten live tests passed against the hosted API on 2026-10-03 ([judgment against the hosted TypeSafe API](../verification/hosted-typesafe.md)). The full list of changes, the breaking ones included, is in the crate's [CHANGELOG](../../CHANGELOG.md).
 
 
 <!-- source: crates/judgment/docs/decisions/README.md -->

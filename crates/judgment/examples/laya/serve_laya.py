@@ -5,7 +5,7 @@ same typed questions as TypeSafe's System One API, in one forward pass, from
 open weights. This shim exposes one checkpoint on the two endpoints the
 judgment crate calls, ``POST /v1/systemone`` and ``GET /v1/models``, so the
 crate's live tests and examples, and any System One client pointed here
-(signalman among them), run unchanged. From the crate directory (``crates/judgment``):
+(signalman among them), run unchanged. From the crate's root directory:
 
     python -m venv .venv && .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
     .venv/bin/pip install laya

@@ -54,7 +54,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - run: scripts/check-frontmatter.sh docs
       - run: scripts/gen-llms-txt.sh --check
-      # What a publish would ship; fails on a file the manifest excludes.
+      # What a publish would ship, so tooling creeping into the package is seen.
       - run: cargo package --list --allow-dirty
 
   hooks:

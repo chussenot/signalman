@@ -25,7 +25,7 @@ Numbers are one sequence for the repository, and a record lives with the code it
 | [0009](0009-readiness-depends-on-the-upstreams.md) | Readiness depends on the upstreams | accepted | `signalman-m28.3` |
 | [0010](0010-extract-the-judgment-core-into-a-crate.md) | Extract the judgment core into a reusable crate | accepted | `signalman-cuo` |
 | [0011](0011-documentation-lives-with-its-concern.md) | Documentation lives with its concern | accepted | `signalman-mhb` |
-| [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) | The judgment crate moves to its own repository | accepted | |
+| [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) | The judgment crate moves to its own repository | accepted | `signalman-bdl` |
 
 ## Status notes
 
