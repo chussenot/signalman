@@ -28,6 +28,7 @@ The [README](../README.md) says why signalman exists. These pages say how it wor
 | Why the typed client is the `judgment` crate, separate from the triager, and how signalman uses it | [TypeSafe client](typesafe-client.md) |
 | How the crate works, what it guarantees, what real servers did with it, how to use it in another project | the crate's own documentation: [README](https://github.com/chussenot/signalman/blob/main/crates/judgment/README.md), [index](https://github.com/chussenot/signalman/blob/main/crates/judgment/docs/index.md) |
 | Whether an open-weights model can replace Jev | [Laya as a model provider](laya.md) |
+| How the crate moves to its own repository with its history, and what each repository changes then | [Extracting the judgment crate](judgment-extraction.md) |
 | What the open Jev reproductions and the Decision Index mean for provider choice, self-hosting, question design and thresholds | [Open System One models](research/open-system-one-models.md) |
 | What a catalogue of 249 typed decisions over the same wire does differently, and what signalman took from it: the state-as-data rule, evaluation provenance, splits, fingerprints and intervals | [Decision recipes](research/decision-recipes.md) |
 | Where a Rust macro would remove repetition, where it would hide it, and what to do instead | [Rust macros](research/rust-macros.md) |

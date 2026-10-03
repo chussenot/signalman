@@ -1,8 +1,9 @@
 //! signalman's own TypeSafe traffic against the published contract: every
 //! triage request it builds, the TypeSafe mocks the other test files share,
 //! and the committed Jev run, each checked against the OpenAPI document the
-//! judgment crate vendors (`crates/judgment/tests/fixtures/typesafe-openapi.json`,
-//! refreshed only through `crates/judgment/tests/openapi_drift.rs`).
+//! judgment crate vendors and exposes as `judgment::contract::OPENAPI_DOCUMENT`
+//! (its `openapi` feature, on in this crate's dev-dependencies; the crate
+//! refreshes the document only through its `tests/openapi_drift.rs`).
 //!
 //! The judgment crate's `tests/contract.rs` covers what its builders can
 //! produce in general. This file covers what signalman actually sends: the
@@ -30,10 +31,8 @@ use signalman::triage::{
 };
 
 static SPEC: LazyLock<Value> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../crates/judgment/tests/fixtures/typesafe-openapi.json"
-    ))
-    .expect("the vendored OpenAPI document is JSON")
+    serde_json::from_str(judgment::contract::OPENAPI_DOCUMENT)
+        .expect("the vendored OpenAPI document is JSON")
 });
 
 /// `POST /v1/systemone`'s request body, its 200, and `GET /v1/models`'s 200.
@@ -63,7 +62,7 @@ fn schema_of(pointer: &str) -> String {
 /// against the open components a renamed or misspelt optional field is only
 /// an extra key and conforms. The keyword does not reach into a property's
 /// value, so `state`, the `questions` map and the Choice and Score criteria
-/// stay open. `crates/judgment/tests/contract.rs` derives the set from the
+/// stay open. The judgment crate's `tests/contract.rs` derives the set from the
 /// document and fails when it is no longer these five.
 static STRICT_COMPONENTS: LazyLock<Value> = LazyLock::new(|| {
     let mut components = SPEC["components"].clone();

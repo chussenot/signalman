@@ -21,6 +21,7 @@ Signalman's records that shaped the crate, read with these:
 - [0002 Calibrated judgments over generated text](https://github.com/chussenot/signalman/blob/main/docs/decisions/0002-calibrated-judgments-over-generated-text.md): why System One primitives at all.
 - [0010 Extract the judgment core into a reusable crate](https://github.com/chussenot/signalman/blob/main/docs/decisions/0010-extract-the-judgment-core-into-a-crate.md): what became the crate, what stayed in the application, and why the existing crates were not adopted.
 - [0011 Documentation lives with its concern](https://github.com/chussenot/signalman/blob/main/docs/decisions/0011-documentation-lives-with-its-concern.md): why these pages are here and not under signalman's `docs/`.
+- [0012 The judgment crate moves to its own repository](https://github.com/chussenot/signalman/blob/main/docs/decisions/0012-the-judgment-crate-moves-to-its-own-repository.md): why this directory carries a repository's files, and how it leaves the workspace with its history.
 
 ## Status notes
 

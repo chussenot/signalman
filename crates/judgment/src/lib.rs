@@ -166,6 +166,9 @@
 //!   Brier score and calibration error per question.
 //! * [`observer`] is the seam an application uses to count tokens and failed
 //!   attempts in its own metrics.
+//! * `contract` (feature `openapi`, off by default) is the vendored TypeSafe
+//!   OpenAPI document as text, for an application that validates its own
+//!   traffic against the contract this crate is tested against.
 //!
 //! Without the `http` feature the crate is the question builder, the typed
 //! answers, the backends other than the client, and the recordings and
@@ -175,6 +178,8 @@ pub mod answer;
 pub mod backend;
 #[cfg(feature = "http")]
 pub mod client;
+#[cfg(feature = "openapi")]
+pub mod contract;
 pub mod error;
 pub mod eval;
 #[cfg(feature = "http")]

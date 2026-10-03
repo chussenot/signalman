@@ -5,12 +5,34 @@ description = "Typed, calibrated judgments from TypeSafe System One models (Jev)
 readme = "README.md"
 keywords = ["typesafe", "system-one", "jev", "classification", "calibration"]
 categories = ["api-bindings", "web-programming::http-client"]
-# Published from this workspace when a second consumer exists (decision 0010).
+# Published from its own repository once split out of signalman (decision
+# 0010 made it a crate, 0012 moves it out); `cargo publish` is denied by the
+# Bash guard until then.
 publish = false
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+# Declared here rather than inherited from the signalman workspace, so the
+# crate builds alone from a checkout of this directory (decision 0012). Keep
+# in step with the workspace root while it is still a member.
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+repository = "https://github.com/chussenot/signalman"
+# What a package does not ship: the repository's own tooling. The docs, the
+# examples with their recordings and the vendored OpenAPI document stay in
+# (`cargo package --list` shows the result; CI runs it).
+exclude = [
+    ".github/",
+    ".claude/",
+    "CLAUDE.md",
+    "catalog-info.yaml",
+    "mise.toml",
+    ".pre-commit-config.yaml",
+    "scripts/",
+    ".env.example",
+    ".gitattributes",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    "clippy.toml",
+]
 
 [features]
 default = ["http"]
@@ -18,22 +40,33 @@ default = ["http"]
 # builder, the typed answers and the recordings, for a project that brings its
 # own transport.
 http = ["dep:reqwest", "dep:tokio", "dep:fastrand", "dep:httpdate"]
+# `judgment::contract::OPENAPI_DOCUMENT`: the vendored TypeSafe OpenAPI
+# document as text, for an application that validates its own traffic against
+# the contract the crate is tested against. Off by default: about 25 KB of
+# static data a client has no use for at run time.
+openapi = []
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-reqwest = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["time"], optional = true }
-fastrand = { workspace = true, optional = true }
-httpdate = { workspace = true, optional = true }
+# 1.0.181 is the first with `#[serde(untagged)]` on one variant, which
+# `Answer::Unknown` uses.
+serde = { version = "1.0.181", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+fastrand = { version = "2", optional = true }
+# HTTP dates in `Retry-After` (the retry loop).
+httpdate = { version = "1", optional = true }
 
 [dev-dependencies]
-jsonschema = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tracing-subscriber = { workspace = true }
-wiremock = { workspace = true }
+# JSON Schema validation in the contract test against the vendored TypeSafe
+# OpenAPI document. No default features: nothing fetches a remote `$ref`.
+jsonschema = { version = "0.57", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# A capturing layer in the span tests.
+tracing-subscriber = "0.3"
+wiremock = "0.6"
 
 # The client tests need the HTTP feature; the rest of the crate is tested
 # with `--no-default-features` too.
@@ -98,5 +131,17 @@ name = "intent_routing"
 required-features = ["http"]
 test = true
 
-[lints]
-workspace = true
+# The same set as the signalman workspace root, declared here so the crate
+# is held to the same bar when it builds alone (decision 0012).
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
