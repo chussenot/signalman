@@ -49,7 +49,7 @@ git filter-repo \
 Add `--force` if `filter-repo` refuses because the clone is not fresh. Then check what came out:
 
 ```sh
-git log --oneline | wc -l                                            # 46 on 2026-10-03
+git log --oneline | wc -l                                            # 49 on this branch on 2026-10-03; grows with the crate
 git log --follow --format='%ad %s' --date=short -- src/client.rs | tail -1   # 2026-09-20 Replace demo service ...
 ls -a                                                                # Cargo.toml, README.md, src, tests, examples, docs, .github, mise.toml, ...
 git tag -l                                                           # signalman's tags, if any came through: rewritten onto crate commits, so delete them
@@ -104,4 +104,4 @@ One pull request here, once the new repository's first CI run is green.
 
 - In the new repository: `mise run check` and `mise run precommit` green locally and in CI on the first commit; `git log --follow -- src/client.rs` reaches 2026-09-20; `cargo package --list` shows the docs, the examples with their recordings and the vendored OpenAPI document.
 - Here, after the pull request above: `mise run check` green with `cargo tree -i judgment` showing the git source; `tests/typesafe_contract.rs` still passes, which proves the document comes through the crate; the docs auditor's link check finds no link into `crates/judgment/`.
-- The rehearsal of 2026-10-03: the `filter-repo` command above on a clone of `main` gave 46 commits, the crate's files at the root and nothing else, and `src/client.rs` followed across the move; a copy of `crates/judgment/` alone passed its own `mise run check` after `cargo generate-lockfile` and `mise run docs:llms`.
+- The rehearsal of 2026-10-03: the `filter-repo` command above on a clone of `main` gave 46 commits, the crate's files at the root and nothing else, and `src/client.rs` followed across the move. Run again on the branch that added this page, the split repository (49 commits, the scaffolding at its root, no tags) reported both `llms` files stale until `repo_url` and `edit_uri` were changed and `mise run docs:llms` run, then passed its own `mise run check` after `cargo generate-lockfile`.
