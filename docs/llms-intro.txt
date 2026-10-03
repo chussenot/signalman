@@ -7,4 +7,4 @@ The typed TypeSafe client is the `judgment` crate, which documents itself apart 
 - [README](@RAW@/README.md): why signalman exists, what it does and does not do, and the map of these pages
 - [Outcome contract, JSON Schema v1](@RAW@/docs/schema/outcome.v1.json): the document every triage emits, for scripts and agents; generated from the wire types, drift-tested
 - [Full documentation text](@RAW@/docs/llms-full.txt): every page below, concatenated in this order
-- [The judgment crate's index](@RAW@/crates/judgment/docs/llms.txt): the typed client signalman is built on: how it works, what it guarantees, what has been verified against real servers
+- [The judgment crate's index](https://raw.githubusercontent.com/chussenot/judgment/main/docs/llms.txt): the typed client signalman is built on: how it works, what it guarantees, what has been verified against real servers

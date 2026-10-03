@@ -1,9 +1,8 @@
 #!/usr/bin/env sh
-# PostToolUse (Edit|Write): regenerate llms.txt and llms-full.txt for both
-# documentation sets (signalman's docs/ and the crate's crates/judgment/docs,
-# decision 0011) right after a page, a README, an llms-intro.txt or a mkdocs
-# nav is written, so neither index lags its frontmatter and
-# `mise run docs:check` stays green. Silent when the generator refuses (a new page not yet in the nav):
+# PostToolUse (Edit|Write): regenerate docs/llms.txt and docs/llms-full.txt
+# right after a page, the README, docs/llms-intro.txt or the mkdocs nav is
+# written, so the index never lags its frontmatter and `mise run docs:check`
+# stays green. Silent when the generator refuses (a new page not yet in the nav):
 # the gate reports that case with its own message at check time.
 set -eu
 input=$(cat)

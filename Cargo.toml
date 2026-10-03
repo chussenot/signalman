@@ -1,10 +1,9 @@
 [workspace]
-members = ["crates/judgment"]
 
-# Package fields and dependency versions shared with the members that inherit
-# them. `crates/judgment` declares its own copies since decision 0012, so it
-# builds alone once split out of this repository; keep the two in step until
-# then (`docs/judgment-extraction.md`).
+# Package fields and dependency versions the root package inherits. The
+# workspace has no other member since the judgment crate moved to its own
+# repository (decision 0012); the table stays so every gate keeps running
+# with --workspace.
 [workspace.package]
 edition = "2024"
 rust-version = "1.91"
@@ -54,8 +53,11 @@ path = "src/main.rs"
 
 [dependencies]
 # The judgment core (decision 0010): questions, typed answers, the TypeSafe
-# client and its retries. A path dependency here; other projects take it by git.
-judgment = { path = "crates/judgment", version = "0.2.0" }
+# client and its retries, from its own repository (decision 0012), pinned to
+# the revision verified here. Bump it deliberately, in [dev-dependencies]
+# too, and read the crate's CHANGELOG when you do: until the pin moves, a
+# change to the crate does not reach these tests.
+judgment = { git = "https://github.com/chussenot/judgment", rev = "ed0d2fa79d24296bbeed14f03b6bae03c8b05cd5" }
 axum = { version = "0.8", features = ["json", "tokio", "http1"], default-features = false }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
@@ -89,8 +91,8 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 # The vendored TypeSafe OpenAPI document, for tests/typesafe_contract.rs,
-# through the crate's `openapi` feature rather than a path into its tree.
-judgment = { path = "crates/judgment", version = "0.2.0", features = ["openapi"] }
+# through the crate's `openapi` feature. Same source and revision as above.
+judgment = { git = "https://github.com/chussenot/judgment", rev = "ed0d2fa79d24296bbeed14f03b6bae03c8b05cd5", features = ["openapi"] }
 # `json` only for the test clients; the crate serialises its own bodies.
 reqwest = { workspace = true, features = ["json"] }
 http-body-util = "0.1"

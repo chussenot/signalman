@@ -314,7 +314,7 @@ async fn an_answer_the_question_never_offered_leaves_the_alert_untouched() {
         "the request id is reported: {msg}"
     );
     // The flow does not ask again. That the client does not retry an unfit
-    // answer is crates/judgment/tests/client.rs's to show, with retries on.
+    // answer is the judgment crate's tests/client.rs's to show, with retries on.
     assert_eq!(
         h.typesafe.received_requests().await.unwrap().len(),
         1,

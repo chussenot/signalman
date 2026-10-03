@@ -1,7 +1,8 @@
 # TechDocs build for the signalman Component (backstage.io/techdocs-ref: dir:.).
 # The pages under docs/ carry YAML frontmatter; mkdocs reads it as page meta.
-# The judgment crate documents itself in crates/judgment/docs, with its own
-# mkdocs.yml (decision 0011); its pages are not in this nav.
+# The judgment crate documents itself in its own repository,
+# https://github.com/chussenot/judgment (decisions 0011 and 0012); its pages
+# are not in this nav.
 site_name: signalman
 site_description: Alert triage with calibrated judgments, incident.io and the Backstage catalog.
 repo_url: https://github.com/chussenot/signalman

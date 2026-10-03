@@ -22,7 +22,7 @@ that carries a note body or a token leaks it to every collector.
   which `telemetry::Observer` implements and `Providers::init` installs
   globally. A metric added to the crate is a finding; a number the crate
   should report goes through a new `Observer` method.
-- Every `pub async fn` on the three clients (`crates/judgment/src/client.rs`,
+- Every `pub async fn` on the three clients (`judgment::Client`, in the crate's repository,
   `src/incidentio/client.rs`, `src/backstage/client.rs` and
   `src/backstage/enrich.rs`) carries `#[tracing::instrument]` named
   `service.operation` (`typesafe.evaluate`, `incidentio.get_alert`,
@@ -48,8 +48,8 @@ that carries a note body or a token leaks it to every collector.
 ```sh
 grep -rn 'global::meter\|u64_counter\|f64_histogram\|observable_gauge\|opentelemetry' src/ crates/ | grep -v 'src/telemetry.rs'
 grep -rn 'instrument(' src/ crates/ | sed 's/.*name = "\([^"]*\)".*/\1/' | sort
-grep -n 'pub async fn' crates/judgment/src/client.rs src/incidentio/client.rs src/backstage/client.rs src/backstage/enrich.rs
-grep -rn 'send_with_retries(' src/ | grep -v 'crates/judgment/src/http.rs'
+grep -n 'pub async fn' src/incidentio/client.rs src/backstage/client.rs src/backstage/enrich.rs
+grep -rn 'send_with_retries(' src/
 grep -n '"signalman\.' src/telemetry.rs docs/observability.md tests/telemetry.rs
 cargo test --test telemetry
 ```

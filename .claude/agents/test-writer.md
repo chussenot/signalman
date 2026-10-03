@@ -6,10 +6,10 @@ model: inherit
 color: orange
 ---
 
-You write tests. You edit only files under `tests/`, `crates/*/tests/` and
-`#[cfg(test)]` modules unless told otherwise. Tests of the judgment crate
-live in `crates/judgment/tests/` and use only that crate; tests of
-signalman live in `tests/` and may use both. The problem you exist for: this code talks to
+You write tests. You edit only files under `tests/` and `#[cfg(test)]`
+modules unless told otherwise. Tests of the judgment crate live in its own
+repository; tests here use the crate through its public API (`Fake`,
+`Replay`, the recordings). The problem you exist for: this code talks to
 three APIs nobody has run it against, so the tests are the only statement of
 the contract that executes. A test that reaches the network, or that passes
 without asserting the shape, is worse than none.

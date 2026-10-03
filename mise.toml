@@ -46,30 +46,26 @@ run = "cargo clippy --workspace --all-targets --all-features"
 description = "Unit, integration (wiremock) and doc tests; no network"
 run = "cargo test --workspace --all-features"
 
-[tasks."check:minimal"]
-description = "The judgment crate and its tests build without the http feature (the no-transport configuration)"
-run = "cargo check -p judgment --no-default-features --all-targets"
-
 [tasks.doc]
 description = "Build API docs; broken links are errors"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --workspace --no-deps --document-private-items"
 
 [tasks."docs:check"]
-description = "Frontmatter on every page of both documentation sets (signalman's docs/, the crate's crates/judgment/docs), and each set's llms.txt matches its nav and frontmatter"
+description = "Frontmatter on every page under docs/ and the README, and llms.txt matches the nav and frontmatter"
 run = """
 set -eu
-scripts/check-frontmatter.sh README.md docs crates/judgment/docs
+scripts/check-frontmatter.sh README.md docs
 scripts/gen-llms-txt.sh --check
 """
 
 [tasks."docs:llms"]
-description = "Regenerate llms.txt and llms-full.txt for both documentation sets from their mkdocs.yml and page frontmatter"
+description = "Regenerate docs/llms.txt and docs/llms-full.txt from mkdocs.yml and the page frontmatter"
 run = "scripts/gen-llms-txt.sh"
 
 [tasks.check]
 description = "All quality gates, in CI order"
-depends = ["fmt:check", "lint", "check:minimal", "test", "doc", "docs:check"]
+depends = ["fmt:check", "lint", "test", "doc", "docs:check"]
 
 [tasks.precommit]
 description = "Run every pre-commit hook against the whole tree"
@@ -127,19 +123,6 @@ for f in examples/alerts/*.json; do
   echo "== $f"; cargo run -q -- triage "$f" --print-request | head -c 600; echo; echo
 done
 """
-
-[tasks."live:typesafe"]
-description = "judgment's ignored live tests against the hosted TypeSafe API; needs TYPESAFE_API_KEY and spends a few model calls"
-# Never part of `check`: the gate stays offline. Reads the variables signalman reads.
-run = '''
-set -eu
-: "${TYPESAFE_API_KEY:?set TYPESAFE_API_KEY (in .env) to run the live tests}"
-base="${TYPESAFE_BASE_URL:-https://api.typesafe.ai}"
-JUDGMENT_LIVE_BASE_URL="$base" JUDGMENT_LIVE_API_KEY="$TYPESAFE_API_KEY" \
-JUDGMENT_LIVE_AUTH_BASE_URL="$base" JUDGMENT_LIVE_AUTH_API_KEY="$TYPESAFE_API_KEY" \
-JUDGMENT_LIVE_MODEL="${TYPESAFE_DEFAULT_MODEL:-jev-latest}" \
-  cargo test -p judgment --test live -- --ignored --nocapture --test-threads=1
-'''
 
 # ---------------------------------------------------------------------------
 # Planning (beads)
