@@ -85,8 +85,11 @@
 //!   apart. Its `detail` is the server's message (read from `error`,
 //!   `error.message`, `message`, `detail` or `detail.message`, in the Python
 //!   SDK's order), otherwise the validation issues as `path: msg`, otherwise
-//!   the body, truncated; `issues` keeps the fields a validation body names
-//!   as [`ValidationIssue`]s.
+//!   the body's code, otherwise the body, truncated; `issues` keeps the
+//!   fields a validation body names as [`ValidationIssue`]s, and `kind` the
+//!   code a 400 of the hosted API carries as `detail.error_type`
+//!   (`api_usage_error`, or `max_tokens_exceeded` with no message at all,
+//!   which [`Error::is_over_token_budget`] names).
 //! * 401 is [`Error::Unauthorized`]; 403 is [`Error::PermissionDenied`],
 //!   with the server's message, because a new key does not fix a 403.
 //! * 429 is [`Error::RateLimited`], with the last response's wait; 529 is
@@ -235,6 +238,11 @@
 //!   `questions`; `null` is sent as `null`. A server may use, ignore or
 //!   refuse a field it does not know; the live test
 //!   `an_unknown_extra_field_is_answered_or_refused_by_name` records which.
+//!   The hosted API refuses every unknown top-level field with a 400
+//!   (`api_usage_error`, `Invalid request.`, naming no field; observed
+//!   2026-10-03), while it ignores an unknown field inside a question
+//!   without a word, so against it extras are for a proxy in front of the
+//!   API, not for the API. Laya answers the same request.
 //! * Headers and the timeout reach every attempt, retries included.
 //! * No option's value is ever a span field, since a header can be a
 //!   credential and an extra field a piece of the state.
@@ -350,7 +358,12 @@ pub struct ModelInfo {
     /// What the model is for.
     pub description: String,
     /// Release date, `YYYY-MM-DD` per the OpenAPI document. Kept as the
-    /// string sent, so a server that formats it otherwise still lists.
+    /// string sent, so a server that formats it otherwise still lists: the
+    /// hosted API itself sends an RFC 3339 timestamp with microseconds
+    /// (`2026-09-10T18:38:01.391457+00:00`, observed 2026-10-03), and lists
+    /// only the aliases (`jev-latest`, `jev-preview`), not the versioned
+    /// name they resolve to, which a request may still name and which
+    /// [`Response::model`] reports.
     pub release_date: String,
 }
 
@@ -953,17 +966,18 @@ fn classify(
 ) -> Error {
     match status.as_u16() {
         code @ (400 | 422) => {
-            let (detail, issues) = error_detail(&body);
+            let body = error_detail(&body);
             Error::InvalidRequest {
                 status: code,
-                detail,
-                issues,
+                detail: body.detail,
+                issues: body.issues,
+                kind: body.kind,
                 request_id,
             }
         }
         401 => Error::Unauthorized { request_id },
         403 => Error::PermissionDenied {
-            detail: error_detail(&body).0,
+            detail: error_detail(&body).detail,
             request_id,
         },
         429 => Error::RateLimited {
@@ -987,15 +1001,41 @@ fn classify(
     }
 }
 
-/// The readable message and the validation issues of a 400, 403 or 422
-/// body, for [`Error::InvalidRequest`] and [`Error::PermissionDenied`].
+/// What [`error_detail`] reads from a 400, 403 or 422 body.
+struct ErrorBody {
+    /// The readable message (`Error::InvalidRequest::detail`).
+    detail: String,
+    /// The entries of a validation `detail` list, in order.
+    issues: Vec<ValidationIssue>,
+    /// The server's machine-readable code, when the body carried one.
+    kind: Option<String>,
+}
+
+impl ErrorBody {
+    /// A body that is only a message.
+    fn plain(detail: String) -> Self {
+        Self {
+            detail,
+            issues: Vec::new(),
+            kind: None,
+        }
+    }
+}
+
+/// The readable message, the validation issues and the code of a 400, 403
+/// or 422 body, for [`Error::InvalidRequest`] and [`Error::PermissionDenied`].
 ///
 /// The message is the first non-empty string of `error`, `error.message`,
 /// `message`, `detail` (a string) and `detail.message`, which is the Python
 /// SDK's order (`extract_message` in its `errors.py`); then the issues of a
 /// `detail` list joined as `path: msg; …`, when that is not empty; then the
-/// body itself. The issues are parsed from a `detail` list whatever supplies
-/// the message, so code gets them even when the server also sent prose. An
+/// code, when there is one; then the body itself. The code is the first
+/// non-empty string of `detail.error_type` (the hosted API's 400 shape,
+/// observed 2026-10-03, which may come with no message at all:
+/// `{"detail": {"error_type": "max_tokens_exceeded"}}`), `error.type`,
+/// `error_type` and `type`. The issues are parsed from a `detail` list
+/// whatever supplies the message, so code gets them even when the server
+/// also sent prose. An
 /// entry without a string `msg` is skipped, a missing or non-list `loc` is
 /// an empty location, a non-string location item keeps its JSON text, and a
 /// missing `type` is an empty kind. A body that is a JSON string is the
@@ -1020,28 +1060,33 @@ fn classify(
 /// dropped from the issues and the joined message, since `input` can be a
 /// piece of the state. That is best-effort: a body this function does not
 /// recognise is still quoted as it came, truncated.
-fn error_detail(body: &str) -> (String, Vec<ValidationIssue>) {
+fn error_detail(body: &str) -> ErrorBody {
     if body.trim().is_empty() {
-        return ("no body".to_owned(), Vec::new());
+        return ErrorBody::plain("no body".to_owned());
     }
     let object = match serde_json::from_str::<Value>(body) {
         Ok(Value::Object(object)) => object,
         Ok(Value::String(text)) if !text.is_empty() => {
-            return (http::truncate(text), Vec::new());
+            return ErrorBody::plain(http::truncate(text));
         }
-        _ => return (http::truncate(body.to_owned()), Vec::new()),
+        _ => return ErrorBody::plain(http::truncate(body.to_owned())),
     };
     let issues: Vec<ValidationIssue> = object
         .get("detail")
         .and_then(Value::as_array)
         .map(|entries| entries.iter().filter_map(validation_issue).collect())
         .unwrap_or_default();
-    let nested = |key: &str| object.get(key).and_then(|v| v.get("message"));
+    let nested = |key: &str, field: &str| object.get(key).and_then(|v| v.get(field));
+    let kind = non_empty_str(nested("detail", "error_type"))
+        .or_else(|| non_empty_str(nested("error", "type")))
+        .or_else(|| non_empty_str(object.get("error_type")))
+        .or_else(|| non_empty_str(object.get("type")))
+        .map(str::to_owned);
     let message = non_empty_str(object.get("error"))
-        .or_else(|| non_empty_str(nested("error")))
+        .or_else(|| non_empty_str(nested("error", "message")))
         .or_else(|| non_empty_str(object.get("message")))
         .or_else(|| non_empty_str(object.get("detail")))
-        .or_else(|| non_empty_str(nested("detail")))
+        .or_else(|| non_empty_str(nested("detail", "message")))
         .map(str::to_owned)
         .or_else(|| {
             (!issues.is_empty()).then(|| {
@@ -1055,8 +1100,14 @@ fn error_detail(body: &str) -> (String, Vec<ValidationIssue>) {
         // Issues that join to nothing (an empty `msg` at an empty path) are
         // no message either, as in the SDK (`"; ".join(parts) or None`).
         .filter(|message| !message.is_empty())
+        // A code with no message says more than the raw body does.
+        .or_else(|| kind.clone())
         .unwrap_or_else(|| body.to_owned());
-    (http::truncate(message), issues)
+    ErrorBody {
+        detail: http::truncate(message),
+        issues,
+        kind,
+    }
 }
 
 /// `value` when it is a non-empty JSON string: an empty message does not
@@ -1348,13 +1399,71 @@ mod tests {
     }
 
     fn detail(body: &str) -> (String, Vec<ValidationIssue>) {
-        error_detail(body)
+        let read = error_detail(body);
+        (read.detail, read.issues)
     }
 
     fn only_detail(body: &str) -> String {
-        let (message, issues) = error_detail(body);
+        let (message, issues) = detail(body);
         assert!(issues.is_empty(), "{body}: {issues:?}");
         message
+    }
+
+    fn kind_of(body: &str) -> Option<String> {
+        error_detail(body).kind
+    }
+
+    #[test]
+    fn error_detail_reads_the_hosted_api_s_three_400_shapes() {
+        // Bodies as api.typesafe.ai sent them on 2026-10-03 (`tests/live.rs`
+        // and docs/judgment-typesafe-live.md), none of them in the OpenAPI
+        // document, which describes the 422 list only.
+
+        // A limit of the server's own: a sentence, no code.
+        let body = r#"{"detail":"Too many choices. Must have at most 255 choices."}"#;
+        assert_eq!(
+            only_detail(body),
+            "Too many choices. Must have at most 255 choices."
+        );
+        assert_eq!(kind_of(body), None);
+
+        // Request handling: a code and a message.
+        let body =
+            r#"{"detail":{"error_type":"api_usage_error","message":"Unknown model: jev-0.0.0"}}"#;
+        assert_eq!(only_detail(body), "Unknown model: jev-0.0.0");
+        assert_eq!(kind_of(body).as_deref(), Some("api_usage_error"));
+
+        // The token budget: a code and nothing else. The code is the
+        // detail, not the raw body.
+        let body = r#"{"detail":{"error_type":"max_tokens_exceeded"}}"#;
+        assert_eq!(only_detail(body), "max_tokens_exceeded");
+        assert_eq!(kind_of(body).as_deref(), Some("max_tokens_exceeded"));
+
+        // The generic shape's `type` is a code too, and a 403 body's code
+        // is read the same way (the detail is what PermissionDenied keeps).
+        assert_eq!(
+            kind_of(r#"{"error":{"message":"bad question","type":"invalid_request"}}"#).as_deref(),
+            Some("invalid_request")
+        );
+        let body = r#"{"detail":{"error_type":"authentication_error","message":"Must supply an API key! Check your request and try again."}}"#;
+        assert_eq!(
+            only_detail(body),
+            "Must supply an API key! Check your request and try again."
+        );
+        assert_eq!(kind_of(body).as_deref(), Some("authentication_error"));
+
+        // A 422 for one value of a union-typed field: one issue per
+        // alternative, each with a trailing type segment, and no code.
+        let body = r#"{"detail":[{"type":"string_type","loc":["body","questions","s","score","criteria",1,"str"],"msg":"Input should be a valid string","input":null},{"type":"dict_type","loc":["body","questions","s","score","criteria",1,"dict[any,any]"],"msg":"Input should be a valid dictionary","input":null},{"type":"list_type","loc":["body","questions","s","score","criteria",1,"list[any]"],"msg":"Input should be a valid list","input":null}]}"#;
+        let (message, issues) = detail(body);
+        assert_eq!(issues.len(), 3);
+        assert_eq!(issues[0].path(), "questions.s.score.criteria.1.str");
+        assert_eq!(issues[1].kind, "dict_type");
+        assert!(
+            message
+                .starts_with("questions.s.score.criteria.1.str: Input should be a valid string; ")
+        );
+        assert_eq!(kind_of(body), None);
     }
 
     #[test]

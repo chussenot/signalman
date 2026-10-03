@@ -2,13 +2,13 @@
   "models": [
     {
       "name": "jev-latest",
-      "description": "Alias for the newest Jev release.",
-      "release_date": "2026-09-15"
+      "description": "The latest iteration of TypeSafe's System One Model: Jev",
+      "release_date": "2026-09-10T18:38:01.391457+00:00"
     },
     {
-      "name": "jev-1.13.0",
-      "description": "General-purpose system one model.",
-      "release_date": "2026-09-15"
+      "name": "jev-preview",
+      "description": "A preview version of `jev-latest`: should be better in most ways",
+      "release_date": "2026-09-10T18:39:06.057655+00:00"
     }
   ]
 }

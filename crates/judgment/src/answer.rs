@@ -826,6 +826,35 @@ impl<K: Eq + Hash> Choice<K> {
     pub fn probability_of(&self, option: &K) -> f64 {
         self.probabilities.get(option).map_or(0.0, |p| p.value())
     }
+
+    /// The confidence TypeSafe documents for a Choice, computed from
+    /// `probabilities`: `(p_max − 1/n) / (1 − 1/n)` for `n` options, so an
+    /// even split reads 0 and all the probability on one option reads 1.
+    /// Only the top probability counts. A Choice of one option is 1.
+    ///
+    /// On the hosted API this matches the wire's `confidence` within about
+    /// 0.01: the server computes it from unrounded probabilities and sends
+    /// both rounded to two decimals (observed against `jev-1.13.0`,
+    /// 2026-10-03, `tests/live.rs`). The same request sent again can come
+    /// back with other probabilities, by up to 0.05 in that run, so neither
+    /// value is a constant of the question; the decision was. A compatible server may define
+    /// confidence otherwise (Laya reports one minus the normalised entropy),
+    /// which is what comparing the two tells a caller. [`Response::verify`]
+    /// does not check it: the formula is documentation, not the schema.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn confidence_from_probabilities(&self) -> f64 {
+        let n = self.probabilities.len();
+        if n < 2 {
+            return 1.0;
+        }
+        let p_max = self
+            .probabilities
+            .values()
+            .map(|p| p.value())
+            .fold(0.0, f64::max);
+        let even = 1.0 / n as f64;
+        ((p_max - even) / (1.0 - even)).clamp(0.0, 1.0)
+    }
 }
 
 impl<O: Options> FromAnswer for Choice<O> {
@@ -909,6 +938,63 @@ impl Score {
             .get(self.nearest_level())
             .map_or("", String::as_str)
     }
+
+    /// The probability-weighted level, `Σ i · p_i`, computed from
+    /// `probabilities`. The OpenAPI document defines `score` as exactly this
+    /// expected value, and on the hosted API the two agree to the two
+    /// decimals the wire carries (observed against `jev-1.13.0`, 2026-10-03,
+    /// `tests/live.rs`); a difference means a server that defines `score`
+    /// otherwise, or a response edited by hand.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn expected_value(&self) -> f64 {
+        self.probabilities
+            .iter()
+            .enumerate()
+            .map(|(i, p)| i as f64 * p.value())
+            .sum()
+    }
+
+    /// The confidence TypeSafe documents for a Score, computed from
+    /// `probabilities`: `max(0, 1 − spread / even_spread)`, where `spread`
+    /// is the probability-weighted mean distance in levels from the most
+    /// likely level and `even_spread` the mean distance of a flat
+    /// distribution from its centre, so probability on a neighbouring level
+    /// costs less confidence than the same probability two levels away. A
+    /// Score of one level is 1.
+    ///
+    /// On the hosted API this matches the wire's `confidence` within about
+    /// 0.015, the server computing from unrounded probabilities (observed
+    /// against `jev-1.13.0`, 2026-10-03, `tests/live.rs`). As for
+    /// [`Choice::confidence_from_probabilities`], [`Response::verify`] does
+    /// not check it, and a compatible server may define confidence otherwise.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn confidence_from_probabilities(&self) -> f64 {
+        let n = self.probabilities.len();
+        if n < 2 {
+            return 1.0;
+        }
+        let peak = self
+            .probabilities
+            .iter()
+            .enumerate()
+            .fold((0, f64::MIN), |best, (i, p)| {
+                if p.value() > best.1 {
+                    (i, p.value())
+                } else {
+                    best
+                }
+            })
+            .0;
+        let spread: f64 = self
+            .probabilities
+            .iter()
+            .enumerate()
+            .map(|(i, p)| p.value() * (i as f64 - peak as f64).abs())
+            .sum();
+        let centre = (n - 1) as f64 / 2.0;
+        let even_spread = (0..n).map(|i| (i as f64 - centre).abs()).sum::<f64>() / n as f64;
+        (1.0 - spread / even_spread).max(0.0)
+    }
 }
 
 /// The text of a legend entry: a string as is, anything else as compact JSON.
@@ -985,6 +1071,50 @@ mod tests {
 
     use super::*;
     use crate::Questions;
+
+    #[test]
+    fn the_documented_formulas_reproduce_the_wire_s_confidence_and_score() {
+        // Wire values of jev-1.13.0 on 2026-10-03 (`tests/live.rs`): the
+        // department Choice came back billing 0.92, technical 0.08,
+        // none_of_these 0.0 with confidence 0.88; the severity Score came
+        // back 0.0 / 0.02 / 0.98 with score 1.98 and confidence 0.97.
+        let p = |v: f64| Probability::new(v).unwrap();
+        let choice = Choice {
+            chosen: "billing".to_owned(),
+            probabilities: HashMap::from([
+                ("billing".to_owned(), p(0.92)),
+                ("technical".to_owned(), p(0.08)),
+                ("none_of_these".to_owned(), p(0.0)),
+            ]),
+            confidence: Confidence::new(0.88).unwrap(),
+        };
+        assert!((choice.confidence_from_probabilities() - 0.88).abs() < 1e-6);
+        let score = Score {
+            value: 1.98,
+            levels: vec!["cosmetic".into(), "degraded".into(), "blocked".into()],
+            probabilities: vec![p(0.0), p(0.02), p(0.98)],
+            confidence: Confidence::new(0.97).unwrap(),
+        };
+        assert!((score.expected_value() - 1.98).abs() < 1e-6);
+        assert!((score.confidence_from_probabilities() - 0.97).abs() < 1e-6);
+
+        // The ends of the scale: one option or level is certain (the hosted
+        // API answers both with confidence 1), a flat distribution is 0.
+        let one = Choice {
+            chosen: "only".to_owned(),
+            probabilities: HashMap::from([("only".to_owned(), p(1.0))]),
+            confidence: Confidence::new(1.0).unwrap(),
+        };
+        assert!((one.confidence_from_probabilities() - 1.0).abs() < 1e-6);
+        let flat = Score {
+            value: 1.0,
+            levels: vec!["a".into(), "b".into(), "c".into()],
+            probabilities: vec![p(1.0 / 3.0); 3],
+            confidence: Confidence::new(0.0).unwrap(),
+        };
+        assert!(flat.confidence_from_probabilities().abs() < 1e-6);
+        assert!((flat.expected_value() - 1.0).abs() < 1e-6);
+    }
     use serde_json::json;
 
     crate::options! {
