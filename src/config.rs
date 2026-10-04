@@ -807,18 +807,6 @@ impl Config {
         // An empty table (the example file shipped one, every line commented)
         // has nothing to migrate; one that sets anything says what replaced it.
         if file
-            .policy
-            .as_ref()
-            .is_some_and(|t| t.as_table().is_none_or(|t| !t.is_empty()))
-        {
-            return Err(Error::Invalid(
-                "`[policy]` was replaced by the rubric's `policy` gates, next to the questions they read: `signalman config rubric` prints the built-in rubric with its thresholds, and `[triage] rubric` names yours (docs/configuration.md#triage-file-only)"
-                    .into(),
-            ));
-        }
-        // An empty table (the example file shipped one, every line commented)
-        // has nothing to migrate; one that sets anything says what replaced it.
-        if file
             .triage
             .text
             .as_ref()
@@ -835,6 +823,24 @@ impl Config {
             None => TriageRubric::builtin().clone(),
         };
         let policy = rubric.policy().clone();
+        // The thresholds are the rubric's. The example file used to ship a
+        // `[policy]` with every key set to its default, so a table that says
+        // what the rubric says is accepted and ignored: refusing it would stop
+        // deployments that never changed a threshold. One that says anything
+        // else would be silently overridden, so it is refused, saying where
+        // its values go.
+        if let Some(table) = &file.policy {
+            let same = table
+                .clone()
+                .try_into::<Policy>()
+                .is_ok_and(|p| p == policy);
+            if !same {
+                return Err(Error::Invalid(format!(
+                    "`[policy]` was replaced by the rubric's `policy` gates, next to the questions they read, and this one differs from {}'s: move its values into the rubric (`signalman config rubric` prints the built-in one, `[triage] rubric` names yours), then delete `[policy]` (docs/configuration.md#triage-file-only)",
+                    rubric.source()
+                )));
+            }
+        }
         let teams = file
             .triage
             .teams
@@ -1187,14 +1193,27 @@ mod tests {
         let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("max_concurrent_triages"), "{err}");
 
-        // The thresholds are the rubric's: an empty `[policy]`, as the
-        // example file had, is harmless, and one that sets anything says
-        // where they went.
+        // The thresholds are the rubric's. A `[policy]` that says what the
+        // rubric says, as the example file's did (every key at its default),
+        // is accepted and ignored, and so is an empty one; one that differs
+        // says where its values go.
         let s = Settings::parse("[policy]\n", Path::new("t.toml")).unwrap();
         assert!(resolve(&s, &Overrides::default()).is_ok());
-        let s = Settings::parse("[policy]\nsuppress_below = 0.3\n", Path::new("t.toml")).unwrap();
-        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
-        assert!(err.contains("the rubric's `policy` gates"), "{err}");
+        let old_example = "[policy]\nsuppress_below = 0.25\nattach_confidence = 0.75\nauto_route_confidence = 0.70\nhuman_below_confidence = 0.40\npage_at = \"major\"\nflag_change_above = 0.65\n";
+        let s = Settings::parse(old_example, Path::new("t.toml")).unwrap();
+        assert_eq!(
+            resolve(&s, &Overrides::default()).unwrap().policy,
+            Policy::default()
+        );
+        for differs in [
+            "[policy]\nsuppress_below = 0.3\n",
+            "[policy]\nsupress_below = 0.25\n",
+        ] {
+            let s = Settings::parse(differs, Path::new("t.toml")).unwrap();
+            let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
+            assert!(err.contains("the rubric's `policy` gates"), "{err}");
+            assert!(err.contains("delete `[policy]`"), "{err}");
+        }
 
         // An empty `[triage.text]`, as the example file had, is harmless.
         let s = Settings::parse("[triage.text]\n", Path::new("t.toml")).unwrap();

@@ -132,7 +132,7 @@ The thresholds are written in the [rubric](#the-rubric), as its `policy` gates, 
 |---|---|---|
 | `suppress_below` | `actionable: {threshold: 0.25}` | a Noul is yes at or above its threshold, so suppression is the no |
 | `auto_route_confidence`, `human_below_confidence` | `owner: {bands: [{at_least: 0.70, verdict: route}, {at_least: 0.40, verdict: confirm}], fallback: none_of_these}` | two named bands, highest first: routed, routed for confirmation, and below the last a person triages; a single `confidence` (or one `route` band) sets both bars to it |
-| `page_at` | `impact: {level_at_least: 2}` (or the level's text) | paging is a level the nearest level reaches, not a confidence |
+| `page_at` | `impact: {level_at_least: 2}`, an index (`none` 0, `minor` 1, `major` 2, `outage` 3) or a level's full sentence as written | paging is a level the nearest level reaches, not a confidence |
 | `attach_confidence` | `duplicate_of: {confidence: 0.75, fallback: none}` | below the bar the alert is not attached |
 | `flag_change_above` | `caused_by_change: {threshold: 0.65, strict: true}` | flagged above the threshold, not at it, so `strict` is required |
 
@@ -425,7 +425,7 @@ The `metadata.ai` block the CLI forwards to an incident.io alert source is a dif
 | Wording of every question, guidance and criterion, the four impact level descriptions, the rule every instruction ends with, and the order of the questions | the [rubric](#the-rubric), a `.jud` file named by `[triage] rubric` | vocabulary and alert sources differ per organisation; the words are what a team tunes, and reviewing them as the request the model reads is the point |
 | Fallback owner list | `[[triage.teams]]` | one organisation's structure, not the tool's |
 | The set of questions and their primitives | code, `src/triage/questions.rs`, and `src/triage/rubric.rs` refuses a rubric that changes them | the policy reads `owner`, `impact`, `actionable`, `duplicate_of` and `caused_by_change` through typed handles; a question the policy does not read is cost without effect, and a missing one is a policy bug the handles exist to catch ([decision 0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md)) |
-| The number of impact levels | code, four | `policy.page_at` compares against the `Impact` enum; the level count is validated when the rubric loads |
+| The number of impact levels | code, four | `Policy::page_at` compares against the `Impact` enum; the level count is validated when the rubric loads |
 
 Which questions are asked depends only on the state (open incidents present, recent changes present), never on the rubric: their `when` is pinned when the rubric loads, and only an instruction part's `part_when` is the rubric's to choose. A wording change therefore cannot break the flow; it can only make the model better or worse at the same question, which the [tuning loop](#tuning) measures. Adding a judgment remains a code change with a policy change, by design ([decision 0006](decisions/0006-layered-configuration.md)).
 

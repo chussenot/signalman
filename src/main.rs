@@ -395,12 +395,25 @@ async fn run(command: Command, cfg: &Config, file: Option<&Path>) -> Result<(), 
                 cfg.triage.rubric.fingerprint()
             );
             // The thresholds are the rubric's `policy` gates, not a table of
-            // the file, so they are shown here rather than below.
-            let policy = toml::to_string(&cfg.policy)?;
-            println!("# policy, from the rubric's gates:");
-            for line in policy.lines() {
-                println!("#   {line}");
-            }
+            // the file, so they are shown here, by the gate they are written
+            // in, rather than below.
+            let p = &cfg.policy;
+            println!("# policy, set in the rubric's gates (not in this file):");
+            println!("#   actionable: threshold {}", p.suppress_below);
+            println!(
+                "#   owner: route at {}, confirm at {}",
+                p.auto_route_confidence, p.human_below_confidence
+            );
+            println!(
+                "#   impact: level_at_least {} ({})",
+                p.page_at as u8,
+                format!("{:?}", p.page_at).to_lowercase()
+            );
+            println!("#   duplicate_of: confidence {}", p.attach_confidence);
+            println!(
+                "#   caused_by_change: threshold {}, strict",
+                p.flag_change_above
+            );
             println!("# secrets are read from the environment and never shown here");
             println!();
             print!("{}", toml::to_string_pretty(cfg)?);

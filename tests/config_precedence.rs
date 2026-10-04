@@ -74,7 +74,10 @@ fn defaults_then_file_then_env_then_flag() {
             .args(["config", "show"])
             .current_dir(std::env::temp_dir()),
     );
-    assert!(text.contains("#   page_at = \"major\""), "{text}");
+    assert!(
+        text.contains("#   impact: level_at_least 2 (major)"),
+        "{text}"
+    );
     let v: toml::Value = toml::from_str(&text).unwrap();
     assert!(v.get("policy").is_none(), "{text}");
     assert_eq!(v["server"]["addr"].as_str(), Some("127.0.0.1:8080"));
@@ -84,7 +87,10 @@ fn defaults_then_file_then_env_then_flag() {
 
     // File overrides defaults.
     let text = shown(bin().args(["--config", file.to_str().unwrap(), "config", "show"]));
-    assert!(text.contains("#   page_at = \"outage\""), "{text}");
+    assert!(
+        text.contains("#   impact: level_at_least 3 (outage)"),
+        "{text}"
+    );
     let v: toml::Value = toml::from_str(&text).unwrap();
     assert_eq!(v["server"]["addr"].as_str(), Some("0.0.0.0:9100"));
     assert_eq!(v["flow"]["related_window_minutes"].as_integer(), Some(15));

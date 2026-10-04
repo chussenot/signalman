@@ -44,22 +44,23 @@ impl Default for Policy {
 impl Policy {
     /// Every probability threshold in `0..=1`; the human threshold at or
     /// below the automatic one, or no confidence could route automatically.
+    /// An error names the rubric gate the threshold is written in.
     pub fn validate(&self) -> Result<(), String> {
         let unit = [
-            ("suppress_below", self.suppress_below),
-            ("attach_confidence", self.attach_confidence),
-            ("auto_route_confidence", self.auto_route_confidence),
-            ("human_below_confidence", self.human_below_confidence),
-            ("flag_change_above", self.flag_change_above),
+            ("policy.actionable.threshold", self.suppress_below),
+            ("policy.duplicate_of.confidence", self.attach_confidence),
+            ("policy.owner's `route` bar", self.auto_route_confidence),
+            ("policy.owner's `confirm` bar", self.human_below_confidence),
+            ("policy.caused_by_change.threshold", self.flag_change_above),
         ];
         for (name, v) in unit {
             if !(0.0..=1.0).contains(&v) {
-                return Err(format!("policy.{name} = {v} is outside 0..=1"));
+                return Err(format!("{name} = {v} is outside 0..=1"));
             }
         }
         if self.human_below_confidence > self.auto_route_confidence {
             return Err(format!(
-                "policy.human_below_confidence ({}) must not exceed policy.auto_route_confidence ({})",
+                "policy.owner's `confirm` bar ({}) must not exceed its `route` bar ({})",
                 self.human_below_confidence, self.auto_route_confidence
             ));
         }

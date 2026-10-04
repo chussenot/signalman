@@ -2,7 +2,7 @@
 title: signalman
 description: Alert triage that turns calibrated model judgments into routing decisions inside incident.io, grounded in the Backstage software catalog, written in Rust with a typed client for the TypeSafe System One API.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [overview]
 ---
 
@@ -19,7 +19,7 @@ Large language models can read the description, but the usual approach, prompt a
 TypeSafe's model returns typed judgments with calibrated probabilities instead of text: one of a defined set, yes or no, a position on a scale. signalman uses that property to keep the two halves of the problem apart:
 
 - The model answers semantic questions that code cannot: which team's component is failing, how many users are affected, whether a human must act, whether this alert is the same problem as an open incident.
-- Code owns everything else: which questions to ask, the candidate incidents to offer, the thresholds at which a judgment becomes an action, and the actions themselves. Thresholds scale with the cost of being wrong. Paging needs a confident owner and a high impact; low confidence always goes to a person.
+- Code owns everything else: which questions to ask, the candidate incidents to offer, how a threshold turns a judgment into an action, and the actions themselves. The threshold values are data, in the rubric beside the questions they were tuned on. Thresholds scale with the cost of being wrong. Paging needs a confident owner and a high impact; low confidence always goes to a person.
 
 The Backstage software catalog, when present, is the ownership referential. The model chooses among the groups that actually own the alerting component and its neighbours, reads the component's record and its TechDocs runbook, and the owning group is told the outcome in the portal. Without a catalog a compiled-in team list is used.
 

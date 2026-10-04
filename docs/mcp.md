@@ -2,7 +2,7 @@
 title: MCP server
 description: The Model Context Protocol tools signalman serves over stdio and Streamable HTTP, five always-on read-only tools and one gated write tool, what each one answers, the two transports and how they are served, how to configure and connect to them, and what still writes nothing on purpose.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-04
 tags: [mcp, agents, decisions]
 ---
 
