@@ -58,7 +58,7 @@ path = "src/main.rs"
 # names the minor. Bump it deliberately, in [dev-dependencies] too, and read
 # the crate's CHANGELOG when you do: until the requirement moves, a change to
 # the crate does not reach these tests.
-judgment = { version = "0.4", features = ["jud"] }
+judgment = { version = "0.5", features = ["jud"] }
 axum = { version = "0.8", features = ["json", "tokio", "http1"], default-features = false }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
@@ -93,7 +93,7 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 [dev-dependencies]
 # The vendored TypeSafe OpenAPI document, for tests/typesafe_contract.rs,
 # through the crate's `openapi` feature. Same requirement as above.
-judgment = { version = "0.4", features = ["openapi", "jud"] }
+judgment = { version = "0.5", features = ["openapi", "jud"] }
 # `json` only for the test clients; the crate serialises its own bodies.
 reqwest = { workspace = true, features = ["json"] }
 http-body-util = "0.1"

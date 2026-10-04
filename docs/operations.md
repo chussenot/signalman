@@ -118,9 +118,8 @@ data:
     [triage]
     rubric = "triage.jud"                 # optional; beside config.toml in the same mount
   triage.jud: |
-    # `signalman config rubric` prints the built-in one to start from
-    [policy]
-    page_at = "major"
+    # `signalman config rubric` prints the built-in one to start from:
+    # the words of every question and the routing thresholds (`policy`)
 ---
 apiVersion: v1
 kind: Secret

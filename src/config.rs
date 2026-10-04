@@ -164,8 +164,12 @@ pub struct Settings {
     pub mcp: McpFile,
     /// `[telemetry]`
     pub telemetry: TelemetryFile,
-    /// `[policy]`: routing thresholds, file only.
-    pub policy: Option<Policy>,
+    /// The removed `[policy]` table: the routing thresholds are the
+    /// rubric's `policy` gates now. Read only so that a file which still
+    /// sets one fails with a message saying where it went, rather than with
+    /// "unknown field".
+    #[serde(skip_serializing)]
+    pub policy: Option<toml::Value>,
     /// `[triage]`: rubric text and the fallback team list, file only.
     pub triage: TriageFile,
 }
@@ -421,7 +425,10 @@ pub struct Config {
     pub mcp: Mcp,
     /// `[telemetry]`
     pub telemetry: Telemetry,
-    /// `[policy]`
+    /// The routing thresholds, read from the rubric's `policy` gates
+    /// (`triage.rubric`). Not a table of the file, so not serialised:
+    /// `config show` prints them as comments.
+    #[serde(skip)]
     pub policy: Policy,
     /// `[triage]`
     pub triage: Triage,
@@ -797,8 +804,18 @@ impl Config {
                 "telemetry.metrics_interval_seconds must be at least 1".into(),
             ));
         }
-        let policy = file.policy.clone().unwrap_or_default();
-        policy.validate().map_err(Error::Invalid)?;
+        // An empty table (the example file shipped one, every line commented)
+        // has nothing to migrate; one that sets anything says what replaced it.
+        if file
+            .policy
+            .as_ref()
+            .is_some_and(|t| t.as_table().is_none_or(|t| !t.is_empty()))
+        {
+            return Err(Error::Invalid(
+                "`[policy]` was replaced by the rubric's `policy` gates, next to the questions they read: `signalman config rubric` prints the built-in rubric with its thresholds, and `[triage] rubric` names yours (docs/configuration.md#triage-file-only)"
+                    .into(),
+            ));
+        }
         // An empty table (the example file shipped one, every line commented)
         // has nothing to migrate; one that sets anything says what replaced it.
         if file
@@ -817,6 +834,7 @@ impl Config {
                 .map_err(|e| Error::Invalid(format!("triage.rubric: {e}")))?,
             None => TriageRubric::builtin().clone(),
         };
+        let policy = rubric.policy().clone();
         let teams = file
             .triage
             .teams
@@ -1124,9 +1142,6 @@ mod tests {
             [flow]
             note = false
             related_window_minutes = 10
-            [policy]
-            suppress_below = 0.1
-            page_at = "outage"
             [[triage.teams]]
             key = "sre"
             label = "SRE"
@@ -1146,11 +1161,6 @@ mod tests {
         assert_eq!(c.typesafe.model, "jev-1.13.0");
         assert!(!c.flow.note);
         assert_eq!(c.flow.related_window_minutes, 5);
-        assert!((c.policy.suppress_below - 0.1).abs() < f64::EPSILON);
-        assert_eq!(c.policy.page_at, crate::triage::Impact::Outage);
-        assert!(
-            (c.policy.attach_confidence - Policy::default().attach_confidence).abs() < f64::EPSILON
-        );
         assert_eq!(c.triage.teams.len(), 1);
         assert_eq!(c.triage.fallback_candidates().len(), 2);
     }
@@ -1177,9 +1187,14 @@ mod tests {
         let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("max_concurrent_triages"), "{err}");
 
-        let s = Settings::parse("[policy]\nsuppress_below = 1.5\n", Path::new("t.toml")).unwrap();
+        // The thresholds are the rubric's: an empty `[policy]`, as the
+        // example file had, is harmless, and one that sets anything says
+        // where they went.
+        let s = Settings::parse("[policy]\n", Path::new("t.toml")).unwrap();
+        assert!(resolve(&s, &Overrides::default()).is_ok());
+        let s = Settings::parse("[policy]\nsuppress_below = 0.3\n", Path::new("t.toml")).unwrap();
         let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
-        assert!(err.contains("suppress_below"), "{err}");
+        assert!(err.contains("the rubric's `policy` gates"), "{err}");
 
         // An empty `[triage.text]`, as the example file had, is harmless.
         let s = Settings::parse("[triage.text]\n", Path::new("t.toml")).unwrap();
@@ -1215,6 +1230,7 @@ mod tests {
         assert!(rubric.is_absolute(), "{}", rubric.display());
         let c = resolve(&s, &Overrides::default()).unwrap();
         assert_eq!(c.triage.rubric.jud(), TriageRubric::builtin().jud());
+        assert_eq!(&c.policy, TriageRubric::builtin().policy());
         let text = toml::to_string_pretty(&c).unwrap();
         let back = Settings::parse(&text, Path::new("elsewhere/effective.toml")).unwrap();
         assert_eq!(back.triage.rubric, Some(rubric));
@@ -1272,7 +1288,10 @@ mod tests {
         let c = resolve(&Settings::default(), &Overrides::default()).unwrap();
         let text = toml::to_string_pretty(&c).unwrap();
         let back = Settings::parse(&text, Path::new("effective.toml")).unwrap();
-        assert_eq!(back.policy, Some(Policy::default()));
+        // The thresholds are the rubric's, not a table of the file.
+        assert_eq!(back.policy, None);
+        assert!(!text.contains("[policy]"), "{text}");
+        assert_eq!(c.policy, Policy::default());
         assert_eq!(back.flow.note, Some(true));
     }
 }

@@ -392,19 +392,28 @@ Owner candidates are data, not a type. With Backstage configured they are catalo
 
 The words of every question are a rubric in the judgment crate's [`.jud` format](https://github.com/chussenot/judgment/blob/main/docs/jud.md): a YAML file with each question in the shape TypeSafe receives, in the order the model sees them, named by a `sha256:` fingerprint that any tool computes the same way. The built-in one is `src/triage/triage.jud`, compiled into the binary and printed by `signalman config rubric`; `[triage] rubric` in the configuration file names a replacement ([Configuration](configuration.md#triage-file-only)). A rubric replaced the thirteen `[triage.text]` fields because the words were already a request in all but name. Kept as one, they can be reviewed as the model will read them, the questions reordered, an instruction extended with a part the code never named, and the whole compared by fingerprint between a deployment, an evaluation run and another tool. An instruction is a JSON object of named parts and goes out with its keys sorted, as every JSON object signalman sends does, so the model reads `catalog`, `guidance`, `question`, `rule` whatever order the file uses; the order of the questions and of the options is the file's.
 
-The format describes one fixed request, and signalman's request varies with the alert. So signalman reads the rubric as the request for an alert that carries everything, and derives each real request from it (`TriageQuestions::for_alert_with_rubric`):
+Signalman's request varies with the alert, and since `jud: 1.1` (judgment 0.5) the rubric says how, so the crate's `Rubric::lower` builds each request from the rubric and the state `{alert: …}` and signalman only supplies the options it looks up per alert (`TriageQuestions::for_alert_with_rubric`). A state path is present when it leads to a value that is not `null`, `""`, `[]` or `{}`; signalman leaves an absent component and an empty list out of the state, so each condition reads as the code that used to decide it did.
 
-| In the rubric | In the request |
+| In the built-in rubric | In the request |
 |---|---|
 | the order of the questions | the order of the questions |
-| `owner`'s options | replaced by the owner candidates in force; only `none_of_these` is read from the rubric, and sent last |
-| `owner.instructions.catalog` | sent only when the catalog resolved `alert.component` |
-| `impact.instructions.context` | sent only when `alert.related_alerts` is not empty |
-| `duplicate_of` | asked only when incidents are open, over them by id and the rubric's `none`, sent last |
-| `caused_by_change` | asked only when `alert.recent_changes` is not empty |
+| `owner`: `options_from: request`, one static option `none_of_these` | the owner candidates in force, then `none_of_these` with the rubric's words |
+| `owner.part_when: {catalog: alert.component}` | the `catalog` part only when the catalog resolved the component |
+| `impact.part_when: {context: alert.related_alerts}` | the `context` part only when other alerts are firing |
+| `duplicate_of`: `when: alert.open_incidents`, `options_from: request`, one static option `none` | asked only when incidents are open, over them by id, then `none` |
+| `caused_by_change`: `when: alert.recent_changes` | asked only when changes are listed |
 | every other word, the four impact levels, any other instruction part | as written |
 
-The built-in rubric's `owner` options are the built-in fallback teams and its `duplicate_of` lists one example incident, so the file reads as a real request; a test holds the first equal to `triage::default_teams`. A dynamic Choice needs at least one such example, since a Choice has two options or more, and none is part of the question fingerprint: editing an example does not make an evaluation run stale, editing a word that is sent does. A rubric loads only if it keeps what the code relies on, and the error names the file and the field: exactly the five questions, each of the primitive the policy reads; every instruction an object with a non-empty `question` and only non-empty text parts; `none_of_these` and `none` present and described; four impact levels, as text. A rubric with a `policy` or `tuning` block is refused, since thresholds are `[policy]` and two sources would drift. The format's gates cannot yet hold this policy: the owner question has two bars (routed automatically at 0.70, confirmed between 0.40 and 0.70), and paging is a threshold on the impact level, not on a confidence ([judgment#9](https://github.com/chussenot/judgment/issues/9)). Two other limits are the format's too. The rubric cannot say that an option set is supplied per request or that a part is conditional, which is why the table above lives in code ([judgment#8](https://github.com/chussenot/judgment/issues/8)). And the shared `rule` is a YAML anchor on the first question, so a question moved above `owner` takes the anchor with it ([judgment#10](https://github.com/chussenot/judgment/issues/10)).
+Because the conditions are in the file, they are reviewed with the words and named by the fingerprint, and a part a team adds can carry its own: `part_when: {runbook: alert.runbook}` sends a `runbook` part only to alerts that link one, with no code change. The shared `rule` is a top-level `x-shared` anchor, so any question can move to any position.
+
+A rubric loads only if it keeps what the code relies on, and the error names the file and the field:
+
+- exactly the five questions, each of the primitive the decision reads;
+- every instruction an object with a non-empty `question` and only non-empty text parts;
+- `owner` and `duplicate_of` asked over supplied options, with their no-match option as the one static option, described;
+- `owner`, `impact` and `actionable` asked for every alert, `duplicate_of` under `when: alert.open_incidents` and `caused_by_change` under `when: alert.recent_changes`: which questions are asked is code, like the set of questions, and only the parts are the rubric's to condition;
+- four impact levels, as text;
+- a `policy` whose gates `decide` can honour ([The decision](#the-decision)).
 
 The built-in rubric asks exactly what the `[triage.text]` defaults asked, word for word, for every committed evaluation case: `tests/triage_rubric.rs` compares it with requests captured from the code before the change (`tests/fixtures/triage-requests.json`).
 
@@ -440,7 +449,17 @@ Each threshold trades one failure against another: the cost of a needless page a
 | `page_at` | `Major` | impact level at or above which the owner is paged rather than ticketed | minor impact wakes people | a major waits for business hours in a ticket |
 | `flag_change_above` | 0.65 | probability above which a recent change is flagged as suspected cause | every deploy in the window is blamed | the likely cause goes unmentioned; it affects a tag and a note line, never the route |
 
-`human_below_confidence` must not exceed `auto_route_confidence`, or no confidence could route automatically; the configuration is rejected when it does. The defaults are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the [evaluation harness](evaluation.md) to have labelled history to measure them against ([roadmap](roadmap.md)); its `conf|right` and `conf|wrong` columns are what a threshold is chosen from.
+The thresholds are written in the [rubric](#the-rubric), as its `policy` gates, beside the questions they read: a threshold is calibrated against the words it was tuned on, so the two travel in one reviewed file. Each gate has the one shape `decide` reads, and a rubric whose gate means anything else is refused rather than read approximately:
+
+| Threshold | Gate in the rubric | Why that shape |
+|---|---|---|
+| `suppress_below` | `actionable: {threshold: 0.25}` | a Noul is yes at or above its threshold, so suppression is the no |
+| `auto_route_confidence`, `human_below_confidence` | `owner: {bands: [{at_least: 0.70, verdict: route}, {at_least: 0.40, verdict: confirm}], fallback: none_of_these}` | two named bands, highest first: routed, routed for confirmation, and below the last a person triages; a single `confidence` (or one `route` band) sets both bars to it |
+| `page_at` | `impact: {level_at_least: 2}` (or the level's text) | paging is a level the nearest level reaches, not a confidence |
+| `attach_confidence` | `duplicate_of: {confidence: 0.75, fallback: none}` | below the bar the alert is not attached |
+| `flag_change_above` | `caused_by_change: {threshold: 0.65, strict: true}` | flagged above the threshold, not at it, so `strict` is required |
+
+A gate left out keeps the default above; a `policy` block left out is the defaults. `human_below_confidence` must not exceed `auto_route_confidence`, or no confidence could route automatically, and the format itself refuses bands that do not decrease. `signalman config show` prints the thresholds in effect as comments, since they are no longer a table of the configuration file. The rubric's fingerprint does not cover its policy, so tuning a threshold leaves a recorded evaluation run current, and the evaluation harness fingerprints and freezes the policy on its own ([Evaluation](evaluation.md#freezing-the-policy)). The defaults are conservative starting points from the TypeSafe documentation's three-band guidance and have not been tuned on real alerts. Automatic paging on these values should wait for the [evaluation harness](evaluation.md) to have labelled history to measure them against ([roadmap](roadmap.md)); its `conf|right` and `conf|wrong` columns are what a threshold is chosen from.
 
 ## The outcome contract
 
@@ -725,13 +744,13 @@ The `metadata.ai` block the CLI forwards to an incident.io alert source is a dif
 
 | | Where | Why there |
 |---|---|---|
-| Thresholds | `[policy]` in the configuration file | tuned per deployment on its own alert history; changing one must not need a build |
+| Thresholds | the [rubric](#the-rubric)'s `policy` gates | tuned per deployment on its own alert history, against the words they were tuned on; changing one must not need a build |
 | Wording of every question, guidance and criterion, the four impact level descriptions, the rule every instruction ends with, and the order of the questions | the [rubric](#the-rubric), a `.jud` file named by `[triage] rubric` | vocabulary and alert sources differ per organisation; the words are what a team tunes, and reviewing them as the request the model reads is the point |
 | Fallback owner list | `[[triage.teams]]` | one organisation's structure, not the tool's |
 | The set of questions and their primitives | code, `src/triage/questions.rs`, and `src/triage/rubric.rs` refuses a rubric that changes them | the policy reads `owner`, `impact`, `actionable`, `duplicate_of` and `caused_by_change` through typed handles; a question the policy does not read is cost without effect, and a missing one is a policy bug the handles exist to catch ([decision 0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md)) |
 | The number of impact levels | code, four | `policy.page_at` compares against the `Impact` enum; the level count is validated when the rubric loads |
 
-Which questions are asked depends only on the state (open incidents present, recent changes present), never on the rubric. A wording change therefore cannot break the flow; it can only make the model better or worse at the same question, which the [tuning loop](#tuning) measures. Adding a judgment remains a code change with a policy change, by design ([decision 0006](decisions/0006-layered-configuration.md)).
+Which questions are asked depends only on the state (open incidents present, recent changes present), never on the rubric: their `when` is pinned when the rubric loads, and only an instruction part's `part_when` is the rubric's to choose. A wording change therefore cannot break the flow; it can only make the model better or worse at the same question, which the [tuning loop](#tuning) measures. Adding a judgment remains a code change with a policy change, by design ([decision 0006](decisions/0006-layered-configuration.md)).
 
 ## Confidence is not probability
 
@@ -743,7 +762,7 @@ Every decision carries its typed judgments in [the outcome contract](#the-outcom
 
 1. Collect alerts with the expected team, impact, actionability and action into a cases file.
 2. `signalman eval cases.jsonl --record runs/<model>`: one model call per case, every graded response kept, and a case whose answer did not fit listed as failed beside them.
-3. Read `conf|right` against `conf|wrong` per question and set thresholds in `[policy]`, higher for actions that are expensive when wrong.
+3. Read `conf|right` against `conf|wrong` per question and set the thresholds in the rubric's `policy`, higher for actions that are expensive when wrong.
 4. `signalman eval cases.jsonl --replay runs/<model>` to see the decisions under the new thresholds, without calling the model.
 5. Pin `typesafe.model` to the version recorded against in the same file and re-evaluate before moving to a new one.
 
@@ -832,7 +851,7 @@ The committed `jev-1.13.0-state-guard` run, replayed on 2026-10-03 under the def
 ```
 cases     3   model jev-1.13.0
 decision  labelled 3  agreement 1.00  95% 0.44..1.00
-evidence  replay recorded 2026-10-03T07:18:53.830808109Z  questions 80c0b0026ed9d08e
+evidence  replay recorded 2026-10-03T07:18:53.830808109Z  questions b4538138a0cb7268
 policy    cdddb2572b782200
 origin    split development 3   labels author-synthetic 3
 
@@ -849,7 +868,7 @@ mismatches (1):
   dns            impact           expected outage, got major (p 0.17, confidence 0.79)
 ```
 
-Read the second line with the fourth: three author-written cases decided as their authors expected is agreement 1.00 with an interval reaching down to 0.44, which is the honest claim. The same three cases against Laya's English checkpoint on CPU (2026-09-21, [Laya](laya.md)) gave decision agreement 0.00 with ten mismatches, and replaying those recordings with `suppress_below = 0.55` in `[policy]` moved it to 0.33 (the noise case is suppressed) with no model call and every question row unchanged, which is the tuning loop below in one line.
+Read the second line with the fourth: three author-written cases decided as their authors expected is agreement 1.00 with an interval reaching down to 0.44, which is the honest claim. The same three cases against Laya's English checkpoint on CPU (2026-09-21, [Laya](laya.md)) gave decision agreement 0.00 with ten mismatches, and replaying those recordings with `suppress_below = 0.55` (then in `[policy]`, now the rubric's `actionable` threshold) moved it to 0.33 (the noise case is suppressed) with no model call and every question row unchanged, which is the tuning loop below in one line.
 
 | Column | Meaning | Reading |
 |---|---|---|
@@ -872,7 +891,7 @@ The two committed runs differ only in the rule appended to every instruction: sa
 
 | | before the rule (2026-09-23) | with the rule (2026-10-03) |
 |---|---|---|
-| question fingerprint | `b933e1eb3f3cb8bc` | `80c0b0026ed9d08e` |
+| question fingerprint | `842733ee2db091ad` | `b4538138a0cb7268` |
 | decision agreement | 1.00 (3 of 3) | 1.00 (3 of 3) |
 | per-question accuracy | as labelled except `dns` impact | as labelled except `dns` impact |
 | `dns` impact, p(`outage`) / confidence | 0.26 / 0.70 | 0.17 / 0.79 |
@@ -892,9 +911,9 @@ failed (1), not graded: the answer did not fit the questions, so the figures abo
 
 ### What a recording answers
 
-A recorded run writes `run.json` beside the recordings: when it finished, the model asked for, the `signalman` version, a fingerprint of the rubric and owner candidates in force, a fingerprint of the case file as read, and the case counts per split and per provenance method. The question fingerprint covers everything that shapes a request apart from the alert itself (the [rubric](triage.md#the-rubric), by its fingerprint with the per-alert example options left out, which covers every word sent and the order of the questions, and the fallback team list), so two runs with the same fingerprint asked the same questions and a replay under another one is reading answers to questions that were never asked.
+A recorded run writes `run.json` beside the recordings: when it finished, the model asked for, the `signalman` version, a fingerprint of the rubric and owner candidates in force, a fingerprint of the case file as read, and the case counts per split and per provenance method. The question fingerprint covers everything that shapes a request apart from the alert itself (the [rubric](triage.md#the-rubric)'s questions, by their `.jud` fingerprint, which covers every word that can be sent, the order of the questions and when each question and instruction part is sent, and the fallback team list; not the rubric's `policy`, so tuning a threshold leaves a recording current), so two runs with the same fingerprint asked the same questions and a replay under another one is reading answers to questions that were never asked.
 
-The fingerprint was computed over the `[triage.text]` fields until the rubric replaced them on 2026-10-04. The two committed manifests were then migrated to the rubric's fingerprint (`0165f119e3162330` became `b933e1eb3f3cb8bc`, `1677815da49da9d9` became `80c0b0026ed9d08e`). That was done only after `tests/triage_rubric.rs` showed that the built-in rubric, with and without the rule, asks every committed case exactly what the texts asked. The answers still answer these questions; only the name of the questions changed. One thing did change for the model that the fingerprint does not see: both runs were recorded on judgment 0.3, which sent questions and options in alphabetical order, and since 0.4 they go in the rubric's order. Whether order moves `jev-1.13.0`'s answers is open (`signalman-b11.8`); a new recording measures it.
+The fingerprint was computed over the `[triage.text]` fields until the rubric replaced them on 2026-10-04. The two committed manifests were then migrated to the rubric's fingerprint (`0165f119e3162330` became `b933e1eb3f3cb8bc`, `1677815da49da9d9` became `80c0b0026ed9d08e`). That was done only after `tests/triage_rubric.rs` showed that the built-in rubric, with and without the rule, asks every committed case exactly what the texts asked. The answers still answer these questions; only the name of the questions changed. When the rubric moved to `jud: 1.1` on the same day (judgment 0.5), its fingerprint came to cover the declarations (`when`, `part_when`, `options_from`) that replaced signalman's own per-alert code, and the manifests were migrated once more (`b933e1eb3f3cb8bc` became `842733ee2db091ad`, `80c0b0026ed9d08e` became `b4538138a0cb7268`), on the same evidence: the 1.1 rubric, lowered by the crate, still asks every committed case byte for byte what the texts asked. One thing did change for the model that the fingerprint does not see: both runs were recorded on judgment 0.3, which sent questions and options in alphabetical order, and since 0.4 they go in the rubric's order. Whether order moves `jev-1.13.0`'s answers is open (`signalman-b11.8`); a new recording measures it.
 
 That is why a replay compares the manifest's fingerprint with the current configuration's and stops when they differ, naming both and the recording date, rather than printing a report that looks like a measurement of the current wording. `--stale-ok` grades the recordings anyway, with `STALE` on the evidence line and `stale: true` in the JSON, for the one legitimate use: seeing how a policy change reads old answers while a new recording is on its way. A directory recorded before manifests existed has no `run.json`; it is graded, and the evidence line says the recorded fingerprint is unknown. The checks on `Response::verify` below still apply on top: a changed level text or team key fails the question itself, manifest or not. The fingerprint is deliberately coarser than that check. It fires on a wording change that could not possibly have changed an answer, because whether a change could is exactly what cannot be known without recording again. The discipline is borrowed from jev-recipes' evaluation archive ([Decision recipes](research/decision-recipes.md)).
 
@@ -909,7 +928,7 @@ A threshold chosen by looking at every labelled case is a number about those cas
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
 
 1. `signalman eval cases.jsonl --record runs/<model>` once per model version.
-2. Edit `[policy]` in the configuration file (or the question and guidance wording in the rubric, which changes only how the recorded answers are read, not the answers, and makes the replay stale). Not the impact levels or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
+2. Edit the thresholds in the rubric's `policy`, which leaves the replay current (or the question and guidance wording, which changes only how the recorded answers are read, not the answers, and makes the replay stale). Not the impact levels or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
 3. `signalman eval cases.jsonl --replay runs/<model> --config candidate.toml` and compare decision agreement.
 4. Pin `typesafe.model` to the version recorded against, in the same file as the thresholds.
 5. Keep a held-out set once there are enough cases: mark some `"split": "held-out"`, choose thresholds with `--split development`, freeze the choice with `--freeze-policy`, then grade `--split held-out` once; it is graded under the frozen policy and no other ([above](#freezing-the-policy)). A threshold tuned on the cases it is reported on is a number about those cases, not about the next alert.
@@ -1246,7 +1265,7 @@ transport = "stdio" # how `signalman mcp` serves: "stdio" or "http"; `serve` ign
 allow_write = false # registers apply_qualification when true; off by default
 ```
 
-`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) and `SIGNALMAN_MCP_ALLOW_WRITE` override the file; see [Configuration](configuration.md#mcp). `allow_write` is the only setting that changes which tools exist: turning it on registers `apply_qualification` (see [Writing](#writing)); leaving it off keeps the server entirely read-only. It applies over both transports. Everything else the tools need, the TypeSafe model, the software catalog, the change feed, the routing thresholds, is the same `[typesafe]`, `[incidentio]`, `[backstage]`, `[flow]`, `[policy]` and `[triage]` configuration the rest of the binary reads. Secrets (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `BACKSTAGE_TOKEN`) are environment only, as everywhere else; so is `SIGNALMAN_MCP_TOKEN`, the bearer token the HTTP transport requires (see [Transports](#transports)).
+`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) and `SIGNALMAN_MCP_ALLOW_WRITE` override the file; see [Configuration](configuration.md#mcp). `allow_write` is the only setting that changes which tools exist: turning it on registers `apply_qualification` (see [Writing](#writing)); leaving it off keeps the server entirely read-only. It applies over both transports. Everything else the tools need, the TypeSafe model, the software catalog, the change feed, the routing thresholds, is the same `[typesafe]`, `[incidentio]`, `[backstage]`, `[flow]` and `[triage]` configuration the rest of the binary reads, the thresholds being the rubric's `policy`. Secrets (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `BACKSTAGE_TOKEN`) are environment only, as everywhere else; so is `SIGNALMAN_MCP_TOKEN`, the bearer token the HTTP transport requires (see [Transports](#transports)).
 
 `recent_changes` depends on where the server runs, because the [change feed](changes.md) is per-process, in-memory state. Mounted at `/mcp` by `signalman serve`, the tool reads the same change log `POST /changes` writes in that process, so it is live; this is the first configuration in which it is. A `signalman mcp` process, over stdio or over HTTP, never receives `POST /changes`, so there the tool always reports an empty list with a note explaining why.
 
@@ -1464,24 +1483,13 @@ Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export o
 | `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
 | `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | how often metrics are exported; at least 1 |
 
-### `[policy]`, file only
-
-Routing thresholds; absent keys keep their defaults. Every probability is validated to `0..=1`, and `human_below_confidence` may not exceed `auto_route_confidence`. What each one does is in [Triage](triage.md#the-decision).
-
-| File key | Default |
-|---|---|
-| `policy.suppress_below` | `0.25` |
-| `policy.attach_confidence` | `0.75` |
-| `policy.auto_route_confidence` | `0.70` |
-| `policy.human_below_confidence` | `0.40` |
-| `policy.page_at` | `"major"` (`none`, `minor`, `major`, `outage`) |
-| `policy.flag_change_above` | `0.65` |
-
 ### `[triage]`, file only
 
-`triage.rubric` names the triage rubric, a `.jud` file holding the words of every question in the shape TypeSafe receives and in the order the model sees them ([Triage](triage.md#the-rubric)). A relative path is relative to the configuration file's directory, so the two travel together in one `ConfigMap`; it is made absolute when the file loads. Absent or empty, the built-in rubric is used; `signalman config rubric` prints it, the exact file compiled into the running binary, to start a custom one from. It needs no valid configuration, so it works on a file that still has `[triage.text]`. The rubric is read and checked when the configuration loads, and an error names the file and the field: the five questions and their types are fixed, `impact` keeps exactly four levels, `owner` and `duplicate_of` keep their no-match option, and thresholds stay in `[policy]`. The effective configuration (`signalman config show`) prints the path, not the text, and its header names the rubric in force with its `.jud` fingerprint, the identity another tool computes for the same file. Changing the rubric changes the question fingerprint a recorded evaluation run is replayed against ([Evaluation](evaluation.md#what-a-recording-answers)).
+`triage.rubric` names the triage rubric, a `.jud` file (`jud: 1.1`) holding the words of every question in the shape TypeSafe receives and in the order the model sees them, when each instruction part is sent, and the routing thresholds as its `policy` gates ([Triage](triage.md#the-rubric)). A relative path is relative to the configuration file's directory, so the two travel together in one `ConfigMap`; it is made absolute when the file loads. Absent or empty, the built-in rubric is used; `signalman config rubric` prints it, the exact file compiled into the running binary, to start a custom one from. It needs no valid configuration, so it works on a file that still has `[triage.text]`. The rubric is read and checked when the configuration loads, and an error names the file and the field: the five questions, their types and when each is asked are fixed, `impact` keeps exactly four levels, `owner` and `duplicate_of` keep their no-match option, and each gate must have the shape the decision reads ([Triage](triage.md#the-decision)). The effective configuration (`signalman config show`) prints the path, not the text; its header names the rubric in force with its `.jud` fingerprint, the identity another tool computes for the same file, and lists the thresholds in effect. Changing a question changes the question fingerprint a recorded evaluation run is replayed against; changing a threshold does not ([Evaluation](evaluation.md#what-a-recording-answers)).
 
 `[triage.text]`, the thirteen wording fields it replaced, is refused with a message naming `triage.rubric`; an empty `[triage.text]` table, as the example file used to carry, is accepted and ignored. To migrate, run `signalman config rubric > triage.jud` beside the configuration file, set `rubric = "triage.jud"` under `[triage]`, and move each overridden string to its place: the `*_question` fields to `instructions.question`, `owner_guidance` to `owner.instructions.guidance`, `owner_catalog_guidance` to `owner.instructions.catalog`, `impact_related_context` to `impact.instructions.context`, `impact_levels` to `impact.criteria`, `actionable_yes` and `actionable_no` to `actionable.criteria.true` and `.false`, `duplicate_none` to `duplicate_of.criteria.none`, and `state_guard` to the `&rule` anchor (removing the `rule` keys replaces `state_guard = ""`).
+
+`[policy]`, the six routing thresholds, moved into the rubric too and is refused the same way, naming the rubric's `policy`; an empty `[policy]` table is accepted and ignored. A threshold belongs beside the words it was tuned against, and one home for it means the configuration and an evaluation run cannot disagree about which value was in force. To migrate, write each overridden key into the rubric's gate: `suppress_below` to `policy.actionable.threshold`, `auto_route_confidence` and `human_below_confidence` to the `at_least` of `policy.owner.bands`' `route` and `confirm` bands, `page_at` to `policy.impact.level_at_least` (`0` to `3`, or the level's text), `attach_confidence` to `policy.duplicate_of.confidence`, and `flag_change_above` to `policy.caused_by_change.threshold`. A deployment that kept the defaults needs no rubric: the built-in one carries them.
 
 `[[triage.teams]]` entries (`key`, `label`, `description`) replace the built-in fallback owner list used when no catalog is configured or nothing in it matched. `none_of_these` is appended automatically and may not be defined.
 
@@ -1618,9 +1626,8 @@ data:
     [triage]
     rubric = "triage.jud"                 # optional; beside config.toml in the same mount
   triage.jud: |
-    # `signalman config rubric` prints the built-in one to start from
-    [policy]
-    page_at = "major"
+    # `signalman config rubric` prints the built-in one to start from:
+    # the words of every question and the routing thresholds (`policy`)
 ---
 apiVersion: v1
 kind: Secret
@@ -2700,7 +2707,7 @@ What translates and what does not: signalman has five questions in one module, `
 
 A recipe's result carries a `status` of `ready` or `review`, the option the model suggested beside the option the code applied, and the `minConfidence` the caller set, below which the suggestion is not applied and the status is `review`. An option named `__review__` is reserved in `src/decisions.ts` so that a caller cannot define it and a review outcome cannot collide with a real one.
 
-signalman's [outcome contract](../triage.md#the-outcome-contract) already separates the two: the owner judgment keeps the model's choice and its distribution beside an `owner` whose `status` is `assigned`, `confirm` or `best_guess`, the duplicate judgment keeps the chosen incident beside the attach decision, and `human_triage` is the action when no threshold is met, with the thresholds in `[policy]` rather than per call. Nothing was adopted here. The one difference worth keeping in mind is where the threshold lives: per call in jev-recipes, because each caller is a different application; per deployment in signalman, because every caller is the same flow over the same alert history.
+signalman's [outcome contract](../triage.md#the-outcome-contract) already separates the two: the owner judgment keeps the model's choice and its distribution beside an `owner` whose `status` is `assigned`, `confirm` or `best_guess`, the duplicate judgment keeps the chosen incident beside the attach decision, and `human_triage` is the action when no threshold is met, with the thresholds in the rubric's `policy` rather than per call. Nothing was adopted here. The one difference worth keeping in mind is where the threshold lives: per call in jev-recipes, because each caller is a different application; per deployment in signalman, because every caller is the same flow over the same alert history.
 
 ## The state-as-data rule
 
@@ -2881,7 +2888,7 @@ Records are not edited after acceptance, so a fact that has moved since a record
 - 0010, 0003's neighbours in signalman's records and the pages citing 0003 had their links to it repointed when it moved to the crate (0011); no other line of an accepted record changed.
 - 0010 keeps the crate a workspace member "until a second consumer exists". [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) moves it to its own repository before that, for its history and its releases; signalman becomes the consumer that tests the API 0010 wanted a second consumer for.
 - 0012 is done: the crate moved to <https://github.com/chussenot/judgment> on 2026-10-03 with the history of `crates/judgment`, and signalman depended on it by git, pinned to a revision, the same day, then by version once the crate published 0.3.0 to crates.io (also 2026-10-03), as the record's option 2 planned; the directory is gone from this repository.
-- 0006 names `[triage.text]` as the home of the question wording. Since [0015](0015-the-triage-questions-are-a-jud-rubric.md) (2026-10-04) the wording is a `.jud` rubric named by `[triage] rubric`, still file configuration and still without an environment variable, so the record's layering holds; the question set and the four impact levels stay code, as it says, now enforced when the rubric loads.
+- 0006 names `[triage.text]` as the home of the question wording. Since [0015](0015-the-triage-questions-are-a-jud-rubric.md) (2026-10-04) the wording is a `.jud` rubric named by `[triage] rubric`, still file configuration and still without an environment variable, so the record's layering holds; the question set and the four impact levels stay code, as it says, now enforced when the rubric loads. It also names `[policy]` as the home of the routing thresholds; since the same record they are the rubric's `policy` gates, in the same file as the words, and `[policy]` is refused with a migration message. They remain file configuration without a build, which is what the record asked of them.
 - 0010 lists `Texts` among what stays in `src/triage/`. It was deleted by [0015](0015-the-triage-questions-are-a-jud-rubric.md); the words are `src/triage/triage.jud`, read through the crate's `jud` feature, and what stays in signalman is the lowering per alert (`src/triage/rubric.rs`, `src/triage/questions.rs`).
 - 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
@@ -3747,55 +3754,68 @@ Before the split: `crates/judgment` copied alone into an empty directory passes 
 
 ## Context and problem statement
 
-[Decision 0006](0006-layered-configuration.md) made the wording of the triage questions file configuration: thirteen `[triage.text]` fields (`owner_question`, `impact_levels`, `state_guard` and so on), merged onto compiled defaults by `TextsFile` and assembled into instructions by `Texts`. The fields were a request in all but name. A team that tuned them could not see the request the model reads without running `triage --print-request`. It could not add an instruction part, or reorder the questions, without a code change. Two copies of signalman, or signalman and a notebook, could not tell whether they asked the same thing except through signalman's own fingerprint. Judgment 0.4 published the `.jud` format, a YAML document whose questions are the wire's own objects in wire order, with a fingerprint any tool computes the same way, and started sending questions and options in the order they were given rather than alphabetically. Should signalman's questions become such a document, and how far should the document reach?
+[Decision 0006](0006-layered-configuration.md) made the wording of the triage questions file configuration: thirteen `[triage.text]` fields (`owner_question`, `impact_levels`, `state_guard` and so on), merged onto compiled defaults by `TextsFile` and assembled into instructions by `Texts`, with the six routing thresholds beside them in `[policy]`. The fields were a request in all but name. A team that tuned them could not see the request the model reads without running `triage --print-request`. It could not add an instruction part, or reorder the questions, without a code change. Two copies of signalman, or signalman and a notebook, could not tell whether they asked the same thing except through signalman's own fingerprint. And a threshold lived in one file while the words it was tuned against lived in another.
+
+Judgment 0.4 published the `.jud` format, a YAML document whose questions are the wire's own objects in wire order, with a fingerprint any tool computes the same way. Version 1 described one fixed request, so it could not say that `owner` and `duplicate_of` are asked over options known only per alert, that two instruction parts and two questions depend on what the alert carries, or hold the owner's two bars and a level threshold on a Score. Those gaps were filed as [judgment#8](https://github.com/chussenot/judgment/issues/8), [#9](https://github.com/chussenot/judgment/issues/9) and [#10](https://github.com/chussenot/judgment/issues/10), and judgment 0.5 closed them with `jud: 1.1` ([judgment decision 0016](https://github.com/chussenot/judgment/blob/main/docs/decisions/0016-jud-takes-minor-versions.md)): `when` and `part_when` over state paths, `options_from: request`, named confidence `bands`, `level_at_least`, `strict` bars, and top-level `x-` keys for shared anchors. Should signalman's questions become such a document, and how far should the document reach?
 
 ## Decision drivers
 
 - The words are what a team tunes; they should be reviewable as the request the model reads, with nothing to translate
-- The five questions and their primitives are what the policy reads through typed handles ([decision 0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md)); configuration must not be able to change them
-- Two of the five questions are asked over options known only per alert, and two instruction parts and two questions depend on what the alert carries
+- The five questions and their primitives are what the policy reads through typed handles ([decision 0003](https://github.com/chussenot/judgment/blob/main/docs/decisions/0003-typed-handles-between-questions-and-answers.md)); configuration must not be able to change them, nor whether a question the decision reads is asked
+- A threshold is calibrated against the words it was tuned on; it should have one home, with validation, and the evaluation harness's fingerprint and frozen-policy discipline must keep working
 - The committed evaluation runs must keep replaying: their answers were given to specific requests
-- Thresholds have one home, `[policy]`, with their own validation, fingerprint and frozen-policy discipline
-- Configuration stays layered and file-only for wording ([decision 0006](0006-layered-configuration.md))
+- Configuration stays layered and file-only for wording and thresholds ([decision 0006](0006-layered-configuration.md))
 
 ## Considered options
 
-1. A `.jud` rubric for the words, read as the request for an alert that carries everything and lowered per alert in code; thresholds stay in `[policy]`
-2. A `.jud` rubric for the words and the thresholds, the format's `policy` block replacing `[policy]`
+1. A `jud: 1.1` rubric for the words, the per-alert conditions and the thresholds, lowered by the crate; `[policy]` removed
+2. A `jud: 1` rubric for the words only, read as the request for an alert that carries everything and lowered per alert in signalman's code; thresholds stay in `[policy]`
 3. Keep `[triage.text]`, and add an export of the effective request as `.jud` for review and comparison
-4. Keep `[triage.text]` unchanged; take only the judgment 0.4 bump
+4. Keep `[triage.text]` unchanged; take only the judgment bump
 
 ## Decision outcome
 
-Chosen option: 1. `[triage] rubric` names a `.jud` file, resolved relative to the configuration file; absent, the built-in rubric (`src/triage/triage.jud`, compiled in) is used. `src/triage/rubric.rs` checks a rubric against what the code relies on before the configuration loads: exactly `owner`, `impact`, `actionable`, `duplicate_of` and `caused_by_change`, each of the primitive the policy reads; instructions as objects of named non-empty parts with a `question`; the no-match options `none_of_these` and `none`; four impact levels as text; no `policy` and no `tuning`. `TriageQuestions::for_alert_with_rubric` lowers it per alert. The questions go in the rubric's order. `owner` and `duplicate_of` take their options from the candidates and the open incidents, with only the no-match option read from the rubric and sent last. The `catalog` and `context` parts, and the `duplicate_of` and `caused_by_change` questions, are sent only when the alert carries what they are about. `[triage.text]` is refused with a message naming its replacement; an empty table is accepted. `Texts`, `TextsFile` and the `take!` macro are deleted.
+Chosen option: 1. `[triage] rubric` names a `.jud` file, resolved relative to the configuration file; absent, the built-in rubric (`src/triage/triage.jud`, compiled in) is used. `TriageQuestions::for_alert_with_rubric` calls the crate's `Rubric::lower` with the state `{alert: …}` and the options signalman supplies: the owner candidates for `owner`, the open incidents by id for `duplicate_of`. The rubric decides, by state path, which instruction parts are sent; the built-in one sends `catalog` under `alert.component` and `context` under `alert.related_alerts`, and asks `duplicate_of` under `alert.open_incidents` and `caused_by_change` under `alert.recent_changes`.
+
+`src/triage/rubric.rs` checks a rubric against what the code relies on when the configuration loads:
+
+- exactly `owner`, `impact`, `actionable`, `duplicate_of` and `caused_by_change`, each of the primitive the policy reads;
+- instructions as objects of named non-empty parts with a `question`;
+- `owner` and `duplicate_of` asked over supplied options, with `none_of_these` and `none` as their one static option;
+- each question's `when` as above and no other;
+- four impact levels as text;
+- each `policy` gate in the one shape `decide` reads, mapped onto `Policy`: `actionable.threshold` is `suppress_below`; `owner`'s `route` and `confirm` bands are `auto_route_confidence` and `human_below_confidence`; `impact.level_at_least` is `page_at`; `duplicate_of.confidence` is `attach_confidence`; `caused_by_change.threshold`, `strict`, is `flag_change_above`.
+
+`[triage.text]` and `[policy]` are refused with a message naming their replacement; an empty table is accepted. `Texts`, `TextsFile` and the `take!` macro are deleted. `Policy` stays the in-memory type, so `decide`, the outcome contract and the evaluation harness are unchanged.
 
 ### Consequences
 
-- Good, because the file a team edits is the request the model reads, in its order, with its anchors and comments; an instruction part the code never named (a `focus`, an example) is a line in the file
-- Good, because the rubric has a `.jud` fingerprint, which `questions_fingerprint` now covers, so the identity of the questions is the format's, not only signalman's
+- Good, because the file a team edits is the request the model reads, in its order, with its conditions, its anchors and comments; an instruction part the code never named (a `focus`, an example) is a line in the file, and so is the condition it is sent under
+- Good, because the thresholds sit beside the words they were tuned on, in one reviewed file, and the format's `tuning` block is there for their provenance
+- Good, because the rubric has a `.jud` fingerprint that covers its declarations, which `questions_fingerprint` now uses, so the identity of the questions is the format's, not only signalman's; the fingerprint excludes the policy, so tuning a threshold leaves a recording current, and the harness fingerprints the policy on its own as before
 - Good, because the built-in rubric asks exactly what the texts asked, which `tests/triage_rubric.rs` checks against requests captured before the change, so the committed runs keep replaying after a mechanical migration of their manifests' fingerprints
-- Bad, because the rubric does not say everything that is sent: `owner`'s and `duplicate_of`'s other options are examples replaced per alert, and two parts and two questions are conditional, a contract stated in `docs/triage.md` and enforced in code rather than in the file ([judgment#8](https://github.com/chussenot/judgment/issues/8))
-- Bad, because thresholds and words now live in two files of two formats, and the format's `tuning` provenance cannot be used for the thresholds until its gates can express a two-bar owner policy and a level threshold on a Score ([judgment#9](https://github.com/chussenot/judgment/issues/9))
-- Bad, because the shared state rule is a YAML anchor on the first question, so reordering above `owner` means moving the anchor ([judgment#10](https://github.com/chussenot/judgment/issues/10))
-- Bad, because a deployment with a non-empty `[triage.text]` fails to start after the upgrade until it is migrated; accepted over silently ignoring the table, which would change the questions without saying so
+- Good, because the per-alert lowering that signalman had written by hand is the crate's, tested there for every implementation of the format
+- Bad, because a gate can say more than `decide` reads (bands with other names, a strict confidence, a fallback other than the no-match option), so signalman refuses those shapes by name rather than honouring the full format; a team that reads the format's documentation may write a gate signalman will not load
+- Bad, because a deployment with a non-empty `[triage.text]` or `[policy]` fails to start after the upgrade until it is migrated; accepted over silently ignoring the table, which would change the questions or the routing without saying so
+- Bad, because signalman needs judgment 0.5 or later, and a rubric file written for it says `jud: 1.1`, which a `jud: 1` reader refuses
 
 ### Confirmation
 
-`src/triage/rubric.rs` and its tests (the built-in rubric parses, its example owners equal `triage::default_teams`, each broken contract is refused by name); `src/triage/questions.rs` tests (order on the wire, no-match last, parts and questions per alert); `tests/triage_rubric.rs` (the built-in rubric against the captured requests; a rubric named in the configuration is what is asked; the effective configuration reads back); `src/config.rs` tests (`[triage.text]` refused, an empty one accepted); `tests/eval.rs` (the committed manifests match the rubric's fingerprint).
+`src/triage/rubric.rs` and its tests (the built-in rubric parses and its policy is `Policy::default()`; each broken contract and each gate `decide` cannot honour is refused by name; the policy is read from the gates); `src/triage/questions.rs` tests (order on the wire, no-match last, parts and questions per alert); `tests/triage_rubric.rs` (the built-in rubric against the captured requests; a rubric named in the configuration is what is asked; the effective configuration reads back); `src/config.rs` and `tests/config_precedence.rs` (`[triage.text]` and `[policy]` refused, empty ones accepted; the thresholds come from the rubric the file names); `tests/eval.rs` (the committed manifests match the rubric's fingerprint).
 
 ## Pros and cons of the options
 
-### 1. A rubric for the words, lowered per alert
+### 1. A 1.1 rubric for the words, the conditions and the thresholds
 
-- Good, because the question set stays code and the words become one reviewable request
-- Good, because the dynamic parts stay deterministic code, where the routing logic already is
-- Bad, because the file is a template in practice and the format cannot yet say so
+- Good, because one file carries the questions, when their parts are sent, and the bars tuned on them
+- Good, because the lowering is the format's, so another tool asks the same request for the same alert
+- Bad, because signalman accepts only the subset of the gates its decision reads, and must say so
 
-### 2. A rubric for the words and the thresholds
+### 2. A 1.0 rubric for the words, lowered in code
 
-- Good, because one file would carry the questions and the bars tuned on them, with their provenance
-- Bad, because the format's gates cannot express the owner's two bars or `page_at`, so half the policy would stay in `[policy]` anyway, and two homes for thresholds is the drift `[policy]` exists to prevent
-- Bad, because `[policy]` has a frozen-policy and fingerprint discipline in the evaluation harness that a second source would have to reproduce
+- Good, because it needed nothing beyond judgment 0.4, and was this record's first draft
+- Bad, because the file was a template in practice: `owner`'s and `duplicate_of`'s options were examples replaced per alert, and the conditions a contract stated in a page and enforced in code
+- Bad, because thresholds and words lived in two files of two formats, and the shared rule had to be an anchor on the first question
 
 ### 3. Keep `[triage.text]`, export the request as `.jud`
 
@@ -3809,4 +3829,4 @@ Chosen option: 1. `[triage] rubric` names a `.jud` file, resolved relative to th
 
 ## More information
 
-[Triage: the rubric](../triage.md#the-rubric) states the lowering contract; [Configuration](../configuration.md#triage-file-only) the setting and the migration from `[triage.text]`; [Evaluation](../evaluation.md#what-a-recording-answers) the fingerprint migration. The format is the judgment crate's [`.jud` specification](https://github.com/chussenot/judgment/blob/main/docs/jud.md) and its [decision 0014](https://github.com/chussenot/judgment/blob/main/docs/decisions/0014-a-file-format-for-rubrics-cases-and-recordings.md). The beads issue to create is "triage: questions as a .jud rubric (judgment 0.4)"; it closes `signalman-1zs.2`.
+[Triage: the rubric](../triage.md#the-rubric) states the contract and [Triage: the decision](../triage.md#the-decision) the gates; [Configuration](../configuration.md#triage-file-only) the setting and the migrations from `[triage.text]` and `[policy]`; [Evaluation](../evaluation.md#what-a-recording-answers) the fingerprint migrations. The format is the judgment crate's [`.jud` specification](https://github.com/chussenot/judgment/blob/main/docs/jud.md) and its decisions [0014](https://github.com/chussenot/judgment/blob/main/docs/decisions/0014-a-file-format-for-rubrics-cases-and-recordings.md) and [0016](https://github.com/chussenot/judgment/blob/main/docs/decisions/0016-jud-takes-minor-versions.md). The beads issue to create is "triage: questions and thresholds as a .jud rubric (judgment 0.5)"; it closes `signalman-1zs.2`.

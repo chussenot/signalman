@@ -7,8 +7,10 @@ use super::questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, TriageAnswers};
 use super::{Owner, OwnerCandidate};
 
 /// Thresholds. Start conservative, then tune on your own alert history and
-/// pin the model version you tuned against. Deserialises from the `[policy]`
-/// table of the configuration file; absent fields keep their defaults.
+/// pin the model version you tuned against. Read from the triage rubric's
+/// `policy` gates ([`super::TriageRubric::policy`]); serialised as the
+/// policy an evaluation run freezes and fingerprints, where absent fields
+/// keep their defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {

@@ -146,8 +146,8 @@ struct EvalArgs {
     #[arg(long, value_name = "DIR", conflicts_with = "replay")]
     record: Option<PathBuf>,
     /// Grade recorded responses from DIR under the current configuration
-    /// instead of calling the model. Tune [policy] and question or guidance
-    /// wording in the rubric this way, but not impact levels or team keys: the recorded
+    /// instead of calling the model. Tune the rubric's policy gates and its
+    /// question or guidance wording this way, but not impact levels or team keys: the recorded
     /// answers echo the levels and choose among the keys they were asked
     /// with, so a replay under others fails naming the question; changing
     /// those needs a new recording.
@@ -166,7 +166,7 @@ struct EvalArgs {
     /// the policy frozen beside the recordings.
     #[arg(long, value_name = "SPLIT")]
     split: Option<eval::Split>,
-    /// Freeze the current [policy] as DIR/policy.json, the one a held-out
+    /// Freeze the current policy (the rubric's gates) as DIR/policy.json, the one a held-out
     /// replay of DIR is graded under. Only from a replay of the development
     /// split, so the frozen policy was chosen without the held-out cases in
     /// view. Freezing again replaces it.
@@ -394,6 +394,13 @@ async fn run(command: Command, cfg: &Config, file: Option<&Path>) -> Result<(), 
                 cfg.triage.rubric.id(),
                 cfg.triage.rubric.fingerprint()
             );
+            // The thresholds are the rubric's `policy` gates, not a table of
+            // the file, so they are shown here rather than below.
+            let policy = toml::to_string(&cfg.policy)?;
+            println!("# policy, from the rubric's gates:");
+            for line in policy.lines() {
+                println!("#   {line}");
+            }
             println!("# secrets are read from the environment and never shown here");
             println!();
             print!("{}", toml::to_string_pretty(cfg)?);

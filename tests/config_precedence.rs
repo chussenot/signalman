@@ -25,6 +25,11 @@ fn write(name: &str, body: &str) -> PathBuf {
 }
 
 fn effective(cmd: &mut Command) -> toml::Value {
+    toml::from_str(&shown(cmd)).unwrap()
+}
+
+/// The text `config show` printed, header comments included.
+fn shown(cmd: &mut Command) -> String {
     let out = cmd.output().unwrap();
     assert!(
         out.status.success(),
@@ -36,11 +41,20 @@ fn effective(cmd: &mut Command) -> toml::Value {
         text.starts_with("# signalman effective configuration"),
         "{text}"
     );
-    toml::from_str(&text).unwrap()
+    text
 }
 
 #[test]
 fn defaults_then_file_then_env_then_flag() {
+    // The thresholds come from the rubric the file names, not from a table.
+    write(
+        "paging.jud",
+        &signalman::triage::rubric::BUILTIN.replacen(
+            "    level_at_least: 2\n",
+            "    level_at_least: 3\n",
+            1,
+        ),
+    );
     let file = write(
         "layers.toml",
         r#"
@@ -49,29 +63,32 @@ fn defaults_then_file_then_env_then_flag() {
         [flow]
         related_window_minutes = 15
         note = false
-        [policy]
-        page_at = "outage"
+        [triage]
+        rubric = "paging.jud"
         "#,
     );
 
     // Defaults only.
-    let v = effective(
+    let text = shown(
         bin()
             .args(["config", "show"])
             .current_dir(std::env::temp_dir()),
     );
+    assert!(text.contains("#   page_at = \"major\""), "{text}");
+    let v: toml::Value = toml::from_str(&text).unwrap();
+    assert!(v.get("policy").is_none(), "{text}");
     assert_eq!(v["server"]["addr"].as_str(), Some("127.0.0.1:8080"));
     assert_eq!(v["flow"]["related_window_minutes"].as_integer(), Some(30));
     assert_eq!(v["flow"]["note"].as_bool(), Some(true));
-    assert_eq!(v["policy"]["page_at"].as_str(), Some("major"));
     assert_eq!(v["triage"]["teams"].as_array().unwrap().len(), 6);
 
     // File overrides defaults.
-    let v = effective(bin().args(["--config", file.to_str().unwrap(), "config", "show"]));
+    let text = shown(bin().args(["--config", file.to_str().unwrap(), "config", "show"]));
+    assert!(text.contains("#   page_at = \"outage\""), "{text}");
+    let v: toml::Value = toml::from_str(&text).unwrap();
     assert_eq!(v["server"]["addr"].as_str(), Some("0.0.0.0:9100"));
     assert_eq!(v["flow"]["related_window_minutes"].as_integer(), Some(15));
     assert_eq!(v["flow"]["note"].as_bool(), Some(false));
-    assert_eq!(v["policy"]["page_at"].as_str(), Some("outage"));
 
     // Environment overrides the file; the file can also be named by env.
     let v = effective(
@@ -104,14 +121,14 @@ fn defaults_then_file_then_env_then_flag() {
 
 #[test]
 fn invalid_file_and_env_values_fail_with_the_offending_name() {
-    let file = write("bad.toml", "[policy]\nsupress_below = 0.1\n");
+    let file = write("bad.toml", "[flow]\nrelated_window_minute = 1\n");
     let out = bin()
         .args(["--config", file.to_str().unwrap(), "config", "show"])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("supress_below"), "{err}");
+    assert!(err.contains("related_window_minute"), "{err}");
 
     let out = bin()
         .env("SIGNALMAN_RELATED_WINDOW_MINUTES", "soon")

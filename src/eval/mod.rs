@@ -324,14 +324,14 @@ pub fn policy_fingerprint(policy: &Policy) -> String {
 }
 
 /// Fingerprint of everything that shapes a request apart from the alert:
-/// the rubric (by [`TriageRubric::asked_fingerprint`], which covers every
-/// word sent and the order of the questions, but not an example option that
-/// is never sent) and the owner candidates. Two runs with the same
+/// the rubric's questions (by [`TriageRubric::fingerprint`], which covers
+/// every word that can be sent, the order of the questions and when each
+/// question and part is sent, but not the policy) and the owner candidates. Two runs with the same
 /// fingerprint asked the same questions; a replay under a different one
 /// reads answers to questions that were never asked.
 pub fn questions_fingerprint(rubric: &TriageRubric, candidates: &OwnerCandidates) -> String {
     judgment::eval::fingerprint(&json!({
-        "rubric": rubric.asked_fingerprint(),
+        "rubric": rubric.fingerprint(),
         "candidates": candidates.iter().collect::<Vec<_>>(),
     }))
 }

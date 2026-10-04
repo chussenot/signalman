@@ -46,16 +46,19 @@ and documents itself there.
 - Deterministic logic stays in code; the model answers narrow, atomic
   questions. Questions reference state by backticked path. Every Choice has
   a no-match option.
-- The words of every question are the triage rubric, `src/triage/triage.jud`
-  (the judgment crate's `.jud` format, its `jud` feature; `[triage] rubric`
-  names a replacement). The five ids and their primitives are code and
-  `src/triage/rubric.rs` refuses a rubric that changes them; which questions,
-  parts and options a request carries is decided per alert in
-  `TriageQuestions::for_alert_with_rubric` (docs/triage.md#the-rubric).
-  Thresholds stay in `[policy]`: a rubric `policy` is refused. Any change to
-  the rubric changes `questions_fingerprint`, so a committed evaluation run
-  goes stale; `tests/triage_rubric.rs` holds the built-in rubric to the
-  requests in `tests/fixtures/triage-requests.json`.
+- The words of every question, when each instruction part is sent, and the
+  routing thresholds are the triage rubric, `src/triage/triage.jud` (the
+  judgment crate's `.jud` format, `jud: 1.1`, its `jud` feature; `[triage]
+  rubric` names a replacement). The crate lowers it per alert
+  (`Rubric::lower`); signalman supplies the owner candidates and open
+  incidents (`options_from: request`). The five ids, their primitives, each
+  question's `when` and the shape of each `policy` gate are code:
+  `src/triage/rubric.rs` refuses a rubric that changes them and maps the
+  gates onto `Policy` (docs/triage.md#the-rubric, #the-decision). `[policy]`
+  is refused. Any change to a question changes `questions_fingerprint`, so a
+  committed evaluation run goes stale; a threshold change does not.
+  `tests/triage_rubric.rs` holds the built-in rubric to the requests in
+  `tests/fixtures/triage-requests.json`.
 - The qualification note (`src/incidentio/note.rs`) is a fixed template over
   typed answers. It starts with the marker line and is replaced in place;
   never let the model write its prose, never stack a second note.

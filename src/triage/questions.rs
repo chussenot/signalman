@@ -7,14 +7,11 @@
 
 use serde_json::{Value, json};
 
-use super::rubric::{
-    ACTIONABLE, CATALOG_PART, CAUSED_BY_CHANGE, CONTEXT_PART, DUPLICATE_OF, IMPACT, OWNER,
-    TriageRubric,
-};
+use super::rubric::{ACTIONABLE, CAUSED_BY_CHANGE, DUPLICATE_OF, IMPACT, OWNER, TriageRubric};
 use super::{Alert, OwnerCandidates};
 use crate::Result;
 use crate::answer::{Choice, Noul, Response, Score};
-use crate::question::{Handle, Question, Questions};
+use crate::question::{Handle, Questions};
 
 /// Key of the owner question's no-match option.
 pub const NONE_OF_THESE: &str = "none_of_these";
@@ -93,122 +90,58 @@ impl TriageQuestions {
         Self::for_alert_with_rubric(alert, candidates, TriageRubric::builtin())
     }
 
-    /// Build with explicit owner candidates and rubric. The questions are
-    /// the rubric's, in its order; which of them are asked, which
-    /// instruction parts they carry and which options the two dynamic
-    /// Choices offer depend on the alert, never on the rubric:
+    /// Build with explicit owner candidates and rubric: the rubric lowered
+    /// against the alert ([`TriageRubric::lower`]). The questions are the
+    /// rubric's, in its order; which of them are asked and which
+    /// instruction parts they carry is the rubric's `when` and `part_when`
+    /// over `{alert: …}`, and the two Choices are asked over options
+    /// supplied here, never written in the rubric:
     ///
-    /// - `owner` offers `candidates`, with the no-match option last and
-    ///   described by the rubric; its `catalog` part is sent only when the
-    ///   catalog resolved `alert.component`;
-    /// - `impact` carries its `context` part only when other alerts are
-    ///   firing (`alert.related_alerts`);
-    /// - `duplicate_of` is asked only when incidents are open, over them and
-    ///   the rubric's `none` option;
-    /// - `caused_by_change` is asked only when recent changes are listed.
+    /// - `owner` offers `candidates`, then the rubric's no-match option;
+    /// - `duplicate_of` offers the open incidents by id, then `none`.
+    ///
+    /// The built-in rubric sends `owner`'s `catalog` part only when the
+    /// catalog resolved `alert.component`, `impact`'s `context` part only
+    /// when other alerts are firing, `duplicate_of` only when incidents are
+    /// open and `caused_by_change` only when recent changes are listed.
     pub fn for_alert_with_rubric(
         alert: &Alert,
         candidates: OwnerCandidates,
         rubric: &TriageRubric,
     ) -> Result<Self> {
-        let mut q = Questions::new();
-        let (mut owner, mut impact, mut actionable) = (None, None, None);
-        let (mut duplicate_of, mut caused_by_change) = (None, None);
-
-        for (id, question) in rubric.questions() {
-            match (id, question) {
-                (OWNER, Question::Choice { instructions, .. }) => {
-                    let omit: &[&str] = if alert.component.is_some() {
-                        &[]
-                    } else {
-                        &[CATALOG_PART]
-                    };
-                    // The candidates in their order, then the no-match option
-                    // with the rubric's words, last whatever the list says.
-                    let none = rubric.no_match(OWNER, NONE_OF_THESE);
-                    let options = candidates
-                        .iter()
-                        .filter(|c| c.key != NONE_OF_THESE)
-                        .map(|c| (c.key.clone(), Some(c.description.clone())))
-                        .chain(std::iter::once((
-                            NONE_OF_THESE.to_owned(),
-                            none.as_str().map(str::to_owned),
-                        )));
-                    owner = Some(q.dynamic_choice(id, without(instructions, omit), options)?);
-                }
-                (
-                    IMPACT,
-                    Question::Score {
-                        instructions,
-                        criteria,
-                    },
-                ) => {
-                    let omit: &[&str] = if alert.related_alerts.is_empty() {
-                        &[CONTEXT_PART]
-                    } else {
-                        &[]
-                    };
-                    impact = Some(q.score(id, without(instructions, omit), criteria.clone())?);
-                }
-                (
-                    ACTIONABLE,
-                    Question::Noul {
-                        instructions,
-                        criteria,
-                    },
-                ) => {
-                    actionable = Some(q.noul(id, instructions.clone(), criteria.clone())?);
-                }
-                (DUPLICATE_OF, Question::Choice { instructions, .. })
-                    if !alert.open_incidents.is_empty() =>
-                {
-                    // Incidents by id, a stable order whatever order
-                    // incident.io listed them in (and the order judgment 0.3
-                    // sent them in, so recordings stay comparable), then the
-                    // no-match option last.
-                    let none = rubric.no_match(DUPLICATE_OF, NO_DUPLICATE);
-                    let mut incidents: Vec<_> = alert.open_incidents.iter().collect();
-                    incidents.sort_by(|a, b| a.id.cmp(&b.id));
-                    let options = incidents
-                        .into_iter()
-                        .map(|i| (i.id.clone(), Some(i.summary.clone())))
-                        .chain(std::iter::once((
-                            NO_DUPLICATE.to_owned(),
-                            none.as_str().map(str::to_owned),
-                        )));
-                    duplicate_of = Some(q.dynamic_choice(id, instructions.clone(), options)?);
-                }
-                (
-                    CAUSED_BY_CHANGE,
-                    Question::Noul {
-                        instructions,
-                        criteria,
-                    },
-                ) if !alert.recent_changes.is_empty() => {
-                    caused_by_change = Some(q.noul(id, instructions.clone(), criteria.clone())?);
-                }
-                // A speculative question with nothing to ask about: not asked.
-                _ => {}
-            }
-        }
-
-        // `TriageRubric::from_rubric` guarantees all three; the error is
-        // for a rubric that somehow got past it, never a panic.
+        let questions = rubric
+            .lower(alert, &Self::state(alert), &candidates)
+            .map_err(|e| match e {
+                judgment::jud::Error::Question { source, .. } => *source,
+                other => crate::Error::InvalidQuestion {
+                    id: "rubric".to_owned(),
+                    reason: format!("{}: {other}", rubric.source()),
+                },
+            })?;
+        // `TriageRubric::from_rubric` guarantees the three asked for every
+        // alert, of the type read here; the error is for a rubric that
+        // somehow got past it, never a panic.
         let required = |id: &str| crate::Error::InvalidQuestion {
             id: id.to_owned(),
             reason: format!(
-                "{} defines no such question of the type signalman reads",
+                "{} asks no such question of the type signalman reads",
                 rubric.source()
             ),
         };
         Ok(Self {
-            questions: q,
+            owner: questions
+                .handle::<Choice<String>>(OWNER)
+                .ok_or_else(|| required(OWNER))?,
+            impact: questions
+                .handle::<Score>(IMPACT)
+                .ok_or_else(|| required(IMPACT))?,
+            actionable: questions
+                .handle::<Noul>(ACTIONABLE)
+                .ok_or_else(|| required(ACTIONABLE))?,
+            duplicate_of: questions.handle::<Choice<String>>(DUPLICATE_OF),
+            caused_by_change: questions.handle::<Noul>(CAUSED_BY_CHANGE),
+            questions,
             candidates,
-            owner: owner.ok_or_else(|| required(OWNER))?,
-            impact: impact.ok_or_else(|| required(IMPACT))?,
-            actionable: actionable.ok_or_else(|| required(ACTIONABLE))?,
-            duplicate_of,
-            caused_by_change,
         })
     }
 
@@ -268,18 +201,6 @@ impl TriageQuestions {
             model: response.model.clone(),
         })
     }
-}
-
-/// The instructions with the named parts left out: the parts that are
-/// about something this alert does not carry.
-fn without(instructions: &Value, omit: &[&str]) -> Value {
-    let mut instructions = instructions.clone();
-    if let Some(parts) = instructions.as_object_mut() {
-        for part in omit {
-            parts.remove(*part);
-        }
-    }
-    instructions
 }
 
 /// Typed answers for one alert.
@@ -409,9 +330,11 @@ mod tests {
         let start = text.find("  impact:\n").unwrap();
         let end = text.find("  actionable:\n").unwrap();
         let block = text[start..end].to_owned();
-        let mut text = text.replacen(&block, "", 1);
-        text.push('\n');
-        text.push_str(&block);
+        let text = text.replacen(&block, "", 1).replacen(
+            "    when: alert.recent_changes\n",
+            &format!("    when: alert.recent_changes\n{block}"),
+            1,
+        );
         let rubric = TriageRubric::parse(&text, "edited").unwrap();
 
         let q = TriageQuestions::for_alert_with_rubric(
@@ -712,8 +635,11 @@ mod tests {
     #[test]
     fn impact_levels_match_the_enum() {
         assert_eq!(Impact::LEVELS.len(), 4);
-        let Some(Question::Score { criteria, .. }) =
-            TriageRubric::builtin().jud().questions.get(IMPACT)
+        let Some(crate::question::Question::Score { criteria, .. }) = TriageRubric::builtin()
+            .jud()
+            .questions
+            .get(IMPACT)
+            .map(|rq| &rq.question)
         else {
             panic!("impact is a Score");
         };

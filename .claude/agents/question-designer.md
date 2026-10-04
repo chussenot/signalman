@@ -18,8 +18,8 @@ Load the `typesafe:typesafe-ai` skill with the Skill tool first and follow its l
 - Every Choice has a no-match option when nothing may fit. A dynamic Choice offers every candidate the code may act on; the model cannot pick an omitted value.
 - Score levels describe concrete situations, lowest first, and are independently understandable.
 - Speculative questions are asked in the same request and only read when relevant; state their premise explicitly.
-- Confidence is distribution concentration, not permission to act. Thresholds in `Policy` scale with the cost of being wrong: paging needs more than ticketing.
-- Deterministic facts (candidate lookup, thresholds, formatting) stay in code.
+- Confidence is distribution concentration, not permission to act. Thresholds (the rubric's `policy` gates in `src/triage/triage.jud`, read into `Policy` by `src/triage/rubric.rs`) scale with the cost of being wrong: paging needs more than ticketing.
+- Deterministic logic (candidate lookup, how a threshold is applied, formatting) stays in code; the threshold values and the words are the rubric's.
 
 ## Output
 
