@@ -8,9 +8,11 @@
 
 mod policy;
 mod questions;
+pub mod rubric;
 
 pub use policy::{Decision, Policy, decide};
-pub use questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, Texts, TriageAnswers, TriageQuestions};
+pub use questions::{Impact, NO_DUPLICATE, NONE_OF_THESE, TriageAnswers, TriageQuestions};
+pub use rubric::TriageRubric;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

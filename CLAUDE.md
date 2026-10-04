@@ -15,8 +15,8 @@ and documents itself there.
 ## Rules that are easy to get wrong
 
 - Load the `typesafe:typesafe-ai` skill before touching questions, answers,
-  the TypeSafe client or `src/triage/policy.rs`. The live docs are the
-  contract; start at https://docs.typesafe.ai/llms.txt. The OpenAPI
+  the TypeSafe client, the rubric or `src/triage/policy.rs`. The live docs
+  are the contract; start at https://docs.typesafe.ai/llms.txt. The OpenAPI
   document (https://api.typesafe.ai/openapi.json) is vendored in the
   judgment crate and reaches this repository as
   `judgment::contract::OPENAPI_DOCUMENT` (its `openapi` feature, on in the
@@ -46,6 +46,16 @@ and documents itself there.
 - Deterministic logic stays in code; the model answers narrow, atomic
   questions. Questions reference state by backticked path. Every Choice has
   a no-match option.
+- The words of every question are the triage rubric, `src/triage/triage.jud`
+  (the judgment crate's `.jud` format, its `jud` feature; `[triage] rubric`
+  names a replacement). The five ids and their primitives are code and
+  `src/triage/rubric.rs` refuses a rubric that changes them; which questions,
+  parts and options a request carries is decided per alert in
+  `TriageQuestions::for_alert_with_rubric` (docs/triage.md#the-rubric).
+  Thresholds stay in `[policy]`: a rubric `policy` is refused. Any change to
+  the rubric changes `questions_fingerprint`, so a committed evaluation run
+  goes stale; `tests/triage_rubric.rs` holds the built-in rubric to the
+  requests in `tests/fixtures/triage-requests.json`.
 - The qualification note (`src/incidentio/note.rs`) is a fixed template over
   typed answers. It starts with the marker line and is replaced in place;
   never let the model write its prose, never stack a second note.

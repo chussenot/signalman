@@ -47,8 +47,8 @@ use serde_json::json;
 
 use crate::answer::Response;
 use crate::triage::{
-    Alert, Decision, Impact, NO_DUPLICATE, OwnerCandidates, Policy, Texts, TriageAnswers,
-    TriageQuestions, decide,
+    Alert, Decision, Impact, NO_DUPLICATE, OwnerCandidates, Policy, TriageAnswers, TriageQuestions,
+    TriageRubric, decide,
 };
 
 /// The decision's kind, as graded. The vocabulary belongs to the outcome
@@ -324,12 +324,14 @@ pub fn policy_fingerprint(policy: &Policy) -> String {
 }
 
 /// Fingerprint of everything that shapes a request apart from the alert:
-/// the question texts and the owner candidates. Two runs with the same
+/// the rubric (by [`TriageRubric::asked_fingerprint`], which covers every
+/// word sent and the order of the questions, but not an example option that
+/// is never sent) and the owner candidates. Two runs with the same
 /// fingerprint asked the same questions; a replay under a different one
 /// reads answers to questions that were never asked.
-pub fn questions_fingerprint(texts: &Texts, candidates: &OwnerCandidates) -> String {
+pub fn questions_fingerprint(rubric: &TriageRubric, candidates: &OwnerCandidates) -> String {
     judgment::eval::fingerprint(&json!({
-        "texts": texts,
+        "rubric": rubric.asked_fingerprint(),
         "candidates": candidates.iter().collect::<Vec<_>>(),
     }))
 }
@@ -525,8 +527,8 @@ pub fn read_cases(path: &Path) -> Result<Vec<Case>> {
 /// What the harness needs from the configuration.
 #[derive(Debug, Clone)]
 pub struct Setup<'a> {
-    /// Question wording.
-    pub texts: &'a Texts,
+    /// The words of every question.
+    pub rubric: &'a TriageRubric,
     /// Owner candidates for every case (no catalog in the harness).
     pub candidates: &'a OwnerCandidates,
     /// Routing thresholds.
@@ -552,10 +554,10 @@ pub async fn run(
     let mut graded = Vec::with_capacity(cases.len());
     let mut failed = Vec::new();
     for case in cases {
-        let questions = TriageQuestions::for_alert_with_texts(
+        let questions = TriageQuestions::for_alert_with_rubric(
             &case.alert,
             setup.candidates.clone(),
-            setup.texts,
+            setup.rubric,
         )?;
         let state = TriageQuestions::state(&case.alert);
         let started = Instant::now();
@@ -578,13 +580,18 @@ pub async fn run(
         };
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(dir) = record {
+            // Keyed by case id, with the request's canonical fingerprint
+            // and the time, so a recording says which request it answers
+            // and when, as any `.jud` reader names it.
             judgment::eval::write_recording(
                 dir,
                 &Recording {
-                    case: case.id.clone(),
-                    response: response.clone(),
-                    elapsed_ms,
-                    request_hash: None,
+                    fingerprint: Some(judgment::eval::canonical::request_fingerprint(
+                        &state,
+                        &questions.questions,
+                    )),
+                    recorded_at: Some(judgment::eval::now_rfc3339()),
+                    ..Recording::new(case.id.clone(), response.clone(), elapsed_ms)
                 },
             )?;
         }
@@ -596,7 +603,7 @@ pub async fn run(
             elapsed_ms,
         )?);
     }
-    let fingerprint = questions_fingerprint(setup.texts, setup.candidates);
+    let fingerprint = questions_fingerprint(setup.rubric, setup.candidates);
     let recorded_at = jiff::Timestamp::now().to_string();
     let (splits, provenance) = count_cases(cases);
     if let Some(dir) = record {
@@ -650,7 +657,7 @@ pub async fn run(
 /// [`held_out_gate`], which the caller runs first when the cases are the
 /// held-out split.
 pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>, stale_ok: bool) -> Result<Report> {
-    let fingerprint = questions_fingerprint(setup.texts, setup.candidates);
+    let fingerprint = questions_fingerprint(setup.rubric, setup.candidates);
     let manifest = read_manifest(dir)?;
     let stale = manifest
         .as_ref()
@@ -672,10 +679,10 @@ pub fn replay(dir: &Path, cases: &[Case], setup: &Setup<'_>, stale_ok: bool) -> 
             continue;
         }
         let rec = judgment::eval::read_recording(dir, &case.id)?;
-        let questions = TriageQuestions::for_alert_with_texts(
+        let questions = TriageQuestions::for_alert_with_rubric(
             &case.alert,
             setup.candidates.clone(),
-            setup.texts,
+            setup.rubric,
         )?;
         graded.push(grade(
             case,

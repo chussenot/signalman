@@ -2,7 +2,7 @@
 title: Configuration
 description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-04
 tags: [configuration, kubernetes]
 ---
 
@@ -131,11 +131,13 @@ Routing thresholds; absent keys keep their defaults. Every probability is valida
 
 ### `[triage]`, file only
 
-`[triage.text]` overrides the wording of any question: `owner_question`, `owner_guidance`, `owner_catalog_guidance`, `impact_question`, `impact_related_context`, `impact_levels` (exactly four, lowest first), `actionable_question`, `actionable_yes`, `actionable_no`, `duplicate_question`, `duplicate_none`, `change_question`, and `state_guard`, the rule every instruction ends with ([Triage](triage.md#which-questions-are-asked)). Every field must be non-empty except `state_guard`, where an empty or blank string switches the rule off. Changing any of them changes the question fingerprint a recorded evaluation run is replayed against ([Evaluation](evaluation.md#what-a-recording-answers)). The set of questions and their types are not configurable; [Triage](triage.md#what-is-configurable) explains why.
+`triage.rubric` names the triage rubric, a `.jud` file holding the words of every question in the shape TypeSafe receives and in the order the model sees them ([Triage](triage.md#the-rubric)). A relative path is relative to the configuration file's directory, so the two travel together in one `ConfigMap`; it is made absolute when the file loads. Absent or empty, the built-in rubric is used; `signalman config rubric` prints it, the exact file compiled into the running binary, to start a custom one from. It needs no valid configuration, so it works on a file that still has `[triage.text]`. The rubric is read and checked when the configuration loads, and an error names the file and the field: the five questions and their types are fixed, `impact` keeps exactly four levels, `owner` and `duplicate_of` keep their no-match option, and thresholds stay in `[policy]`. The effective configuration (`signalman config show`) prints the path, not the text, and its header names the rubric in force with its `.jud` fingerprint, the identity another tool computes for the same file. Changing the rubric changes the question fingerprint a recorded evaluation run is replayed against ([Evaluation](evaluation.md#what-a-recording-answers)).
+
+`[triage.text]`, the thirteen wording fields it replaced, is refused with a message naming `triage.rubric`; an empty `[triage.text]` table, as the example file used to carry, is accepted and ignored. To migrate, run `signalman config rubric > triage.jud` beside the configuration file, set `rubric = "triage.jud"` under `[triage]`, and move each overridden string to its place: the `*_question` fields to `instructions.question`, `owner_guidance` to `owner.instructions.guidance`, `owner_catalog_guidance` to `owner.instructions.catalog`, `impact_related_context` to `impact.instructions.context`, `impact_levels` to `impact.criteria`, `actionable_yes` and `actionable_no` to `actionable.criteria.true` and `.false`, `duplicate_none` to `duplicate_of.criteria.none`, and `state_guard` to the `&rule` anchor (removing the `rule` keys replaces `state_guard = ""`).
 
 `[[triage.teams]]` entries (`key`, `label`, `description`) replace the built-in fallback owner list used when no catalog is configured or nothing in it matched. `none_of_these` is appended automatically and may not be defined.
 
-Thresholds and wording have no environment variables: they are reviewed as a unit in the file, not toggled per pod.
+Thresholds and the rubric have no environment variables: they are reviewed as a unit in the file, not toggled per pod.
 
 ## Process
 
@@ -150,4 +152,4 @@ Thresholds and wording have no environment variables: they are reviewed as a uni
 signalman config show --config deploy/config.toml
 ```
 
-prints the effective configuration as TOML after every layer, headed by the file used and the environment variables that contributed, and exits non-zero on an unknown key, a wrong type, an out-of-range threshold or an unparsable variable. Run it in the pipeline that renders the `ConfigMap`. Locally, mise loads `.env` when present (`[env] _.file` in `mise.toml`); `.env` is gitignored, a pre-commit hook refuses to commit it, and `.env.example` lists the secrets and the most common variables.
+prints the effective configuration as TOML after every layer, headed by the file used, the environment variables that contributed and the rubric in force, and exits non-zero on an unknown key, a wrong type, an out-of-range threshold, an unparsable variable, or an unreadable or invalid rubric. Run it in the pipeline that renders the `ConfigMap`. Locally, mise loads `.env` when present (`[env] _.file` in `mise.toml`); `.env` is gitignored, a pre-commit hook refuses to commit it, and `.env.example` lists the secrets and the most common variables.

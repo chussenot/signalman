@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::triage::{OwnerCandidate, OwnerCandidates, Policy, Texts};
+use crate::triage::{OwnerCandidate, OwnerCandidates, Policy, TriageRubric};
 
 /// Environment variable naming the configuration file.
 pub const FILE_ENV: &str = "SIGNALMAN_CONFIG";
@@ -315,77 +315,44 @@ pub struct FlowFile {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TriageFile {
-    /// Question text overrides; any subset of [`Texts`].
-    pub text: Option<TextsFile>,
+    /// The triage rubric, a `.jud` file holding the words of every question
+    /// (`triage::rubric`). A relative path is relative to the configuration
+    /// file's directory. Absent, the built-in rubric is used.
+    pub rubric: Option<PathBuf>,
+    /// The removed `[triage.text]` table. Read only so that a file which
+    /// still has it fails with a message saying what replaced it, rather
+    /// than with "unknown field".
+    #[serde(skip_serializing)]
+    pub text: Option<toml::Value>,
     /// Fallback owner candidates when no catalog resolves. Replaces the
     /// built-in list entirely when present.
     pub teams: Option<Vec<OwnerCandidate>>,
 }
 
-/// `[triage.text]`: each field overrides the matching field of [`Texts`].
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TextsFile {
-    /// Owner question.
-    pub owner_question: Option<String>,
-    /// Owner guidance.
-    pub owner_guidance: Option<String>,
-    /// Owner guidance added when the catalog resolved the component.
-    pub owner_catalog_guidance: Option<String>,
-    /// Impact question.
-    pub impact_question: Option<String>,
-    /// Impact context added when related alerts exist.
-    pub impact_related_context: Option<String>,
-    /// The four impact levels, lowest first.
-    pub impact_levels: Option<Vec<String>>,
-    /// Actionable question.
-    pub actionable_question: Option<String>,
-    /// What yes means for actionable.
-    pub actionable_yes: Option<String>,
-    /// What no means for actionable.
-    pub actionable_no: Option<String>,
-    /// Duplicate question.
-    pub duplicate_question: Option<String>,
-    /// Rubric of the `none` dedup option.
-    pub duplicate_none: Option<String>,
-    /// Caused-by-change question.
-    pub change_question: Option<String>,
-    /// The state-as-data rule appended to every instruction; `""` disables it.
-    pub state_guard: Option<String>,
-}
-
-impl TextsFile {
-    /// Apply the overrides onto `base`.
-    pub fn apply(self, mut base: Texts) -> Texts {
-        macro_rules! take {
-            ($($f:ident),+) => { $( if let Some(v) = self.$f { base.$f = v; } )+ };
-        }
-        take!(
-            owner_question,
-            owner_guidance,
-            owner_catalog_guidance,
-            impact_question,
-            impact_related_context,
-            impact_levels,
-            actionable_question,
-            actionable_yes,
-            actionable_no,
-            duplicate_question,
-            duplicate_none,
-            change_question,
-            state_guard
-        );
-        base
-    }
-}
-
 impl Settings {
-    /// Parse a TOML document.
+    /// Parse a TOML document. A relative `triage.rubric` is anchored to
+    /// `path`'s directory, so a file and the rubric beside it move together.
     pub fn parse(text: &str, path: &Path) -> Result<Self> {
-        toml::from_str(text).map_err(|source| Error::Parse {
+        let mut settings: Self = toml::from_str(text).map_err(|source| Error::Parse {
             path: path.to_owned(),
             source,
-        })
+        })?;
+        // An empty path is unset (decision 0006: an empty optional string
+        // means the default), and the default is the built-in rubric.
+        settings.triage.rubric = settings
+            .triage
+            .rubric
+            .take()
+            .filter(|p| !p.as_os_str().to_string_lossy().trim().is_empty());
+        if let Some(rubric) = &settings.triage.rubric
+            && rubric.is_relative()
+        {
+            // Absolute, so the effective configuration `config show` prints
+            // names the same file wherever it is read back from.
+            let anchored = path.parent().unwrap_or(Path::new("")).join(rubric);
+            settings.triage.rubric = Some(std::path::absolute(&anchored).unwrap_or(anchored));
+        }
+        Ok(settings)
     }
 
     /// Load the file: `explicit` if given (must exist), else `SIGNALMAN_CONFIG`
@@ -605,8 +572,14 @@ impl Flow {
 /// Effective `[triage]`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Triage {
-    /// Question text.
-    pub text: Texts,
+    /// The rubric file in force; `None` for the built-in rubric. What the
+    /// effective configuration prints, so it reads back as a file.
+    #[serde(rename = "rubric", skip_serializing_if = "Option::is_none")]
+    pub rubric_path: Option<PathBuf>,
+    /// The words of every question, read from [`Self::rubric_path`] or
+    /// built in.
+    #[serde(skip)]
+    pub rubric: TriageRubric,
     /// Fallback owner candidates (without the no-match option, which
     /// [`OwnerCandidates::new`] appends).
     pub teams: Vec<OwnerCandidate>,
@@ -826,12 +799,24 @@ impl Config {
         }
         let policy = file.policy.clone().unwrap_or_default();
         policy.validate().map_err(Error::Invalid)?;
-        let text = file
+        // An empty table (the example file shipped one, every line commented)
+        // has nothing to migrate; one that sets anything says what replaced it.
+        if file
             .triage
             .text
-            .clone()
-            .map_or_else(Texts::default, |t| t.apply(Texts::default()));
-        text.validate().map_err(Error::Invalid)?;
+            .as_ref()
+            .is_some_and(|t| t.as_table().is_none_or(|t| !t.is_empty()))
+        {
+            return Err(Error::Invalid(
+                "`[triage.text]` was replaced by `[triage] rubric`, a .jud file with the words of every question: `signalman config rubric` prints the built-in one to start from (docs/configuration.md#triage-file-only)"
+                    .into(),
+            ));
+        }
+        let rubric = match &file.triage.rubric {
+            Some(path) => TriageRubric::read(path)
+                .map_err(|e| Error::Invalid(format!("triage.rubric: {e}")))?,
+            None => TriageRubric::builtin().clone(),
+        };
         let teams = file
             .triage
             .teams
@@ -848,7 +833,11 @@ impl Config {
             mcp,
             telemetry,
             policy,
-            triage: Triage { text, teams },
+            triage: Triage {
+                rubric_path: file.triage.rubric.clone(),
+                rubric,
+                teams,
+            },
         })
     }
 
@@ -1009,7 +998,8 @@ mod tests {
         assert_eq!(c.telemetry.metrics_interval_seconds, 60);
         assert_eq!(c.policy, Policy::default());
         assert_eq!(c.triage.teams, crate::triage::default_teams());
-        assert_eq!(c.triage.text, Texts::default());
+        assert_eq!(&c.triage.rubric, TriageRubric::builtin());
+        assert_eq!(c.triage.rubric_path, None);
     }
 
     #[test]
@@ -1137,9 +1127,6 @@ mod tests {
             [policy]
             suppress_below = 0.1
             page_at = "outage"
-            [triage.text]
-            actionable_question = "Must someone act on `alert` now?"
-            state_guard = ""
             [[triage.teams]]
             key = "sre"
             label = "SRE"
@@ -1164,16 +1151,6 @@ mod tests {
         assert!(
             (c.policy.attach_confidence - Policy::default().attach_confidence).abs() < f64::EPSILON
         );
-        assert_eq!(
-            c.triage.text.actionable_question,
-            "Must someone act on `alert` now?"
-        );
-        assert_eq!(
-            c.triage.text.owner_question,
-            Texts::default().owner_question
-        );
-        // The one text field an empty value is allowed for: it is the off switch.
-        assert!(c.triage.text.state_guard.is_empty());
         assert_eq!(c.triage.teams.len(), 1);
         assert_eq!(c.triage.fallback_candidates().len(), 2);
     }
@@ -1204,13 +1181,17 @@ mod tests {
         let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
         assert!(err.contains("suppress_below"), "{err}");
 
+        // An empty `[triage.text]`, as the example file had, is harmless.
+        let s = Settings::parse("[triage.text]\n", Path::new("t.toml")).unwrap();
+        assert!(resolve(&s, &Overrides::default()).is_ok());
+        // One that sets anything says what replaced it.
         let s = Settings::parse(
-            "[triage.text]\nimpact_levels = [\"a\", \"b\"]\n",
+            "[triage.text]\nactionable_question = \"x\"\n",
             Path::new("t.toml"),
         )
         .unwrap();
         let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
-        assert!(err.contains("impact_levels"), "{err}");
+        assert!(err.contains("[triage] rubric"), "{err}");
 
         let s = Settings::parse(
             "[[triage.teams]]\nkey = \"none_of_these\"\nlabel = \"x\"\ndescription = \"\"\n",
@@ -1218,6 +1199,72 @@ mod tests {
         )
         .unwrap();
         assert!(resolve(&s, &Overrides::default()).is_err());
+    }
+
+    #[test]
+    fn triage_rubric_is_anchored_to_the_file_validated_and_named() {
+        let dir = std::env::temp_dir().join(format!("signalman-cfg-rubric-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("cfg")).unwrap();
+        std::fs::write(dir.join("cfg/triage.jud"), crate::triage::rubric::BUILTIN).unwrap();
+        // A relative configuration path still yields an absolute rubric path,
+        // so the printed effective configuration reads back from anywhere.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = pathdiff(&dir.join("cfg/s.toml"), &cwd);
+        let s = Settings::parse("[triage]\nrubric = \"triage.jud\"\n", &relative).unwrap();
+        let rubric = s.triage.rubric.clone().unwrap();
+        assert!(rubric.is_absolute(), "{}", rubric.display());
+        let c = resolve(&s, &Overrides::default()).unwrap();
+        assert_eq!(c.triage.rubric.jud(), TriageRubric::builtin().jud());
+        let text = toml::to_string_pretty(&c).unwrap();
+        let back = Settings::parse(&text, Path::new("elsewhere/effective.toml")).unwrap();
+        assert_eq!(back.triage.rubric, Some(rubric));
+        assert!(resolve(&back, &Overrides::default()).is_ok());
+
+        // Empty is unset: the built-in rubric.
+        let s = Settings::parse("[triage]\nrubric = \"  \"\n", &dir.join("cfg/s.toml")).unwrap();
+        assert_eq!(s.triage.rubric, None);
+        assert_eq!(
+            &resolve(&s, &Overrides::default()).unwrap().triage.rubric,
+            TriageRubric::builtin()
+        );
+
+        // A missing or broken rubric names the key and the file.
+        let s = Settings::parse(
+            "[triage]\nrubric = \"missing.jud\"\n",
+            &dir.join("cfg/s.toml"),
+        )
+        .unwrap();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
+        assert!(
+            err.contains("triage.rubric: cannot read the rubric"),
+            "{err}"
+        );
+        std::fs::write(dir.join("cfg/bad.jud"), "jud: 1\nkind: cases\ncases: []\n").unwrap();
+        let s =
+            Settings::parse("[triage]\nrubric = \"bad.jud\"\n", &dir.join("cfg/s.toml")).unwrap();
+        let err = resolve(&s, &Overrides::default()).unwrap_err().to_string();
+        assert!(
+            err.starts_with("invalid configuration: triage.rubric: ")
+                || err.contains("triage.rubric: "),
+            "{err}"
+        );
+        assert!(err.contains("bad.jud"), "{err}");
+
+        // `text` that is not a table is refused too.
+        let s = Settings::parse("[triage]\ntext = \"x\"\n", Path::new("t.toml")).unwrap();
+        assert!(
+            resolve(&s, &Overrides::default())
+                .unwrap_err()
+                .to_string()
+                .contains("[triage] rubric")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `path` relative to `base`, when it is below it; `path` otherwise.
+    fn pathdiff(path: &Path, base: &Path) -> PathBuf {
+        path.strip_prefix(base)
+            .map_or_else(|_| path.to_owned(), Path::to_path_buf)
     }
 
     #[test]

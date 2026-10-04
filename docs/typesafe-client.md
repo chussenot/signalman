@@ -2,7 +2,7 @@
 title: TypeSafe client
 description: Why signalman's TypeSafe client is the separate judgment crate, where the crate's own documentation lives, and how signalman configures it, observes it and builds its triage on it.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [typesafe, library, judgment]
 ---
 
@@ -32,7 +32,7 @@ The wire contract is the [live TypeSafe documentation](https://docs.typesafe.ai/
 - signalman sets no per-call options and no default headers. Every call is `Client::system_one` (or `Client::evaluate` in `signalman triage`, which can print the request it sends) with the configured timeout, the default retry policy and `typesafe.model` as the model.
 - The crate refuses a response that does not fit before signalman reads it, and `TriageQuestions::read` verifies again for a recording replayed by case id. So an owner or an incident the model was never offered fails the triage instead of being read as the no-match option ([Triage](triage.md#which-questions-are-asked)).
 - TypeSafe's request id reaches signalman's logs and spans through the crate: on every error message and on the `typesafe.evaluate` span ([Observability](observability.md#spans)). Quote it to TypeSafe support when a triage fails on the model call.
-- The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and `Texts` makes the wording data that can be tuned without touching the handles ([Triage](triage.md)). In the terms of TypeSafe's patterns it is a speculative fan-out with a confidence gate on top ([the crate's Patterns section](https://github.com/chussenot/judgment/blob/main/README.md#patterns)).
+- The triage question set (`src/triage/questions.rs`) is the pattern any consumer writes: the crate's primitives are code, and the wording is a `.jud` rubric (`src/triage/triage.jud`, read through `judgment::jud`, feature `jud`) that can be tuned without touching the handles ([Triage](triage.md#the-rubric)). In the terms of TypeSafe's patterns it is a speculative fan-out with a confidence gate on top ([the crate's Patterns section](https://github.com/chussenot/judgment/blob/main/README.md#patterns)).
 - The [evaluation harness](evaluation.md) grades through `judgment::eval`. Recordings, per-question grading and the calibration metrics are the crate's; the labels and the decision are signalman's.
 
 ## What signalman does not use yet

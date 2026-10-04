@@ -47,6 +47,7 @@ nav:
       - 0010 Extract the judgment core into a reusable crate: decisions/0010-extract-the-judgment-core-into-a-crate.md
       - 0011 Documentation lives with its concern: decisions/0011-documentation-lives-with-its-concern.md
       - 0012 The judgment crate moves to its own repository: decisions/0012-the-judgment-crate-moves-to-its-own-repository.md
+      - 0015 The triage questions are a .jud rubric: decisions/0015-the-triage-questions-are-a-jud-rubric.md
       - Template: decisions/template.md
 
 plugins:

@@ -2,7 +2,7 @@
 title: Operations
 description: Running the webhook receiver, its endpoints including liveness and readiness, its manual commands, the upstream limits that bound throughput, what the logs contain and where traces and metrics go, and how each failure shows up.
 status: current
-last_reviewed: 2026-09-26
+last_reviewed: 2026-10-04
 tags: [operations]
 ---
 
@@ -92,6 +92,8 @@ docker run --rm -p 8080:8080 --env-file .env \
   ghcr.io/chussenot/signalman:0.4.0
 ```
 
+A custom triage rubric (`[triage] rubric`, [Configuration](configuration.md#triage-file-only)) is a second file, resolved relative to the configuration file: mount the directory instead (`-v ./deploy:/etc/signalman:ro`, with `config.toml` and `triage.jud` in it), or add a second `-v` to the same directory. The built-in rubric is compiled into the image and needs no mount.
+
 Two things follow from the layering in [Configuration](configuration.md). The listen address is set in the image as the environment variable `SIGNALMAN_ADDR`, which sits above the file: a `server.addr` in a mounted config has no effect, and a different port is `-e SIGNALMAN_ADDR=0.0.0.0:9090`, which also moves the process out from under the `HEALTHCHECK`, fixed at port 8080. Secrets come in as environment variables, never in the file, so `--env-file` or a `Secret` is the only way to pass them.
 
 CI builds the image on every pull request and push to `main` and runs the binary from it once, so a runtime image that cannot start the program fails the check rather than the deploy. A tag `vX.Y.Z` on `main` publishes `ghcr.io/chussenot/signalman:X.Y.Z` and `:latest`; nothing else publishes. The job uses plain `docker` under the repository's policy of GitHub-owned actions only, so there is no build cache between runs and an image build takes the full compile. The image has been built and started locally; no published tag has been pulled by a cluster yet.
@@ -113,6 +115,10 @@ data:
     base_url = "http://backstage-backend.backstage.svc:7007"
     app_url = "https://backstage.example.com"
     notify = true
+    [triage]
+    rubric = "triage.jud"                 # optional; beside config.toml in the same mount
+  triage.jud: |
+    # `signalman config rubric` prints the built-in one to start from
     [policy]
     page_at = "major"
 ---
@@ -142,7 +148,7 @@ spec:
       annotations:
         # Rendered by the pipeline (Helm: sha256sum of the ConfigMap); a
         # changed value rolls the pods, which is how a new config takes effect.
-        checksum/config: "<sha256 of config.toml>"
+        checksum/config: "<sha256 of the ConfigMap's data, config.toml and triage.jud>"
     spec:
       containers:
         - name: signalman
@@ -175,7 +181,7 @@ spec:
           configMap: { name: signalman-config }
 ```
 
-Validate the rendered file in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type or an out-of-range threshold.
+Validate the rendered files in the pipeline before applying: `signalman config show --config config.toml` exits non-zero on an unknown key, a wrong type, an out-of-range threshold, or a rubric that is missing or breaks the contract ([Triage](triage.md#the-rubric)).
 
 The two replicas share nothing. For `/mcp` that is fine: every `POST` is one request and one response with no session, so the `Service` needs no session affinity. For the change feed it means each replica holds its own window, as the limits table below notes.
 

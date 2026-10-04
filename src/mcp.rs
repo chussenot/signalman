@@ -187,10 +187,10 @@ impl Server {
             fetched_incidents = live;
         }
 
-        let questions = TriageQuestions::for_alert_with_texts(
+        let questions = TriageQuestions::for_alert_with_rubric(
             &alert,
             enrichment.candidates,
-            &self.triager.texts,
+            &self.triager.rubric,
         )
         .map_err(|e| Failed::Upstream(format!("building the questions failed: {e}")))?;
         let state = TriageQuestions::state(&alert);
@@ -671,7 +671,17 @@ impl Server {
             .map(|c| OwnerCandidateInfo {
                 key: c.key.clone(),
                 label: c.label.clone(),
-                description: c.description.clone(),
+                // The no-match option is described as the model sees it: in
+                // the rubric's words.
+                description: if c.key == crate::triage::NONE_OF_THESE {
+                    self.triager
+                        .rubric
+                        .no_match(crate::triage::rubric::OWNER, crate::triage::NONE_OF_THESE)
+                        .as_str()
+                        .map_or_else(|| c.description.clone(), str::to_owned)
+                } else {
+                    c.description.clone()
+                },
                 entity_ref: c.entity_ref.clone(),
                 url: c
                     .entity_ref
