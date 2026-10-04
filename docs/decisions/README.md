@@ -29,6 +29,7 @@ Numbers are one sequence for the repository, and a record lives with the code it
 | [0013](https://github.com/chussenot/judgment/blob/main/docs/decisions/0013-releases-cut-with-cocogitto-and-published-from-ci.md) | Releases cut with cocogitto and published from CI (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
 | [0014](https://github.com/chussenot/judgment/blob/main/docs/decisions/0014-a-file-format-for-rubrics-cases-and-recordings.md) | A file format for rubrics, cases and recordings (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
 | [0015](0015-the-triage-questions-are-a-jud-rubric.md) | The triage questions are a .jud rubric | accepted | |
+| [0016](https://github.com/chussenot/judgment/blob/main/docs/decisions/0016-jud-takes-minor-versions.md) | The .jud format takes minor versions, and 1.1 makes the request depend on the state (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
 
 ## Status notes
 
