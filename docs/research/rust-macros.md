@@ -2,7 +2,7 @@
 title: Rust macros
 description: A study of where a declarative or procedural macro would remove repetition in signalman and the judgment crate, with the evidence for each candidate, what the macro would generate and what would stay hand-written, the cost of each, and a ranked recommendation; two small declarative macros are worth adding, one existing macro is worth deleting, and the largest repetition is better solved without a macro.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [research, rust, maintainability, judgment]
 ---
 
@@ -36,6 +36,8 @@ Eight enums carry a serde `rename_all` and, beside it, a hand-written `key()` or
 A declarative `wire_enum!` taking `Variant = "string"` pairs would emit the enum, `key()`, `ALL`, `FromStr` and the two serde impls from one list. The input is a table; the expansion is twenty lines anyone could have typed; a wrong string in a use site is an error at that line. The crate's `options!` is the same shape and could be the model. **Adopt.** About 150 lines removed for 40 of macro and one test of the macro. `Action::tag_value` stays by hand: it is a second mapping, not the wire name.
 
 ### 2. The `take!` macro and `TextsFile`: a macro to delete
+
+*Done otherwise (2026-10-04): `Texts`, `TextsFile` and `take!` were all deleted when a `.jud` rubric replaced `[triage.text]` ([Triage](../triage.md#the-rubric)). The analysis below is kept as written.*
 
 `Texts` already derives `Deserialize` with `#[serde(default, deny_unknown_fields)]`, so a partial `[triage.text]` table deserializes straight into it with the defaults filled in. `TextsFile` (13 `Option<String>` fields that mirror `Texts`) and the `take!` macro that copies each `Some` onto `Texts::default()` reproduce what serde's container default already does, because the base is always the default. Validation runs on the merged value either way. **Delete both**, deserialize `Texts` in `Settings`, and the 13-field list exists in one place fewer. The `validate` field list stays, since it is the one place that names the fields allowed to be empty. This is the only macro in the workspace whose job a derive already does.
 

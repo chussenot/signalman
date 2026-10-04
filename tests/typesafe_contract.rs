@@ -26,8 +26,8 @@ use signalman::Request;
 use signalman::client::DEFAULT_MODEL;
 use signalman::eval::Recording;
 use signalman::triage::{
-    Alert, ComponentContext, OpenIncident, OwnerCandidate, OwnerCandidates, RelatedAlert, Texts,
-    TriageQuestions,
+    Alert, ComponentContext, OpenIncident, OwnerCandidate, OwnerCandidates, RelatedAlert,
+    TriageQuestions, TriageRubric,
 };
 
 static SPEC: LazyLock<Value> = LazyLock::new(|| {
@@ -155,7 +155,7 @@ fn assert_conforms_strict(pointer: &str, instance: &Value, what: &str) {
 /// builds it.
 fn triage_request(alert: &Alert, candidates: OwnerCandidates) -> Value {
     let questions =
-        TriageQuestions::for_alert_with_texts(alert, candidates, &Texts::default()).unwrap();
+        TriageQuestions::for_alert_with_rubric(alert, candidates, TriageRubric::builtin()).unwrap();
     let state = TriageQuestions::state(alert);
     serde_json::to_value(Request {
         state: &state,

@@ -2,7 +2,7 @@
 title: Roadmap
 description: What has not been verified against live systems, what is missing, and how the gaps map to the beads backlog.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [roadmap]
 ---
 
@@ -50,4 +50,4 @@ GitHub Actions runs on every push and pull request and has passed on every push 
 ## Smaller known gaps
 
 - The in-memory `webhook-id` set does not survive restarts; tag adds are idempotent, so the consequence is a repeated model call.
-- Without Backstage, the built-in fallback team list encodes one organisation's ownership model; `[[triage.teams]]` in the configuration file replaces it, and `[triage.text]` the impact rubric, but both remain guesses until tuned on real alerts.
+- Without Backstage, the built-in fallback team list encodes one organisation's ownership model; `[[triage.teams]]` in the configuration file replaces it, and the triage rubric (`[triage] rubric`) the impact levels, but both remain guesses until tuned on real alerts.

@@ -146,8 +146,8 @@ struct EvalArgs {
     #[arg(long, value_name = "DIR", conflicts_with = "replay")]
     record: Option<PathBuf>,
     /// Grade recorded responses from DIR under the current configuration
-    /// instead of calling the model. Tune [policy] and question or guidance
-    /// wording this way, but not impact_levels or team keys: the recorded
+    /// instead of calling the model. Tune the rubric's policy gates and its
+    /// question or guidance wording this way, but not impact levels or team keys: the recorded
     /// answers echo the levels and choose among the keys they were asked
     /// with, so a replay under others fails naming the question; changing
     /// those needs a new recording.
@@ -166,7 +166,7 @@ struct EvalArgs {
     /// the policy frozen beside the recordings.
     #[arg(long, value_name = "SPLIT")]
     split: Option<eval::Split>,
-    /// Freeze the current [policy] as DIR/policy.json, the one a held-out
+    /// Freeze the current policy (the rubric's gates) as DIR/policy.json, the one a held-out
     /// replay of DIR is graded under. Only from a replay of the development
     /// split, so the frozen policy was chosen without the held-out cases in
     /// view. Freezing again replaces it.
@@ -248,6 +248,10 @@ enum ConfigCommand {
     /// the file or an environment value is invalid: run it in CI against the
     /// ConfigMap before rolling it out.
     Show,
+    /// Print the triage rubric compiled into this binary: the `.jud` file a
+    /// custom `[triage] rubric` starts from. Needs no valid configuration,
+    /// so it works on a file that still has the removed `[triage.text]`.
+    Rubric,
 }
 
 #[tokio::main]
@@ -258,6 +262,12 @@ async fn main() -> ExitCode {
     // error must not be able to fail it.
     if let Command::Schema(cmd) = &cli.command {
         return exit(schema_cmd(cmd));
+    }
+    // Also answered first: it is how a configuration that fails to load
+    // (a leftover `[triage.text]`) is migrated.
+    if let Command::Config(ConfigCommand::Rubric) = &cli.command {
+        print!("{}", signalman::triage::rubric::BUILTIN);
+        return ExitCode::SUCCESS;
     }
     let (cfg, file) = match Config::load(cli.config.as_deref(), &overrides(&cli.command)) {
         Ok(loaded) => loaded,
@@ -360,6 +370,12 @@ async fn run(command: Command, cfg: &Config, file: Option<&Path>) -> Result<(), 
         // Dispatched through the same function anyway, so this arm cannot
         // drift from that one.
         Command::Schema(cmd) => schema_cmd(&cmd),
+        // Unreachable as well: answered in `main` before the configuration
+        // is resolved, so a broken configuration cannot hide it.
+        Command::Config(ConfigCommand::Rubric) => {
+            print!("{}", signalman::triage::rubric::BUILTIN);
+            Ok(())
+        }
         Command::Config(ConfigCommand::Show) => {
             println!("# signalman effective configuration");
             match file {
@@ -372,6 +388,32 @@ async fn run(command: Command, cfg: &Config, file: Option<&Path>) -> Result<(), 
             } else {
                 println!("# environment: {}", env.join(", "));
             }
+            println!(
+                "# rubric: {} ({}), {}",
+                cfg.triage.rubric.source(),
+                cfg.triage.rubric.id(),
+                cfg.triage.rubric.fingerprint()
+            );
+            // The thresholds are the rubric's `policy` gates, not a table of
+            // the file, so they are shown here, by the gate they are written
+            // in, rather than below.
+            let p = &cfg.policy;
+            println!("# policy, set in the rubric's gates (not in this file):");
+            println!("#   actionable: threshold {}", p.suppress_below);
+            println!(
+                "#   owner: route at {}, confirm at {}",
+                p.auto_route_confidence, p.human_below_confidence
+            );
+            println!(
+                "#   impact: level_at_least {} ({})",
+                p.page_at as u8,
+                format!("{:?}", p.page_at).to_lowercase()
+            );
+            println!("#   duplicate_of: confidence {}", p.attach_confidence);
+            println!(
+                "#   caused_by_change: threshold {}, strict",
+                p.flag_change_above
+            );
             println!("# secrets are read from the environment and never shown here");
             println!();
             print!("{}", toml::to_string_pretty(cfg)?);
@@ -424,7 +466,7 @@ fn triager(cfg: &Config, io: incidentio::Client, dry_run: bool) -> Result<Triage
     }
     t.notify_owner = cfg.backstage.notify;
     t.policy = cfg.policy.clone();
-    t.texts = cfg.triage.text.clone();
+    t.rubric = cfg.triage.rubric.clone();
     t.fallback_owners = cfg.triage.fallback_candidates();
     t.max_candidates = cfg.incidentio.max_candidates;
     t.component_keys.clone_from(&cfg.backstage.component_keys);
@@ -493,7 +535,7 @@ async fn triage(cfg: &Config, args: TriageArgs) -> Result<(), AnyError> {
         candidate_urls = enricher.candidate_urls(&candidates);
     }
 
-    let questions = TriageQuestions::for_alert_with_texts(&alert, candidates, &cfg.triage.text)?;
+    let questions = TriageQuestions::for_alert_with_rubric(&alert, candidates, &cfg.triage.rubric)?;
     let state = TriageQuestions::state(&alert);
     let request = Request {
         state: &state,
@@ -709,7 +751,7 @@ async fn evaluate(cfg: &Config, args: EvalArgs) -> Result<(), AnyError> {
     }
     let candidates = cfg.triage.fallback_candidates();
     let setup = eval::Setup {
-        texts: &cfg.triage.text,
+        rubric: &cfg.triage.rubric,
         candidates: &candidates,
         policy: &cfg.policy,
     };

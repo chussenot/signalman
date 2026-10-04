@@ -2,7 +2,7 @@
 title: Configuration
 description: The four configuration layers and their precedence, every setting with its file key, environment variable, flag and default, what is file-only and why, how secrets are handled, and how to validate a configuration before rollout.
 status: current
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-04
 tags: [configuration, kubernetes]
 ---
 
@@ -116,26 +116,17 @@ Setting `telemetry.otlp_endpoint` (or its variable) turns OpenTelemetry export o
 | `telemetry.service_name` | `OTEL_SERVICE_NAME` | `signalman` | `service.name` on every span and metric |
 | `telemetry.metrics_interval_seconds` | `SIGNALMAN_METRICS_INTERVAL_SECONDS` | `60` | how often metrics are exported; at least 1 |
 
-### `[policy]`, file only
-
-Routing thresholds; absent keys keep their defaults. Every probability is validated to `0..=1`, and `human_below_confidence` may not exceed `auto_route_confidence`. What each one does is in [Triage](triage.md#the-decision).
-
-| File key | Default |
-|---|---|
-| `policy.suppress_below` | `0.25` |
-| `policy.attach_confidence` | `0.75` |
-| `policy.auto_route_confidence` | `0.70` |
-| `policy.human_below_confidence` | `0.40` |
-| `policy.page_at` | `"major"` (`none`, `minor`, `major`, `outage`) |
-| `policy.flag_change_above` | `0.65` |
-
 ### `[triage]`, file only
 
-`[triage.text]` overrides the wording of any question: `owner_question`, `owner_guidance`, `owner_catalog_guidance`, `impact_question`, `impact_related_context`, `impact_levels` (exactly four, lowest first), `actionable_question`, `actionable_yes`, `actionable_no`, `duplicate_question`, `duplicate_none`, `change_question`, and `state_guard`, the rule every instruction ends with ([Triage](triage.md#which-questions-are-asked)). Every field must be non-empty except `state_guard`, where an empty or blank string switches the rule off. Changing any of them changes the question fingerprint a recorded evaluation run is replayed against ([Evaluation](evaluation.md#what-a-recording-answers)). The set of questions and their types are not configurable; [Triage](triage.md#what-is-configurable) explains why.
+`triage.rubric` names the triage rubric, a `.jud` file (`jud: 1.1`) holding the words of every question in the shape TypeSafe receives and in the order the model sees them, when each instruction part is sent, and the routing thresholds as its `policy` gates ([Triage](triage.md#the-rubric)). A relative path is relative to the configuration file's directory, so the two travel together in one `ConfigMap`; it is made absolute when the file loads. Absent or empty, the built-in rubric is used; `signalman config rubric` prints it, the exact file compiled into the running binary, to start a custom one from. It needs no valid configuration, so it works on a file that still has `[triage.text]`. The rubric is read and checked when the configuration loads, and an error names the file and the field: the five questions, their types and when each is asked are fixed, `impact` keeps exactly four levels, `owner` and `duplicate_of` keep their no-match option, and each gate must have the shape the decision reads ([Triage](triage.md#the-decision)). The effective configuration (`signalman config show`) prints the path, not the text; its header names the rubric in force with its `.jud` fingerprint, the identity another tool computes for the same file, and lists the thresholds in effect. Changing a question changes the question fingerprint a recorded evaluation run is replayed against; changing a threshold does not ([Evaluation](evaluation.md#what-a-recording-answers)).
+
+`[triage.text]`, the thirteen wording fields it replaced, is refused with a message naming `triage.rubric`; an empty `[triage.text]` table, as the example file used to carry, is accepted and ignored. To migrate, run `signalman config rubric > triage.jud` beside the configuration file, set `rubric = "triage.jud"` under `[triage]`, and move each overridden string to its place: the `*_question` fields to `instructions.question`, `owner_guidance` to `owner.instructions.guidance`, `owner_catalog_guidance` to `owner.instructions.catalog`, `impact_related_context` to `impact.instructions.context`, `impact_levels` to `impact.criteria`, `actionable_yes` and `actionable_no` to `actionable.criteria.true` and `.false`, `duplicate_none` to `duplicate_of.criteria.none`, and `state_guard` to the `&rule` anchor (removing the `rule` keys replaces `state_guard = ""`).
+
+`[policy]`, the six routing thresholds, moved into the rubric too. A `[policy]` that says what the rubric in force says is accepted and ignored, so a file copied from the old example, which set every key to its default, still loads; so is an empty one. One that says anything else is refused, naming the rubric's `policy`, since it would otherwise be overridden without a word. Delete the table once its values are in the rubric. A threshold belongs beside the words it was tuned against, and one home for it means the configuration and an evaluation run cannot disagree about which value was in force. To migrate, write each overridden key into the rubric's gate: `suppress_below` to `policy.actionable.threshold`, `auto_route_confidence` and `human_below_confidence` to the `at_least` of `policy.owner.bands`' `route` and `confirm` bands, `page_at` to `policy.impact.level_at_least` as an index (`none` 0, `minor` 1, `major` 2, `outage` 3; the word itself names no level, only an index or the level's full sentence does), `attach_confidence` to `policy.duplicate_of.confidence`, and `flag_change_above` to `policy.caused_by_change.threshold`. A deployment that kept the defaults needs no rubric: the built-in one carries them.
 
 `[[triage.teams]]` entries (`key`, `label`, `description`) replace the built-in fallback owner list used when no catalog is configured or nothing in it matched. `none_of_these` is appended automatically and may not be defined.
 
-Thresholds and wording have no environment variables: they are reviewed as a unit in the file, not toggled per pod.
+Thresholds and the rubric have no environment variables: they are reviewed as a unit in the file, not toggled per pod.
 
 ## Process
 
@@ -150,4 +141,4 @@ Thresholds and wording have no environment variables: they are reviewed as a uni
 signalman config show --config deploy/config.toml
 ```
 
-prints the effective configuration as TOML after every layer, headed by the file used and the environment variables that contributed, and exits non-zero on an unknown key, a wrong type, an out-of-range threshold or an unparsable variable. Run it in the pipeline that renders the `ConfigMap`. Locally, mise loads `.env` when present (`[env] _.file` in `mise.toml`); `.env` is gitignored, a pre-commit hook refuses to commit it, and `.env.example` lists the secrets and the most common variables.
+prints the effective configuration as TOML after every layer, headed by the file used, the environment variables that contributed and the rubric in force, and exits non-zero on an unknown key, a wrong type, an out-of-range threshold, an unparsable variable, or an unreadable or invalid rubric. Run it in the pipeline that renders the `ConfigMap`. Locally, mise loads `.env` when present (`[env] _.file` in `mise.toml`); `.env` is gitignored, a pre-commit hook refuses to commit it, and `.env.example` lists the secrets and the most common variables.

@@ -2,7 +2,7 @@
 title: Development
 description: Tools, tasks, quality gates, the git hook chain, repository layout, planning with beads, the two documentation sets and where a page goes, and the Claude Code harness for contributors.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [development, tooling]
 ---
 
@@ -45,7 +45,7 @@ mise tasks          # everything below
 
 Clippy runs with the `pedantic` group plus `unwrap_used` and `expect_used`, warnings denied. Tests never reach the network: `wiremock` stands in for all three APIs, and policy tests round-trip fake responses through the real handles. Doc tests cover the examples the library carries: the crate-level walkthrough in `src/lib.rs` is `no_run`, so it compiles against the public API on every test run without an API key; the judgment crate's doc tests run in its repository. CI (`.github/workflows/ci.yml`) runs the same gates plus `prek run --all-files`, using GitHub-owned actions only; a third job builds the container image with plain `docker` and publishes it to GHCR on a `v*` tag.
 
-The root package `signalman` is the one package in this repository since the `judgment` crate moved to its own ([decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md); [Extracting the judgment crate](judgment-extraction.md) records how). signalman takes the crate from crates.io, `judgment = "0.3"`, in `[dependencies]` and, with the `openapi` feature, in `[dev-dependencies]`; the requirement names the minor because a 0.x minor may break, the two move together, deliberately, and until they move a change to the crate does not reach signalman's tests. The `[workspace]` table stays, so every gate still runs with `--workspace`.
+The root package `signalman` is the one package in this repository since the `judgment` crate moved to its own ([decision 0012](decisions/0012-the-judgment-crate-moves-to-its-own-repository.md); [Extracting the judgment crate](judgment-extraction.md) records how). signalman takes the crate from crates.io, `judgment = { version = "0.5", features = ["jud"] }`, in `[dependencies]` and, with the `openapi` feature added, in `[dev-dependencies]`; the requirement names the minor because a 0.x minor may break, the two move together, deliberately, and until they move a change to the crate does not reach signalman's tests. The `[workspace]` table stays, so every gate still runs with `--workspace`.
 
 The exceptions to "tests never reach the network" moved with the crate: its ignored live tests and its OpenAPI drift test run from its repository (`mise run live:typesafe` there, with the key from `.env`). They exist because a mock encodes what the client author believed about the wire, and only a real server can contradict that belief; [judgment against Laya typed-decisions](https://github.com/chussenot/judgment/blob/main/docs/verification/laya-typed-decisions.md) and [judgment against the hosted TypeSafe API](https://github.com/chussenot/judgment/blob/main/docs/verification/hosted-typesafe.md) are the records of two such runs. Nothing in this repository's gate reaches the network.
 

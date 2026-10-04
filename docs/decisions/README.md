@@ -2,7 +2,7 @@
 title: Decisions
 description: Architecture decision records for signalman in MADR form, the index of accepted decisions, where the judgment crate's records live, and how to add one.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [decisions, adr, madr]
 ---
 
@@ -26,6 +26,10 @@ Numbers are one sequence for the repository, and a record lives with the code it
 | [0010](0010-extract-the-judgment-core-into-a-crate.md) | Extract the judgment core into a reusable crate | accepted | `signalman-cuo` |
 | [0011](0011-documentation-lives-with-its-concern.md) | Documentation lives with its concern | accepted | `signalman-mhb` |
 | [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) | The judgment crate moves to its own repository | accepted | `signalman-bdl` |
+| [0013](https://github.com/chussenot/judgment/blob/main/docs/decisions/0013-releases-cut-with-cocogitto-and-published-from-ci.md) | Releases cut with cocogitto and published from CI (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
+| [0014](https://github.com/chussenot/judgment/blob/main/docs/decisions/0014-a-file-format-for-rubrics-cases-and-recordings.md) | A file format for rubrics, cases and recordings (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
+| [0015](0015-the-triage-questions-are-a-jud-rubric.md) | The triage questions are a .jud rubric | accepted | |
+| [0016](https://github.com/chussenot/judgment/blob/main/docs/decisions/0016-jud-takes-minor-versions.md) | The .jud format takes minor versions, and 1.1 makes the request depend on the state (governs the `judgment` crate; lives in its [decisions](https://github.com/chussenot/judgment/blob/main/docs/decisions/README.md)) | accepted | |
 
 ## Status notes
 
@@ -38,6 +42,8 @@ Records are not edited after acceptance, so a fact that has moved since a record
 - 0010, 0003's neighbours in signalman's records and the pages citing 0003 had their links to it repointed when it moved to the crate (0011); no other line of an accepted record changed.
 - 0010 keeps the crate a workspace member "until a second consumer exists". [0012](0012-the-judgment-crate-moves-to-its-own-repository.md) moves it to its own repository before that, for its history and its releases; signalman becomes the consumer that tests the API 0010 wanted a second consumer for.
 - 0012 is done: the crate moved to <https://github.com/chussenot/judgment> on 2026-10-03 with the history of `crates/judgment`, and signalman depended on it by git, pinned to a revision, the same day, then by version once the crate published 0.3.0 to crates.io (also 2026-10-03), as the record's option 2 planned; the directory is gone from this repository.
+- 0006 names `[triage.text]` as the home of the question wording. Since [0015](0015-the-triage-questions-are-a-jud-rubric.md) (2026-10-04) the wording is a `.jud` rubric named by `[triage] rubric`, still file configuration and still without an environment variable, so the record's layering holds; the question set and the four impact levels stay code, as it says, now enforced when the rubric loads. It also names `[policy]` as the home of the routing thresholds; since the same record they are the rubric's `policy` gates, in the same file as the words, and `[policy]` is refused with a migration message. They remain file configuration without a build, which is what the record asked of them.
+- 0010 lists `Texts` among what stays in `src/triage/`. It was deleted by [0015](0015-the-triage-questions-are-a-jud-rubric.md); the words are `src/triage/triage.jud`, read through the crate's `jud` feature, and what stays in signalman is the contract a rubric is checked against and the options supplied per alert (`src/triage/rubric.rs`, `src/triage/questions.rs`); since judgment 0.5 the crate does the lowering itself (`Rubric::lower`).
 - 0008 says an MCP server "will serve" the same capabilities. It does: `signalman mcp` over stdio or Streamable HTTP, and `/mcp` on `serve` ([MCP server](../mcp.md)), with the write tool built as the record specifies, re-deriving every write from the outcome document, gated by `mcp.allow_write`.
 
 ## Writing a record

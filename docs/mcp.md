@@ -2,7 +2,7 @@
 title: MCP server
 description: The Model Context Protocol tools signalman serves over stdio and Streamable HTTP, five always-on read-only tools and one gated write tool, what each one answers, the two transports and how they are served, how to configure and connect to them, and what still writes nothing on purpose.
 status: current
-last_reviewed: 2026-09-25
+last_reviewed: 2026-10-04
 tags: [mcp, agents, decisions]
 ---
 
@@ -53,7 +53,7 @@ transport = "stdio" # how `signalman mcp` serves: "stdio" or "http"; `serve` ign
 allow_write = false # registers apply_qualification when true; off by default
 ```
 
-`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) and `SIGNALMAN_MCP_ALLOW_WRITE` override the file; see [Configuration](configuration.md#mcp). `allow_write` is the only setting that changes which tools exist: turning it on registers `apply_qualification` (see [Writing](#writing)); leaving it off keeps the server entirely read-only. It applies over both transports. Everything else the tools need, the TypeSafe model, the software catalog, the change feed, the routing thresholds, is the same `[typesafe]`, `[incidentio]`, `[backstage]`, `[flow]`, `[policy]` and `[triage]` configuration the rest of the binary reads. Secrets (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `BACKSTAGE_TOKEN`) are environment only, as everywhere else; so is `SIGNALMAN_MCP_TOKEN`, the bearer token the HTTP transport requires (see [Transports](#transports)).
+`SIGNALMAN_MCP_ENABLED`, `SIGNALMAN_MCP_TRANSPORT`, `SIGNALMAN_MCP_BIND_ADDRESS`, `SIGNALMAN_MCP_ALLOWED_HOSTS` (comma-separated) and `SIGNALMAN_MCP_ALLOW_WRITE` override the file; see [Configuration](configuration.md#mcp). `allow_write` is the only setting that changes which tools exist: turning it on registers `apply_qualification` (see [Writing](#writing)); leaving it off keeps the server entirely read-only. It applies over both transports. Everything else the tools need, the TypeSafe model, the software catalog, the change feed, the routing thresholds, is the same `[typesafe]`, `[incidentio]`, `[backstage]`, `[flow]` and `[triage]` configuration the rest of the binary reads, the thresholds being the rubric's `policy`. Secrets (`TYPESAFE_API_KEY`, `INCIDENTIO_API_KEY`, `BACKSTAGE_TOKEN`) are environment only, as everywhere else; so is `SIGNALMAN_MCP_TOKEN`, the bearer token the HTTP transport requires (see [Transports](#transports)).
 
 `recent_changes` depends on where the server runs, because the [change feed](changes.md) is per-process, in-memory state. Mounted at `/mcp` by `signalman serve`, the tool reads the same change log `POST /changes` writes in that process, so it is live; this is the first configuration in which it is. A `signalman mcp` process, over stdio or over HTTP, never receives `POST /changes`, so there the tool always reports an empty list with a note explaining why.
 

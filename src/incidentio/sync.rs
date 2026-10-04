@@ -26,8 +26,8 @@ use crate::outcome::{
     WriteMode, Writes, tag,
 };
 use crate::triage::{
-    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, Texts,
-    TriageAnswers, TriageQuestions, decide,
+    Alert, Decision, Impact, OpenIncident, OwnerCandidates, Policy, RelatedAlert, TriageAnswers,
+    TriageQuestions, TriageRubric, decide,
 };
 
 /// How many live incidents to offer as dedup candidates. Each is one Choice
@@ -70,8 +70,8 @@ pub struct Triager {
     pub notify_owner: bool,
     /// Routing thresholds.
     pub policy: Policy,
-    /// Question text.
-    pub texts: Texts,
+    /// The words of every question.
+    pub rubric: TriageRubric,
     /// Owner candidates when no catalog is configured or nothing matched.
     pub fallback_owners: OwnerCandidates,
     /// Candidate cap for dedup.
@@ -116,7 +116,7 @@ impl Triager {
             backstage: None,
             notify_owner: false,
             policy: Policy::default(),
-            texts: Texts::default(),
+            rubric: TriageRubric::builtin().clone(),
             fallback_owners: OwnerCandidates::from_teams(),
             max_candidates: DEFAULT_CANDIDATES,
             write_back: WriteBack::Apply,
@@ -206,7 +206,7 @@ impl Triager {
         }
 
         let questions =
-            TriageQuestions::for_alert_with_texts(&alert, owner_candidates, &self.texts)?;
+            TriageQuestions::for_alert_with_rubric(&alert, owner_candidates, &self.rubric)?;
         let state = TriageQuestions::state(&alert);
         let response = self
             .typesafe

@@ -2,7 +2,7 @@
 title: Change feed
 description: How recent deploys, configuration changes and flag flips reach the triage as alert.recent_changes through a push endpoint any delivery tool can call, the native Argo CD and GitLab adapters, how the window and matching work, and the limits.
 status: current
-last_reviewed: 2026-09-22
+last_reviewed: 2026-10-04
 tags: [changes, triage, argocd, flux, github-actions, mttq]
 ---
 
@@ -117,7 +117,7 @@ Name `component` the way the alert labels will: the value of the `service` attri
 
 ## What the responder sees
 
-When changes were offered, the [qualification note](incidentio.md#the-qualification-note) lists them under the cause line, and `ai-suspected-change` is tagged when the probability clears `policy.flag_change_above`. The [outcome document](triage.md#the-outcome-contract) carries `recent_changes`, one row per change offered.
+When changes were offered, the [qualification note](incidentio.md#the-qualification-note) lists them under the cause line, and `ai-suspected-change` is tagged when the probability clears the rubric's `caused_by_change` threshold (`policy.flag_change_above` in the outcome document). The [outcome document](triage.md#the-outcome-contract) carries `recent_changes`, one row per change offered.
 
 ## Limits
 

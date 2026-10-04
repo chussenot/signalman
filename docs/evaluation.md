@@ -2,7 +2,7 @@
 title: Evaluation harness
 description: How to replay labelled alerts through the triage questions, what the report measures (accuracy with its interval, Brier, calibration error, decision agreement, latency), what a case's split and provenance say about those numbers, how a recorded run's manifest keeps old answers from being graded under new questions, and how to use it to compare models.
 status: current
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-04
 tags: [evaluation, triage, tuning, typesafe]
 ---
 
@@ -81,7 +81,7 @@ The committed `jev-1.13.0-state-guard` run, replayed on 2026-10-03 under the def
 ```
 cases     3   model jev-1.13.0
 decision  labelled 3  agreement 1.00  95% 0.44..1.00
-evidence  replay recorded 2026-10-03T07:18:53.830808109Z  questions 1677815da49da9d9
+evidence  replay recorded 2026-10-03T07:18:53.830808109Z  questions b4538138a0cb7268
 policy    cdddb2572b782200
 origin    split development 3   labels author-synthetic 3
 
@@ -98,7 +98,7 @@ mismatches (1):
   dns            impact           expected outage, got major (p 0.17, confidence 0.79)
 ```
 
-Read the second line with the fourth: three author-written cases decided as their authors expected is agreement 1.00 with an interval reaching down to 0.44, which is the honest claim. The same three cases against Laya's English checkpoint on CPU (2026-09-21, [Laya](laya.md)) gave decision agreement 0.00 with ten mismatches, and replaying those recordings with `suppress_below = 0.55` in `[policy]` moved it to 0.33 (the noise case is suppressed) with no model call and every question row unchanged, which is the tuning loop below in one line.
+Read the second line with the fourth: three author-written cases decided as their authors expected is agreement 1.00 with an interval reaching down to 0.44, which is the honest claim. The same three cases against Laya's English checkpoint on CPU (2026-09-21, [Laya](laya.md)) gave decision agreement 0.00 with ten mismatches, and replaying those recordings with `suppress_below = 0.55` (then in `[policy]`, now the rubric's `actionable` threshold) moved it to 0.33 (the noise case is suppressed) with no model call and every question row unchanged, which is the tuning loop below in one line.
 
 | Column | Meaning | Reading |
 |---|---|---|
@@ -121,7 +121,7 @@ The two committed runs differ only in the rule appended to every instruction: sa
 
 | | before the rule (2026-09-23) | with the rule (2026-10-03) |
 |---|---|---|
-| question fingerprint | `0165f119e3162330` | `1677815da49da9d9` |
+| question fingerprint | `842733ee2db091ad` | `b4538138a0cb7268` |
 | decision agreement | 1.00 (3 of 3) | 1.00 (3 of 3) |
 | per-question accuracy | as labelled except `dns` impact | as labelled except `dns` impact |
 | `dns` impact, p(`outage`) / confidence | 0.26 / 0.70 | 0.17 / 0.79 |
@@ -141,7 +141,9 @@ failed (1), not graded: the answer did not fit the questions, so the figures abo
 
 ### What a recording answers
 
-A recorded run writes `run.json` beside the recordings: when it finished, the model asked for, the `signalman` version, a fingerprint of the question texts and owner candidates in force, a fingerprint of the case file as read, and the case counts per split and per provenance method. The question fingerprint covers everything that shapes a request apart from the alert itself (`[triage.text]`, the rule included, and the fallback team list), so two runs with the same fingerprint asked the same questions and a replay under another one is reading answers to questions that were never asked.
+A recorded run writes `run.json` beside the recordings: when it finished, the model asked for, the `signalman` version, a fingerprint of the rubric and owner candidates in force, a fingerprint of the case file as read, and the case counts per split and per provenance method. The question fingerprint covers everything that shapes a request apart from the alert itself (the [rubric](triage.md#the-rubric)'s questions, by their `.jud` fingerprint, which covers every word that can be sent, the order of the questions and when each question and instruction part is sent, and the fallback team list; not the rubric's `policy`, so tuning a threshold leaves a recording current), so two runs with the same fingerprint asked the same questions and a replay under another one is reading answers to questions that were never asked.
+
+The fingerprint was computed over the `[triage.text]` fields until the rubric replaced them on 2026-10-04. The two committed manifests were then migrated to the rubric's fingerprint (`0165f119e3162330` became `b933e1eb3f3cb8bc`, `1677815da49da9d9` became `80c0b0026ed9d08e`). That was done only after `tests/triage_rubric.rs` showed that the built-in rubric, with and without the rule, asks every committed case exactly what the texts asked. The answers still answer these questions; only the name of the questions changed. When the rubric moved to `jud: 1.1` on the same day (judgment 0.5), its fingerprint came to cover the declarations (`when`, `part_when`, `options_from`) that replaced signalman's own per-alert code, and the manifests were migrated once more (`b933e1eb3f3cb8bc` became `842733ee2db091ad`, `80c0b0026ed9d08e` became `b4538138a0cb7268`), on the same evidence: the 1.1 rubric, lowered by the crate, still asks every committed case byte for byte what the texts asked. One thing did change for the model that the fingerprint does not see: both runs were recorded on judgment 0.3, which sent questions and options in alphabetical order, and since 0.4 they go in the rubric's order. Whether order moves `jev-1.13.0`'s answers is open (`signalman-b11.8`); a new recording measures it.
 
 That is why a replay compares the manifest's fingerprint with the current configuration's and stops when they differ, naming both and the recording date, rather than printing a report that looks like a measurement of the current wording. `--stale-ok` grades the recordings anyway, with `STALE` on the evidence line and `stale: true` in the JSON, for the one legitimate use: seeing how a policy change reads old answers while a new recording is on its way. A directory recorded before manifests existed has no `run.json`; it is graded, and the evidence line says the recorded fingerprint is unknown. The checks on `Response::verify` below still apply on top: a changed level text or team key fails the question itself, manifest or not. The fingerprint is deliberately coarser than that check. It fires on a wording change that could not possibly have changed an answer, because whether a change could is exactly what cannot be known without recording again. The discipline is borrowed from jev-recipes' evaluation archive ([Decision recipes](research/decision-recipes.md)).
 
@@ -156,7 +158,7 @@ A threshold chosen by looking at every labelled case is a number about those cas
 Judgments do not depend on the policy ([decision 0002](decisions/0002-calibrated-judgments-over-generated-text.md)), so a threshold change needs no new model call:
 
 1. `signalman eval cases.jsonl --record runs/<model>` once per model version.
-2. Edit `[policy]` (or the question and guidance wording in `[triage.text]`, which changes only how the recorded answers are read, not the answers) in the configuration file. Not `impact_levels` or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
+2. Edit the thresholds in the rubric's `policy`, which leaves the replay current (or the question and guidance wording, which changes only how the recorded answers are read, not the answers, and makes the replay stale). Not the impact levels or the team keys: a recorded answer echoes the levels it was asked with and chooses among the keys it was offered, so a replay under other levels or other keys no longer answers the questions being asked, and it fails naming the question (the check is `Response::verify`, run by `TriageQuestions::read`). Changing those needs a new recording.
 3. `signalman eval cases.jsonl --replay runs/<model> --config candidate.toml` and compare decision agreement.
 4. Pin `typesafe.model` to the version recorded against, in the same file as the thresholds.
 5. Keep a held-out set once there are enough cases: mark some `"split": "held-out"`, choose thresholds with `--split development`, freeze the choice with `--freeze-policy`, then grade `--split held-out` once; it is graded under the frozen policy and no other ([above](#freezing-the-policy)). A threshold tuned on the cases it is reported on is a number about those cases, not about the next alert.
